@@ -1,11 +1,14 @@
-# stt ayarları. install.bat bunu stt.toml olarak kopyalar.
+# stt ayarları. Kurulum bunu stt.toml olarak kopyalar.
 # Komut satırı seçenekleri bu dosyadaki değerleri ezer.
 
 out_dir = "cikti"                   # çıktı klasörü (ör. "D:/basin/cikti")
 model = "large-v3"
 compute_type = "float16"
 beam_size = 5
-gpus = "auto"                      # "auto" | "0,1" | "0" | "cpu"
+gpus = "auto"                      # "auto" = monitörün bağlı OLMADIĞI kart (bilgisayar akıcı kalır)
+                                   # "all" = bütün kartlar (en hızlı) | "0,1" | "0" | "cpu"
+# display_batch = 4                # monitörlü kart kullanılırsa en fazla bu toplu boyut
+# low_priority = true              # tanıma düşük öncelikte çalışır (bilgisayar donmasın)
 # lang = "en"                      # yoksa otomatik
 
 # Konuşmacı ayırma (pyannote). Token yerine HF_TOKEN ortam değişkeni de olur.

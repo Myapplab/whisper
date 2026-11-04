@@ -18,7 +18,10 @@ def watch(folder: Path, pipe, interval: float = 5.0, stable_polls: int = 2) -> N
     while True:
         try:
             for p in folder.rglob("*"):
-                if not p.is_file():
+                try:
+                    if not p.is_file():
+                        continue
+                except OSError:
                     continue
                 rp = p.resolve()
                 if out_root in rp.parents or any(x.startswith(".") for x in rp.relative_to(folder).parts):
@@ -26,7 +29,10 @@ def watch(folder: Path, pipe, interval: float = 5.0, stable_polls: int = 2) -> N
                 ext = p.suffix.lower()
                 if ext in PARTIAL_EXTS or (ext not in MEDIA_EXTS and ext != ".txt"):
                     continue
-                st = p.stat()
+                try:
+                    st = p.stat()
+                except OSError:  # bu arada silindi / taşındı
+                    continue
                 sig = (st.st_size, st.st_mtime_ns)
                 if seen.get(rp) == sig:
                     stable[rp] = stable.get(rp, 0) + 1

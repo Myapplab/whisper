@@ -42,14 +42,58 @@ def setup_logging(verbose: bool = False) -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
-def add_tool_paths() -> None:
-    """Kurulumun indirdiği ffmpeg / deno (tools klasörü) PATH'e eklensin."""
+def _registry_path() -> list[str]:
+    """Windows: kayıt defterindeki GÜNCEL PATH (kurulumdan hemen sonra açılan uygulamanın ortamı eskidir)."""
+    if os.name != "nt":
+        return []
+    out: list[str] = []
+    try:
+        import winreg
+        for hive, sub in ((winreg.HKEY_CURRENT_USER, "Environment"),
+                          (winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment")):
+            try:
+                with winreg.OpenKey(hive, sub) as k:
+                    val, _ = winreg.QueryValueEx(k, "Path")
+                out += [os.path.expandvars(x) for x in str(val).split(";") if x.strip()]
+            except OSError:
+                pass
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+def tool_dirs() -> list[Path]:
+    """ffmpeg / deno'nun bulunabileceği klasörler (kurulumun 'tools' klasörü, winget, deno kurulumu)."""
     root = Path(__file__).resolve().parent.parent / "tools"
-    if not root.is_dir():
-        return
-    for d in [*root.glob("ffmpeg*/bin"), root / "deno"]:
-        if d.is_dir():
-            os.environ["PATH"] = str(d) + os.pathsep + os.environ.get("PATH", "")
+    dirs: list[Path] = []
+    if root.is_dir():
+        dirs += [*root.glob("ffmpeg*/bin"), root / "deno", root]
+    la = os.environ.get("LOCALAPPDATA")
+    if la:
+        wg = Path(la) / "Microsoft" / "WinGet"
+        dirs += [wg / "Links", *wg.glob("Packages/Gyan.FFmpeg*/ffmpeg-*/bin"), *wg.glob("Packages/DenoLand.Deno*")]
+    dirs.append(Path.home() / ".deno" / "bin")
+    return [d for d in dirs if d.is_dir()]
+
+
+def add_tool_paths() -> None:
+    """ffmpeg / deno PATH'te değilse bilinen klasörleri ve kayıt defterindeki güncel PATH'i ekle."""
+    cur = os.environ.get("PATH", "").split(os.pathsep)
+    seen = {c.lower().rstrip("\\/") for c in cur if c}
+
+    def fresh(dirs) -> list[str]:
+        out = []
+        for d in map(str, dirs):
+            k = d.lower().rstrip("\\/")
+            if d and k not in seen:
+                seen.add(k)
+                out.append(d)
+        return out
+
+    front = fresh(tool_dirs())          # kurulumun kendi araçları önce
+    back = fresh(_registry_path())      # kayıt defterindeki yeni girdiler sonra
+    if front or back:
+        os.environ["PATH"] = os.pathsep.join(front + cur + back)
 
 
 _DLL_DONE = False

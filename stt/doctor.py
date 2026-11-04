@@ -41,7 +41,7 @@ def run_doctor(cfg, deep: bool = False) -> int:
         if p:
             add(OK, tool, (_ver([p, "-version"]) or "?")[:70])
         else:
-            add(BAD, tool, "bulunamadı -> winget install Gyan.FFmpeg (sonra yeni terminal açın)")
+            add(BAD, tool, "bulunamadı -> STT-Kurulum.exe'yi tekrar çalıştırın (tools klasörüne indirir)")
 
     try:
         import yt_dlp
@@ -52,7 +52,7 @@ def run_doctor(cfg, deep: bool = False) -> int:
     if js:
         add(OK, "JS çalışma zamanı", f"{js}: {(_ver([which(js), '--version']) or '?')[:50]} (YouTube için)")
     else:
-        add(WARN, "JS çalışma zamanı", "yok -> YouTube indirmeleri için: winget install DenoLand.Deno")
+        add(WARN, "JS çalışma zamanı", "yok -> YouTube için gerekli: STT-Kurulum.exe'yi tekrar çalıştırın")
 
     # CUDA
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -103,6 +103,17 @@ def run_doctor(cfg, deep: bool = False) -> int:
                 "Sürücüyü yeniden kurun / Aygıt Yöneticisi'nde 3080'i kontrol edin; "
                 "PowerShell: nvidia-smi -L ; echo $env:CUDA_VISIBLE_DEVICES")
         add(OK, "GPU sırası", "cuda:N = nvidia-smi N (PCI sırası)")
+        try:
+            from .engines import gpu_info
+            from .pipeline import detect_devices
+            gi = gpu_info()
+            used = detect_devices(cfg.gpus, gi)
+            for i, g in sorted(gi.items()):
+                mon = "monitör bağlı" if g.get("display") else "monitör yok" if g.get("display") is False else "?"
+                st = "KULLANILACAK" if f"cuda:{i}" in used else "boş bırakılacak"
+                add(OK, f"Kart {i}", f"{g['name']} ({mon}) -> {st}  [gpus={cfg.gpus}]")
+        except Exception as e:  # noqa: BLE001
+            add(WARN, "Kart seçimi", str(e)[:120])
 
     try:
         import faster_whisper

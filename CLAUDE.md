@@ -8,7 +8,11 @@ Basın toplantısı videolarını (YouTube, X, Instagram, kulüp siteleri, yerel
 Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım › maç › basın toplantısı).
 
 - Motor: faster-whisper large-v3 (float16, beam 5, vad_filter, word_timestamps, toplu/batched mod),
-  iki GPU paralel (her GPU'ya bir işçi süreci, ortak kuyruk), uzun dosyalar Silero VAD ile sessizlikten bölünür.
+  GPU başına bir işçi süreci (ortak kuyruk), uzun dosyalar Silero VAD ile sessizlikten bölünür.
+- **GPU politikası (1.2):** `gpus="auto"` = monitörün bağlı OLMADIĞI kart(lar) (`nvidia-smi display_active`);
+  hepsi monitörlüyse / tek kartsa en büyük tek kart, toplu boyut `display_batch` (4) ile sınırlı. `gpus="all"` =
+  hepsi. İşçiler ve ffmpeg BELOW_NORMAL öncelikte. Sebep: kullanıcıda ekran kartı tam yükte kalınca bilgisayar
+  donuyor, YouTube/tarayıcı çöküyordu. Takılan görev (`_task_timeout`) ya da çöken işçi yeniden başlatılır.
 - İsteğe bağlı konuşmacı ayırma: pyannote/speaker-diarization-3.1 (HF token) → en uzun konuşan teknik
   direktör, diğerleri muhabir → `.txt` soru-cevap biçiminde.
 - Çıktı: `.txt` (soru-cevap), `.srt`, `.json` (kelime zamanı + konuşmacı), `ozet.md`, `mac.json`,
@@ -26,11 +30,18 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
 ## Arayüzler
 - **Uygulama:** `pythonw -m stt.gui` (pywebview + Edge WebView2; `stt/gui.py` + `stt/gui.html`).
   Python ↔ JS: `App` sınıfının `_` ile başlamayan metotları JS'e açıktır (iç alanlar `_` ile başlamalı!).
-  Olaylar `Pipeline.events` → `window.__stt.onEvent(...)`.
+  Olaylar `Pipeline.events` → `App._push` (yalnızca kuyruğa koyar, ASLA beklemez) → `_sender` iş parçacığı
+  toplu olarak `window.__stt.onEvents([...])`. evaluate_js'i başka yerden çağırma: WebView2 takılınca bütün
+  motor kilitleniyordu. "Durdur" = `cancel_all` (biten parçalar saklanır). Tek kopya kilidi (mutex),
+  pencere kapanınca `_shutdown` → `os._exit`.
 - **CLI:** `stt.bat <link|dosya|klasör|liste.txt> [--lang en] [--diarize] [--fpl 11 ARS]`,
   alt komutlar: `kontrol [--derin]`, `olc`, `izle KLASOR`, `durum`. Çift tıklanınca etkileşimli
   (panodaki linkleri okur).
 - **Kurulum:** `installer/stt.nsi` (NSIS) + `installer/kur.ps1`; `installer/build.sh` → `dist/STT-Kurulum.exe`.
+  NSIS her adımı ayrı çağırır (`kur.ps1 -Step check|python|venv|torch|libs|tools|config|model`), çıktı
+  `nsExec::ExecToLog /OEM` ile okunur → kur.ps1 **UTF-8 BOM'lu** kalmalı ve çıktıyı OEM kod sayfasında yazar.
+  Tam günlük `<kurulum>\kurulum.log`. ffmpeg/deno `tools\` klasörüne doğrudan iner (winget yok).
+  Görseller: `installer/make_images.py` (Pillow) → welcome.bmp / header.bmp. `ManifestDPIAware true`.
   Eski yol: `install.bat` (venv + torch cu128 + `pip install -c constraints.txt -e .[diarize,test]`).
 
 ## Kullanıcının makinesi (önemli)
@@ -55,7 +66,8 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
 - Kullanıcı ileride uygulamayı paylaşmak istiyor (tek kurulum dosyası).
 
 ## Geliştirme (bulut/Linux)
-- Testler: `python -m pytest -q tests` (26 test).
+- Testler: `python -m pytest -q tests` (36 test; `tests/test_stability.py` = GPU seçimi, işçi yeniden başlatma, iptal,
+  bloklamayan arayüz).
 - GPU yok ve HuggingFace engelliyse test modeli: GitHub `rhasspy/models` `asr_faster-whisper-small-int8`
   + `dev/make_tokenizer.py` (openai-whisper tiktoken → tokenizer.json) + `dev/add_alignment_heads.py`.
   `--model <klasör> --gpus cpu,cpu` ile uçtan uca çalışır.

@@ -18,9 +18,13 @@ Masaüstündeki **STT** simgesine çift tıklayın (terminal açılmaz).
   *FPL presser.py* seçenekleri, sonra **Başlat**.
 - **Kuyruk:** her video için durum, ilerleme çubuğu, bulunan takım / maç / GW / maç öncesi-sonrası,
   hata olursa sebebi. *Metni göster*, *Klasörü aç*.
-- **Üst şerit:** her ekran kartının anlık durumu (boşta / çeviriyor / konuşmacı ayırıyor).
+- **Üst şerit:** her ekran kartının anlık durumu (boşta / çeviriyor / konuşmacı ayırıyor). Masaüstü için boş
+  bırakılan kart gri görünür.
+- **Durdur:** sıradaki ve çalışan bütün işleri durdurur; biten parçalar saklanır, aynı linki tekrar eklerseniz
+  kaldığı yerden devam eder.
 - **Veri seti:** Premier League › takım › maç ağacı, basın toplantısı/takım/maç sayıları, `index.csv`.
-- **Ayarlar:** veri seti klasörü, HuggingFace token, FPL repo klasörü, çerez tarayıcısı.
+- **Ayarlar:** veri seti klasörü, HuggingFace token, FPL repo klasörü, çerez tarayıcısı, ekran kartı kullanımı
+  (*Önerilen*: monitörün bağlı olmadığı kart — bilgisayar akıcı kalır; *Hepsi*: en hızlı).
 - Uygulama açılmazsa günlük: `%LOCALAPPDATA%\stt\stt_app.log`, ya da konsolda
   `C:\stt\.venv\Scripts\python.exe -m stt.gui`.
 
@@ -105,6 +109,13 @@ Akış:
 ---
 
 ## Kurulum (Windows 11)
+
+**Önerilen:** `dist/STT-Kurulum.exe` dosyasını çalıştırın. Yönetici izni istemez; Python, PyTorch, ffmpeg,
+deno ve modeli kendisi indirir (8 adım, ilerleme çubuğu ve Türkçe açıklamalarla). Yarıda kalırsa tekrar
+çalıştırın, biten adımlar atlanır. Ayrıntılı günlük: kurulum klasöründe `kurulum.log`.
+Smart App Control imzasız dosyayı engellerse: dosyaya sağ tık › Özellikler › *Engellemeyi kaldır*.
+
+**Elle kurulum (geliştirici):**
 
 Gerekenler: NVIDIA sürücüsü (CUDA 12.8 destekleyen, 570+), Python 3.11, internet.
 
@@ -353,9 +364,10 @@ stt.bat "https://www.youtube.com/watch?v=XXXX" --fpl 11 ARS
 - İndirme ve dönüştürme GPU'ları beklemeden sırada yapılır; bir sonraki video, önceki tanınırken iner.
 - Hata veren bir işin kuyrukta bekleyen parçaları iptal edilir.
 - `large-v3` float16 yaklaşık 3–4 GB VRAM kullanır. pyannote ile birlikte 3080'in 10 GB'ı yeter.
-- GPU seçimi: `--gpus 0,1` (varsayılan: hepsi), `--gpus 0` (yalnız 3090), `--gpus cpu`.
-  CUDA sıralaması "en hızlı önce" olduğu için 3090 = `cuda:0` olur. `stt kontrol` bunu doğrular.
-  (`nvidia-smi` PCI sırasını gösterir, farklı olabilir.)
+- GPU seçimi: varsayılan `auto` = monitörün bağlı olmadığı kart(lar) (bilgisayar, YouTube ve oyunlar akıcı kalır; tek kart varsa düşük yükle o kart). `--gpus all` = bütün kartlar (en hızlı), `--gpus 0,1`, `--gpus 0`, `--gpus cpu`. Tanıma süreçleri düşük öncelikte çalışır.
+  Kart numaraları `nvidia-smi` ile aynıdır (`CUDA_DEVICE_ORDER=PCI_BUS_ID`). Hangi kartın kullanıldığı ve
+  hangisinin boş bırakıldığı günlüğün başında yazar.
+- Takılan bir kart (görev çok uzun sürerse) ya da çöken bir işçi otomatik yeniden başlatılır; görev tekrar denenir.
 
 ---
 
@@ -413,7 +425,7 @@ Referans dosyası yerine klasörde `trans.txt` (`dosya_adı<TAB>metin` satırlar
 | `--compute-type` | float16 / int8_float16 / int8 | float16 |
 | `--beam-size` | Işın genişliği | 5 |
 | `--batch N` | Toplu boyut (0 = kapalı) | karta göre (16 / 8) |
-| `--gpus` | `auto`, `0,1`, `0`, `cpu` | auto |
+| `--gpus` | `auto` (monitörsüz kart), `all`, `0,1`, `0`, `cpu` | auto |
 | `--prompt` | Başlangıç istemi (isimler/terimler) | FPL takımına göre |
 | `--no-context` | Önceki metne koşullamayı kapat (tekrar döngüsü olursa) | kapalı |
 | `--split-min` / `--chunk-min` | Bölme eşiği / hedef parça (dk) | 8 / 5 |
@@ -440,9 +452,11 @@ Ayarların öncelik sırası: varsayılan < `stt.toml` < ortam değişkenleri (`
 
 | Belirti | Çözüm |
 |---|---|
+| Çeviri sırasında bilgisayar donuyor, YouTube/tarayıcı kapanıyor | Monitörün bağlı olduğu ekran kartı tam yükte kalıyordu. Artık varsayılan olarak o kart boş bırakılır (Ayarlar › Ekran kartı kullanımı › *Önerilen*). *Hepsi* seçiliyse *Önerilen*'e alın. |
+| Uygulama penceresi donuyor | 1.2'de düzeltildi: pencere takılsa da iş arka planda sürer. Günlük: `%LOCALAPPDATA%\stt\stt_app.log`. |
 | `Could not copy Chrome cookie database` / DPAPI hatası | Windows'ta Chrome açıkken ve yeni sürümlerdeki uygulamaya bağlı şifreleme yüzünden çerezler okunamayabilir. Chrome'u tamamen kapatın, ya da `--cookies-browser firefox` / `edge` deneyin, ya da bir uzantıyla `cookies.txt` dışa aktarıp `--cookies cookies.txt` verin. |
 | YouTube: `Sign in to confirm you're not a bot` | Çerezle tekrar denenir. Olmazsa yt-dlp'yi güncelleyin: `.venv\Scripts\python -m pip install -U "yt-dlp[default]"`. Deno kurulu mu bakın (`stt kontrol`). |
-| YouTube: `n challenge` / JS uyarısı | `winget install DenoLand.Deno`, ardından yeni terminal. |
+| YouTube: `n challenge` / JS uyarısı | Kurulumu (STT-Kurulum.exe) tekrar çalıştırın: deno'yu `tools\deno` klasörüne indirir. |
 | `cublas64_12.dll` / `cudnn_ops64_9.dll not found` | `install.bat`'ı yeniden çalıştırın (torch cu128 DLL'leri getirir). `stt kontrol --derin` ile doğrulayın. |
 | `CUDA out of memory` (3080) | `--compute-type int8_float16` ya da `--gpus 0`. |
 | Aynı cümle tekrar tekrar yazılıyor | `--no-context`. |

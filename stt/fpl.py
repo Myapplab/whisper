@@ -46,7 +46,17 @@ def run_fpl(repo: Path, gw: int, team: str, text: str, py: str | None) -> dict:
     rel = target.relative_to(repo).as_posix()
     cmd = python_cmd(py) + ["presser.py", rel]
     log.info("FPL: %s yazıldı -> %s", rel, " ".join(cmd))
-    r = subprocess.run(cmd, cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    try:  # stdin kapalı + zaman sınırı: presser.py girdi bekler ya da takılırsa sonraki işler beklemesin
+        r = subprocess.run(cmd, cwd=repo, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           stdin=subprocess.DEVNULL, timeout=600)
+    except subprocess.TimeoutExpired as e:
+        log.error("presser.py 10 dakikada bitmedi; durduruldu.")
+        out = e.stdout.decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+        return {"file": str(target), "cmd": cmd, "returncode": -1, "stdout": out[-5000:],
+                "stderr": "zaman aşımı (600 sn)"}
+    except OSError as e:
+        log.error("presser.py çalıştırılamadı: %s", e)
+        return {"file": str(target), "cmd": cmd, "returncode": -1, "stdout": "", "stderr": str(e)}
     if r.stdout.strip():
         log.info("presser.py çıktı:\n%s", r.stdout.strip()[-3000:])
     if r.returncode != 0:

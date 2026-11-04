@@ -97,25 +97,59 @@ class App:
         self._inbox: queue.Queue = queue.Queue()
         self._restart = threading.Event()
         self._stop = threading.Event()
-        self._engine_state = {"state": "starting", "devices": [], "error": None}
-        self._events: list[dict] = []          # pencere hazır olmadan gelen olaylar
+        self._engine_state = {"state": "starting", "devices": [], "spare": [], "error": None}
+        self._outbox: list[dict] = []          # JS'e gidecek olaylar (ayrı iş parçacığı gönderir)
         self._ready = False
         self._lock = threading.Lock()
+        self._wake = threading.Event()
+        self._sender_started = False
 
     # ---------------------------------------------------------- JS'e olay
+    MAX_OUTBOX = 3000
+
     def _push(self, ev: dict) -> None:
+        """Olayı kuyruğa koy ve HEMEN dön.
+
+        evaluate_js pencere iş parçacığını bekler; pencere (ya da ekran kartı) takılırsa doğrudan çağıran
+        indirme/motor iş parçacıkları da kilitlenirdi ve uygulama tamamen donardı. Artık yalnızca
+        _sender iş parçacığı bekler; iş arka planda sürer.
+        """
         if ev.get("type") == "worker":  # son durum: sayfa yeniden açılırsa GPU kartları doğru görünsün
             for d in self._engine_state.get("devices", []):
                 if d.get("wid") == ev.get("wid"):
                     d.update({k: ev.get(k) for k in ("state", "task", "title", "error")})
         with self._lock:
-            if not self._ready or self._window is None:
-                self._events.append(ev)
-                return
-        try:
-            self._window.evaluate_js(f"window.__stt && window.__stt.onEvent({json.dumps(ev, default=str)})")
-        except Exception:  # noqa: BLE001
-            pass
+            self._outbox.append(ev)
+            if len(self._outbox) > self.MAX_OUTBOX:  # pencere yanıt vermiyor: önce günlük satırlarını at
+                keep = [e for e in self._outbox if e.get("type") != "log"]
+                self._outbox = keep[-self.MAX_OUTBOX:]
+        self._wake.set()
+
+    def _take_batch(self) -> list[dict]:
+        with self._lock:
+            if not self._ready or self._window is None or not self._outbox:
+                return []
+            batch, self._outbox = self._outbox[:400], self._outbox[400:]
+        return batch
+
+    def _sender(self) -> None:
+        while not self._stop.is_set():
+            self._wake.wait(0.5)
+            self._wake.clear()
+            batch = self._take_batch()
+            while batch:
+                try:
+                    self._window.evaluate_js(
+                        f"window.__stt && window.__stt.onEvents({json.dumps(batch, default=str)})")
+                except Exception:  # noqa: BLE001
+                    pass
+                time.sleep(0.05)  # olayları toplu gönder: arayüz saniyede en fazla ~20 kez çizilir
+                batch = self._take_batch()
+
+    def _start_sender(self) -> None:
+        if not self._sender_started:
+            self._sender_started = True
+            threading.Thread(target=self._sender, name="arayuz", daemon=True).start()
 
     def _engine(self, **kw) -> None:
         self._engine_state.update(kw)
@@ -124,23 +158,29 @@ class App:
     # ---------------------------------------------------------- motor döngüsü
     def _runner(self) -> None:
         from .pipeline import Pipeline
-        from .engines import gpu_table
+        from .engines import gpu_info
         while not self._stop.is_set():
             self._restart.clear()
-            self._engine(state="loading", error=None, devices=[])
+            self._engine(state="loading", error=None, devices=[], spare=[])
             try:
                 self._pipe = Pipeline(self._cfg)
                 self._pipe.events = self._push
                 self._pipe.start()
-                gt = gpu_table()
+                gi = gpu_info()
                 devs = []
                 ds = self._pipe.devices or ["api"]
+                used = set()
                 for i, d in enumerate(ds):
-                    name, gb = ("CPU", 0) if d == "cpu" else ("OpenAI API", 0) if d == "api" else \
-                        gt.get(int(d.split(":")[1]), (d, 0))
+                    g = {"name": "CPU", "gb": 0} if d == "cpu" else {"name": "OpenAI API", "gb": 0} if d == "api" \
+                        else gi.get(int(d.split(":")[1]), {"name": d, "gb": 0})
+                    if d.startswith("cuda"):
+                        used.add(int(d.split(":")[1]))
                     wid = d if ds.count(d) == 1 else f"{d}#{i}"
-                    devs.append({"wid": wid, "name": name, "gb": round(gb)})
-                self._engine(state="ready", devices=devs)
+                    devs.append({"wid": wid, "name": g["name"], "gb": round(g["gb"]), "display": bool(g.get("display"))})
+                spare = [{"name": g["name"], "gb": round(g["gb"]), "display": bool(g.get("display"))}
+                         for i, g in sorted(gi.items()) if i not in used and self._pipe.devices
+                         and self._pipe.devices[0] != "api"]
+                self._engine(state="ready", devices=devs, spare=spare)
             except Exception as e:  # noqa: BLE001
                 log.exception("Motor başlatılamadı")
                 self._engine(state="error", error=f"{type(e).__name__}: {e}")
@@ -172,9 +212,11 @@ class App:
     def hello(self) -> dict:
         with self._lock:
             self._ready = True
-            pending, self._events = self._events, []
-        for ev in pending[-300:]:
-            self._push(ev)
+            # sayfa (yeniden) açıldı: birikmiş günlük satırlarından yalnızca son 300'ü
+            logs = [e for e in self._outbox if e.get("type") == "log"][-300:]
+            self._outbox = [e for e in self._outbox if e.get("type") != "log" and e.get("type") != "engine"] + logs
+        self._start_sender()
+        self._wake.set()
         return {"version": __version__, "settings": self.get_settings(), "engine": self._engine_state,
                 "dataset": self.dataset()}
 
@@ -183,7 +225,8 @@ class App:
         return {"out_dir": str(Path(c.out_dir).resolve()), "hf_token_set": bool(c.hf_token),
                 "fpl_repo": str(c.fpl_repo or ""), "fpl_ok": bool(c.fpl_repo and (Path(c.fpl_repo) / "presser.py").is_file()),
                 "cookies_browser": c.cookies_browser or "none", "lang": c.lang or "auto", "diarize": bool(c.diarize),
-                "fpl_auto": bool(c.fpl_auto), "gpus": c.gpus}
+                "fpl_auto": bool(c.fpl_auto), "gpus": "all" if (c.gpus or "").lower() == "all" else
+                "auto" if (c.gpus or "auto").lower() == "auto" else c.gpus}
 
     def save_settings(self, s: dict) -> dict:
         upd = {}
@@ -200,10 +243,12 @@ class App:
                 upd[k] = bool(s[k])
         if s.get("lang"):
             upd["lang"] = s["lang"]
+        if s.get("gpus") in ("auto", "all"):
+            upd["gpus"] = s["gpus"]
         save_settings(upd)
-        old = (str(self._cfg.out_dir), self._cfg.hf_token)
+        old = (str(self._cfg.out_dir), self._cfg.hf_token, self._cfg.gpus)
         self._cfg = load_config()
-        if (str(self._cfg.out_dir), self._cfg.hf_token) != old:
+        if (str(self._cfg.out_dir), self._cfg.hf_token, self._cfg.gpus) != old:
             self._restart.set()  # işler bitince motor yeni ayarlarla açılır
         return self.get_settings()
 
@@ -229,9 +274,12 @@ class App:
                 inputs.append(line)
         inputs += [p for p in (paths or []) if p]
         items = expand_inputs(inputs)
+        import uuid
         for it in items:
+            it.extra.setdefault("uid", uuid.uuid4().hex[:10])
             it.extra.update({"lang": opts.get("lang") or "auto", "diarize": bool(opts.get("diarize")),
                              "fpl_auto": bool(opts.get("fpl_auto"))})
+            self._push({"type": "queued", "uid": it.extra["uid"], "source": it.source, "title": it.title})
             self._inbox.put(it)
         warn = None
         if opts.get("diarize") and not self._cfg.hf_token:
@@ -253,6 +301,21 @@ class App:
 
     def retry_engine(self) -> None:
         self._restart.set()
+
+    def cancel_all(self) -> dict:
+        """Sıradaki ve çalışan bütün işleri durdur."""
+        n = 0
+        while True:  # henüz motora geçmemiş işler
+            try:
+                it = self._inbox.get_nowait()
+            except queue.Empty:
+                break
+            n += 1
+            self._push({"type": "failed", "uid": it.extra.get("uid"), "source": it.source, "title": it.title,
+                        "error": "Durduruldu.", "cancelled": True})
+        if self._pipe is not None:
+            n += self._pipe.cancel_all()
+        return {"count": n}
 
     def dataset(self) -> dict:
         root = Path(self._cfg.out_dir).resolve()
@@ -301,7 +364,49 @@ def _hide_child_consoles() -> None:
     subprocess.Popen.__init__ = init
 
 
+def _single_instance() -> bool:
+    """Windows: uygulama zaten açıksa False. İki kopya iki kez model yükler (RAM/VRAM biter, bilgisayar donar)."""
+    if sys.platform != "win32":
+        return True
+    try:
+        import ctypes
+        k32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        _single_instance.handle = k32.CreateMutexW(None, False, "Local\\STT-Basin-Odasi")  # type: ignore[attr-defined]
+        if k32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+            ctypes.windll.user32.MessageBoxW(  # type: ignore[attr-defined]
+                None, "STT zaten açık. Görev çubuğundaki STT penceresini kullanın.\n\n"
+                "Pencere görünmüyorsa birkaç saniye bekleyip tekrar deneyin.", "STT - Basın Odası", 0x40)
+            return False
+    except Exception:  # noqa: BLE001
+        pass
+    return True
+
+
+def _shutdown(app: "App") -> None:
+    """Pencere kapandı: GPU işçilerini durdur ve süreci HEMEN bitir.
+
+    Yarım kalan indirme iş parçacıkları normal çıkışı dakikalarca bekletirdi; o sırada uygulama yeniden
+    açılınca iki kopya aynı anda ekran kartına model yüklüyordu.
+    """
+    app._stop.set()
+    app._restart.set()
+    pipe = app._pipe
+    try:
+        if pipe is not None and pipe.pool is not None and not pipe.pool.threads:
+            for w in pipe.pool.workers.values():
+                if w.is_alive():
+                    w.terminate()
+            for w in pipe.pool.workers.values():
+                w.join(3)
+    except Exception:  # noqa: BLE001
+        pass
+    logging.shutdown()
+    os._exit(0)
+
+
 def main() -> int:
+    if not _single_instance():
+        return 0
     os.chdir(TOOL_DIR)  # göreli 'cikti' klasörü hep C:\stt\cikti olsun
     logpath = _redirect_std()
     _hide_child_consoles()
@@ -346,8 +451,7 @@ def main() -> int:
     app._window.events.loaded += on_loaded
     threading.Thread(target=app._runner, name="motor", daemon=True).start()
     webview.start(debug=bool(os.environ.get("STT_DEBUG")))
-    app._stop.set()
-    time.sleep(0.5)
+    _shutdown(app)
     return 0
 
 

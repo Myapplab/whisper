@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .audio import plan_chunks
 from .config import Config
-from .fetch import DRMProtected, SkipItem, prepare_audio
+from .fetch import DRMProtected, FetchError, SkipItem, prepare_audio
 from .merge import apply_labels, assign_speakers, label_speakers, merge_chunks
 from .outputs import to_txt, write_all
 from .sources import Item
@@ -66,9 +66,10 @@ def item_fpl(item: Item, cfg: Config) -> tuple[int, str] | None:
     return None
 
 
-def detect_devices(spec: str) -> list[str]:
+def detect_devices(spec: str, info: dict | None = None) -> list[str]:
+    """spec: "auto" (monitörsüz kart(lar)) | "all" | "0,1" | "cuda:0" | "cpu" | "cpu,cpu" (test)."""
     spec = (spec or "auto").strip().lower()
-    if spec != "auto":  # "0,1" | "cuda:0,cuda:1" | "cpu" | "cpu,cpu" (test)
+    if spec not in ("auto", "all", "hepsi", "tum", "tümü"):
         out = []
         for x in spec.replace("cuda:", "").split(","):
             x = x.strip()
@@ -82,7 +83,10 @@ def detect_devices(spec: str) -> list[str]:
         n = ctranslate2.get_cuda_device_count()
     except Exception:  # noqa: BLE001
         n = 0
-    return [f"cuda:{i}" for i in range(n)] or ["cpu"]
+    if n == 0:
+        return ["cpu"]
+    from .engines import choose_gpus
+    return [f"cuda:{i}" for i in choose_gpus(n, info or {}, "auto" if spec == "auto" else "all")]
 
 
 class Pipeline:
@@ -94,7 +98,7 @@ class Pipeline:
         self.lock = threading.RLock()
         self.prep = ThreadPoolExecutor(max_workers=max(1, cfg.prep_workers), thread_name_prefix="hazirlik")
         self.fin = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cikti")
-        self.inflight: dict[str, str] = {}   # wid -> tid
+        self.inflight: dict[str, tuple[str, float]] = {}   # wid -> (tid, başlama zamanı)
         self.tasks: dict[str, dict] = {}     # tid -> task
         self.pool: WorkerPool | None = None
         self.devices: list[str] = []
@@ -104,7 +108,11 @@ class Pipeline:
         self.results: list[Job] = []
         self._pending_futs = 0
         self.backlog: deque = deque()        # ortak kuyruk; boşta işçi oldukça dağıtılır
-        self.idle = 0
+        self.idle: set[str] = set()          # boşta olduğunu bildiren işçiler
+        self.queued_n = 0                    # işçi kuyruğuna konup henüz alınmamış görev sayısı
+        self.fatal: set[str] = set()         # model yükleyemeyen işçiler (yeniden başlatılmaz)
+        self.restarts: dict[str, int] = {}   # işçi -> yeniden başlatma sayısı
+        self.cancel_gen = 0                  # "Durdur": bu sayıdan önce gönderilen işler iptal
 
     # ---------------------------------------------------------- başlatma
     def start(self):
@@ -118,17 +126,25 @@ class Pipeline:
             self.pool = WorkerPool(devices, ecfg, threads=True)
         else:
             os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"  # cuda:N == nvidia-smi N
-            if os.environ.get("CUDA_VISIBLE_DEVICES") and (cfg.gpus or "auto") == "auto":
-                log.info("CUDA_VISIBLE_DEVICES=%s kaldırıldı (tüm kartlar kullanılacak).", os.environ.pop("CUDA_VISIBLE_DEVICES"))
-            devices = detect_devices(cfg.gpus)
+            if os.environ.get("CUDA_VISIBLE_DEVICES") and (cfg.gpus or "auto").lower() in ("auto", "all"):
+                log.info("CUDA_VISIBLE_DEVICES=%s kaldırıldı (kart seçimini uygulama yapar).",
+                         os.environ.pop("CUDA_VISIBLE_DEVICES"))
+            from .engines import gpu_info
+            gi = gpu_info()
+            devices = detect_devices(cfg.gpus, gi)
             self.devices = devices
-            from .engines import gpu_table
-            gt = gpu_table()
-            ecfg["gpu_mem"] = {i: gb for i, (_, gb) in gt.items()}
-            for d in devices:
-                if d.startswith("cuda") and int(d.split(":")[1]) in gt:
-                    name, gb = gt[int(d.split(":")[1])]
-                    log.info("%s = %s (%.0f GB)", d, name, gb)
+            ecfg["gpu_mem"] = {i: g["gb"] for i, g in gi.items()}
+            ecfg["display_gpus"] = [i for i, g in gi.items() if g.get("display")]
+            ecfg["display_batch"] = cfg.display_batch
+            ecfg["low_priority"] = cfg.low_priority
+            used = {int(d.split(":")[1]) for d in devices if d.startswith("cuda")}
+            for i, g in sorted(gi.items()):
+                mon = " [monitör bağlı]" if g.get("display") else ""
+                state = "kullanılıyor" if i in used else "BOŞ bırakıldı (masaüstü/tarayıcı için)"
+                log.info("cuda:%d = %s (%.0f GB)%s -> %s", i, g["name"], g["gb"], mon, state)
+            if any(i in ecfg["display_gpus"] for i in used):
+                log.info("Monitörün bağlı olduğu kart kullanılıyor: toplu boyut en fazla %d (bilgisayar akıcı kalsın).",
+                         cfg.display_batch)
             if all(d == "cpu" for d in devices):
                 log.warning("CUDA GPU bulunamadı -> CPU (int8) ile çalışılacak (yavaş).")
             log.info("Model hazırlanıyor: %s", cfg.model)
@@ -161,6 +177,7 @@ class Pipeline:
     def submit(self, item: Item) -> None:
         import uuid
         item.extra.setdefault("uid", uuid.uuid4().hex[:10])
+        item.extra["_gen"] = self.cancel_gen
         self.emit("queued", item)
         self._pending_futs += 1
         self.prep.submit(self._prepare_safe, item)
@@ -170,7 +187,9 @@ class Pipeline:
             self._prepare(item)
         except Exception as e:  # noqa: BLE001
             log.exception("Hazırlık hatası: %s", item.source)
-            self._fail_item(item, f"{type(e).__name__}: {e}")
+            from .fetch import explain_error
+            err = explain_error(str(e)) if isinstance(e, FetchError) else f"{type(e).__name__}: {e}"
+            self._fail_item(item, err)
         finally:
             with self.lock:
                 self._pending_futs -= 1
@@ -186,8 +205,14 @@ class Pipeline:
             self.state.set(item.key, source=item.source, status=status, title=item.title, error=err)
         self.emit("failed" if status == "failed" else "skipped", item, status=status, error=err)
 
+    def _cancelled(self, item: Item) -> bool:
+        return item.extra.get("_gen", 0) < self.cancel_gen
+
     def _prepare(self, item: Item):
         cfg = self.cfg
+        if self._cancelled(item):
+            self.emit("failed", item, error="Durduruldu.", cancelled=True)
+            return
         if item.kind == "file" and not item.key:
             item.key = self.state.file_key(item.source, item.compute_key)
         item.compute_key()
@@ -206,7 +231,8 @@ class Pipeline:
                       json=(prev.get("info") or {}).get("json") if prev else None)
             return
         with self.lock:
-            if item.key in self.jobs and self.jobs[item.key].status not in ("done", "failed", "skipped"):
+            if item.key in self.jobs and self.jobs[item.key].status in ("queued", "prep", "run", "finalize"):
+                self.emit("skipped", item, status="duplicate", error="Bu video zaten sırada / işleniyor.")
                 return
         job = Job(item, self.out_root / ".stt" / "is" / item.key[:18], status="prep")
         with self.lock:
@@ -216,6 +242,12 @@ class Pipeline:
         self.emit("prep", item)
         try:
             job.wav, job.info = prepare_audio(item, job.work, cfg)
+            if self._cancelled(item):
+                with self.lock:
+                    job.status = "cancelled"
+                self.state.set(item.key, source=item.source, status="cancelled", title=item.title)
+                self.emit("failed", item, error="Durduruldu.", cancelled=True)
+                return
         except DRMProtected as e:
             log.warning("ATLANDI (DRM): %s", e)
             self._fail_item(item, str(e), status="drm")
@@ -288,6 +320,10 @@ class Pipeline:
         job.done_chunks = done_before
         self.emit("progress", item, done=done_before, total=len(chunks), meta=job.match)
         with self.lock:
+            if self._cancelled(item):
+                job.status = "cancelled"
+                self.emit("failed", item, error="Durduruldu.", cancelled=True)
+                return
             job.pending = {t["id"] for t in tasks}
             job.status = "run"
             for t in tasks:
@@ -308,27 +344,31 @@ class Pipeline:
 
     def _dispatch(self):
         with self.lock:
-            while self.idle > 0 and self.backlog:
+            while len(self.idle) - self.queued_n > 0 and self.backlog:
                 t = self.backlog.popleft()
                 job = self.jobs.get(t["job"])
                 if not job or job.status != "run":
                     continue  # iş iptal/başarısız: görevi at
-                self.idle -= 1
+                self.queued_n += 1
                 self.pool.put(t)
 
     def _on_msg(self, m: dict):
         typ, wid = m["type"], m.get("wid")
         if typ == "ready":
-            self.idle += 1
+            self.idle.add(wid)
             self.emit("worker", wid=wid, state="idle")
             return
         if typ == "fatal":
+            self.fatal.add(wid)
+            self.idle.discard(wid)
             self.emit("worker", wid=wid, state="error", error=m["error"])
             log.error("[%s] işçi başlatılamadı: %s", wid, m["error"])
             log.debug(m.get("trace", ""))
             return
         if typ == "start":
-            self.inflight[wid] = m["tid"]
+            self.inflight[wid] = (m["tid"], time.time())
+            self.idle.discard(wid)
+            self.queued_n = max(0, self.queued_n - 1)
             t = self.tasks.get(m["tid"]) or {}
             j = self.jobs.get(t.get("job", ""))
             self.emit("worker", wid=wid, state="busy", task=t.get("kind"),
@@ -336,12 +376,18 @@ class Pipeline:
             return
         tid = m["tid"]
         self.inflight.pop(wid, None)
-        self.idle += 1
+        self.idle.add(wid)
         self.emit("worker", wid=wid, state="idle")
         task = self.tasks.get(tid)
         if not task:
             return
         job = self.jobs.get(task["job"])
+        if job and job.status == "cancelled" and typ == "done" and task["kind"] == "transcribe" \
+                and (job.work / "parcalar").is_dir():
+            # durdurulan iş: biten parçayı sakla, tekrar başlatınca kaldığı yerden devam eder
+            (job.work / "parcalar" / f"{task['idx']:04d}.json").write_text(
+                json.dumps(m["payload"], ensure_ascii=False), encoding="utf-8")
+            return
         if not job or job.status != "run":
             return
         if typ == "error":
@@ -383,22 +429,59 @@ class Pipeline:
         if not job.pending:
             self._finalize_async(job)
 
+    def _task_timeout(self, task: dict) -> float:
+        """Takılma sınırı (sn): GPU kilitlenirse işçi yeniden başlatılır."""
+        if task.get("kind") == "diarize":
+            job = self.jobs.get(task.get("job", ""))
+            dur = (job.info.get("duration_s", 0) if job else 0) or 3600
+            return max(1800.0, 3 * dur)
+        return max(900.0, 8 * (task.get("end", 0) - task.get("start", 0)))
+
+    def _requeue(self, wid: str, tid: str, why: str) -> None:
+        task = self.tasks.get(tid)
+        job = self.jobs.get(task["job"]) if task else None
+        if not (task and job and job.status == "run"):
+            return
+        n = job.attempts.get(tid, 0) + 1
+        job.attempts[tid] = n
+        log.error("[%s] %s; görev yeniden kuyrukta (deneme %d)", wid, why, n)
+        if n < 3:
+            with self.lock:
+                self.backlog.appendleft(task)
+        else:
+            self._on_msg({"type": "error", "wid": wid, "tid": tid, "error": f"{why} (3 deneme)"})
+            self.idle.discard(wid)
+
     def _health(self):
         if not self.pool:
             return
+        now = time.time()
+        for wid, (tid, t0) in list(self.inflight.items()):  # takılan görev: işçiyi yeniden başlat
+            task = self.tasks.get(tid) or {}
+            if task and now - t0 > self._task_timeout(task) and wid in self.pool.alive():
+                log.error("[%s] görev %.0f dakikadır bitmedi (GPU takıldı?); işçi yeniden başlatılıyor", wid,
+                          (now - t0) / 60)
+                self.pool.respawn(wid)
+                self.restarts[wid] = self.restarts.get(wid, 0) + 1
+                self.inflight.pop(wid, None)
+                self._requeue(wid, tid, "işçi takıldı")
+                self.idle.discard(wid)
+                self.emit("worker", wid=wid, state="loading")
         alive = set(self.pool.alive())
-        for wid in list(self.inflight):
-            if wid not in alive:  # işçi çöktü: görevi yeniden kuyruğa koy
-                tid = self.inflight.pop(wid)
-                task = self.tasks.get(tid)
-                job = self.jobs.get(task["job"]) if task else None
-                if task and job and job.status == "run":
-                    n = job.attempts.get(tid, 0) + 1
-                    job.attempts[tid] = n
-                    log.error("[%s] işçi öldü; görev yeniden kuyrukta (deneme %d)", wid, n)
-                    if n < 3:
-                        with self.lock:
-                            self.backlog.appendleft(task)
+        for wid in list(self.pool.workers):
+            if wid in alive:
+                continue
+            self.idle.discard(wid)
+            if wid in self.inflight:  # işçi çöktü: görevi yeniden kuyruğa koy
+                tid, _ = self.inflight.pop(wid)
+                self._requeue(wid, tid, "işçi öldü")
+                self.idle.discard(wid)
+            if wid not in self.fatal and self.restarts.get(wid, 0) < 3 and not self.pool.threads:
+                self.restarts[wid] = self.restarts.get(wid, 0) + 1
+                log.warning("[%s] işçi yeniden başlatılıyor (%d/3)", wid, self.restarts[wid])
+                self.pool.respawn(wid)
+                self.emit("worker", wid=wid, state="loading")
+                alive.add(wid)
         if not alive and self.active():
             for job in list(self.jobs.values()):
                 if job.status in ("run", "prep", "queued"):
@@ -565,6 +648,24 @@ class Pipeline:
                  doc["language"], f", {len(speakers)} konuşmacı" if speakers else "")
         if not cfg.keep_audio:
             shutil.rmtree(job.work, ignore_errors=True)
+
+    # ---------------------------------------------------------- durdurma
+    def cancel_all(self) -> int:
+        """Sıradaki ve çalışan bütün işleri durdur. Biten parçalar saklanır (tekrar eklenince devam eder)."""
+        n = 0
+        with self.lock:
+            self.cancel_gen += 1
+            self.backlog.clear()
+            for job in self.jobs.values():
+                if job.status in ("queued", "prep", "run"):
+                    job.status, job.error = "cancelled", "Durduruldu."
+                    n += 1
+                    if job.item.key:
+                        self.state.set(job.item.key, source=job.item.source, status="cancelled",
+                                       title=job.item.title)
+                    self.emit("failed", job.item, error="Durduruldu.", cancelled=True)
+        log.warning("Durduruldu: %d iş. Çalışan parça bitince işçiler boşa çıkar.", n)
+        return n
 
     # ---------------------------------------------------------- bekleme
     def active(self) -> bool:

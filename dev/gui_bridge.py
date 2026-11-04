@@ -9,7 +9,7 @@ def main():
     events = queue.Queue()
     class FakeWindow:
         def evaluate_js(self, js):
-            m = re.search(r"onEvent\((.*)\)\s*$", js, re.S)
+            m = re.search(r"onEvents?\((.*)\)\s*$", js, re.S)
             if m: events.put(m.group(1))
     app = g.App(); app._window = FakeWindow()
     log.setLevel(logging.INFO); log.addHandler(g._UiLogHandler(app))
@@ -18,7 +18,7 @@ def main():
     html = g.HTML_PATH.read_text(encoding="utf-8")
     SHIM = """<script>
     window.pywebview = {api: new Proxy({}, {get: (_, n) => (...a) => fetch('/api/' + n, {method: 'POST', body: JSON.stringify(a)}).then(r => r.json())})};
-    const es = new EventSource('/events'); es.onmessage = e => window.__stt && window.__stt.onEvent(JSON.parse(e.data));
+    const es = new EventSource('/events'); es.onmessage = e => { const d = JSON.parse(e.data); window.__stt && (Array.isArray(d) ? window.__stt.onEvents(d) : window.__stt.onEvent(d)); };
     </script>"""
     html = html.replace("<script>\n(() => {", SHIM + "\n<script>\n(() => {", 1)
     class H(BaseHTTPRequestHandler):

@@ -47,7 +47,9 @@ def to_wav16k(src: str, dst: Path, headers: dict | None = None) -> Path:
         cmd += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10"]
     cmd += ["-i", src, "-vn", "-sn", "-dn", "-map", "0:a:0?", "-ac", "1", "-ar", "16000",
             "-c:a", "pcm_s16le", "-f", "wav", str(tmp)]
-    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    # düşük öncelik: dönüştürme sırasında bilgisayar akıcı kalsın
+    kw = {"creationflags": 0x00004000 | 0x08000000} if os.name == "nt" else {}  # BELOW_NORMAL | NO_WINDOW
+    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", **kw)
     if r.returncode != 0 or not tmp.exists() or tmp.stat().st_size <= 44:
         tmp.unlink(missing_ok=True)
         err = (r.stderr or "").strip()[-800:]
@@ -100,6 +102,35 @@ def needs_cookies(msg: str) -> bool:
     return any(h in m for h in _LOGIN_HINTS)
 
 
+def explain_error(msg: str) -> str:
+    """İndirme hatasını kullanıcının anlayacağı Türkçe bir cümleye çevir (orijinali kısaltılmış eklenir)."""
+    m = (msg or "").lower()
+    hints = [
+        (("ffmpeg bulunamadı",), "ffmpeg bulunamadı. Kurulumu (STT-Kurulum.exe) tekrar çalıştırın."),
+        (("not a bot", "confirm you", "sign in to confirm"),
+         "YouTube bot doğrulaması istedi. Ayarlar'da çerez tarayıcısını seçin (YouTube'a giriş yaptığınız "
+         "tarayıcı) ve o tarayıcıyı kapatıp tekrar deneyin."),
+        (("private video", "members-only", "join this channel"), "Video gizli ya da yalnızca üyelere açık."),
+        (("video unavailable", "this content isn't available", "has been removed", "http error 404"),
+         "Video bulunamadı ya da kaldırılmış."),
+        (("live event will begin", "premieres in", "is_upcoming"), "Yayın henüz başlamadı."),
+        (("dpapi", "could not copy chrome cookie", "failed to decrypt", "cookie"),
+         "Tarayıcı çerezleri okunamadı. Chrome'u tamamen kapatıp tekrar deneyin ya da Ayarlar'dan Firefox/Edge seçin."),
+        (("n challenge", "signature", "js runtime", "jsc", "deno"),
+         "YouTube çözücüsü çalışmadı (deno). Kurulumu tekrar çalıştırın; olmazsa yt-dlp güncellenmeli."),
+        (("timed out", "connection", "getaddrinfo", "network", "temporary failure", "ssl"),
+         "İnternet bağlantısı sorunu. Bağlantıyı kontrol edip tekrar deneyin."),
+        (("unsupported url", "m3u8/mp4 linki bulunamadı"), "Bu sayfada indirilebilir video bulunamadı."),
+        (("http error 403", "http error 401", "login", "log in", "registered users"),
+         "Site giriş istiyor. Ayarlar'da çerez tarayıcısını seçin (siteye giriş yaptığınız tarayıcı)."),
+    ]
+    for keys, text in hints:
+        if any(k in m for k in keys):
+            short = (msg or "").strip().splitlines()[-1][:180] if msg else ""
+            return f"{text}  (ayrıntı: {short})" if short else text
+    return (msg or "Bilinmeyen hata")[:400]
+
+
 # ---------------------------------------------------------------- yt-dlp
 
 class _QuietLogger:
@@ -135,7 +166,13 @@ def _ytdlp_opts(workdir: Path, extra: dict) -> dict:
         "http_headers": {"User-Agent": UA},
         "allow_unplayable_formats": False,
     }
-    rts = {n: {} for n in ("deno", "node", "bun", "quickjs") if which("qjs" if n == "quickjs" else n)}
+    rts = {}
+    for n in ("deno", "node", "bun", "quickjs"):
+        exe = which("qjs" if n == "quickjs" else n)
+        if exe:
+            rts[n] = {"path": exe}
+    if not rts:
+        log.warning("deno bulunamadı: YouTube videoları indirilemeyebilir (kurulumu tekrar çalıştırın).")
     opts["js_runtimes"] = rts or {"deno": {}}
     opts.update(extra)
     return opts

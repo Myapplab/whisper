@@ -205,9 +205,9 @@ footer.open #log{display:block}
 
   <!-- KUYRUK -->
   <section class="panel" aria-labelledby="h-q">
-    <div class="ph"><h2 id="h-q">Kuyruk</h2><span class="count" id="qcount"></span><button class="linkbtn" id="btnClear" type="button">Bitenleri temizle</button></div>
+    <div class="ph"><h2 id="h-q">Kuyruk</h2><span class="count" id="qcount"></span><button class="linkbtn" id="btnStop" type="button" title="Sıradaki ve çalışan işleri durdurur; biten parçalar saklanır">Durdur</button><button class="linkbtn" id="btnClear" type="button">Bitenleri temizle</button></div>
     <div class="pb" id="queue">
-      <div class="empty" id="qempty"><b>Henüz iş yok</b>Soldan link yapıştırın ya da video ekleyin, sonra Başlat'a basın. İki ekran kartı aynı anda çalışır.</div>
+      <div class="empty" id="qempty"><b>Henüz iş yok</b>Soldan link yapıştırın ya da video ekleyin, sonra Başlat'a basın.</div>
     </div>
   </section>
 
@@ -246,9 +246,12 @@ footer.open #log{display:block}
         <span class="hint" id="sFplState"></span></div>
       <div class="field"><label for="sCookie">Giriş isteyen siteler için çerez tarayıcısı</label>
         <select id="sCookie"><option value="chrome">Chrome</option><option value="edge">Edge</option><option value="firefox">Firefox</option><option value="brave">Brave</option><option value="none">Kullanma</option></select></div>
+      <div class="field"><label for="sGpu">Ekran kartı kullanımı</label>
+        <select id="sGpu"><option value="auto">Önerilen: monitörün bağlı olmadığı kart (bilgisayar akıcı kalır)</option><option value="all">Hepsi: en hızlı (YouTube, oyun ve masaüstü takılabilir)</option></select>
+        <span class="hint">Tek ekran kartı varsa düşük yükle çalışır. Değişiklik, sıradaki işler bitince uygulanır.</span></div>
     </div>
     <div class="startbar"><button class="btn primary" id="sSave" type="button">Kaydet</button>
-      <span class="hint">Klasör ya da token değişirse motor, sıradaki işler bitince yeni ayarlarla yeniden açılır.</span></div>
+      <span class="hint">Klasör, token ya da ekran kartı ayarı değişirse motor, sıradaki işler bitince yeni ayarlarla yeniden açılır.</span></div>
   </div>
 </div>
 
@@ -359,7 +362,13 @@ footer.open #log{display:block}
       q.append(card);
     }
   }
-  $("#btnClear").onclick = () => { for (const [k, j] of state.jobs) if (j.kind === "ok" || j.kind === "") if (j.status !== "Sırada") state.jobs.delete(k); renderQueue(); };
+  $("#btnClear").onclick = () => { for (const [k, j] of state.jobs) if (j.kind === "ok" || j.kind === "warn" || j.kind === "err") state.jobs.delete(k); renderQueue(); };
+  $("#btnStop").onclick = async () => {
+    const busy = [...state.jobs.values()].some(j => j.kind === "busy" || j.status === "Sırada");
+    if (!busy) { toast("Çalışan iş yok."); return; }
+    if (!confirm("Sıradaki ve çalışan bütün işler durdurulsun mu? Biten parçalar saklanır; aynı linki tekrar eklerseniz kaldığı yerden devam eder.")) return;
+    const r = await call("cancel_all"); if (r) toast(r.count + " iş durduruldu.");
+  };
 
   // ---------- GPU şeridi
   function renderGpus(engine) {
@@ -369,10 +378,14 @@ footer.open #log{display:block}
         el("span", { class: "what" }, engine.state === "error" ? "Motor hatası" : "Model yükleniyor… (ilk açılışta 1-2 dk)")));
       return;
     }
+    for (const sp of (state.spare || [])) {
+      g.append(el("div", { class: "gpu", title: "Bu kart masaüstü, tarayıcı ve oyunlar için boş bırakıldı (Ayarlar › Ekran kartı kullanımı)" }, el("i", { class: "dot", style: "background:var(--muted)" }),
+        el("b", {}, sp.name), sp.gb ? el("span", { class: "mono" }, sp.gb + " GB") : null, el("span", { class: "what" }, sp.display ? "monitör · boş bırakıldı" : "boş bırakıldı")));
+    }
     for (const [wid, d] of state.gpus) {
-      const label = d.state === "busy" ? (d.task === "diarize" ? "konuşmacı ayırıyor · " : "çeviriyor · ") + (d.title || "") : d.state === "error" ? "hata" : d.state === "idle" ? "boşta" : "yükleniyor…";
+      const label = d.state === "loading" ? "yeniden başlatılıyor…" : d.state === "busy" ? (d.task === "diarize" ? "konuşmacı ayırıyor · " : "çeviriyor · ") + (d.title || "") : d.state === "error" ? "hata" : d.state === "idle" ? "boşta" : "yükleniyor…";
       g.append(el("div", { class: "gpu " + (d.state || ""), title: d.error || "" }, el("i", { class: "dot" }),
-        el("b", {}, d.name || wid), d.gb ? el("span", { class: "mono" }, d.gb + " GB") : null, el("span", { class: "what" }, label)));
+        el("b", {}, d.name || wid), d.display ? el("span", { class: "mono", title: "Monitör bu karta bağlı: düşük yükle çalışır" }, "monitör") : null, d.gb ? el("span", { class: "mono" }, d.gb + " GB") : null, el("span", { class: "what" }, label)));
     }
   }
 
@@ -430,7 +443,7 @@ footer.open #log{display:block}
   // ---------- ayarlar
   function fillSettings(s) {
     state.settings = s;
-    $("#sOut").value = s.out_dir || ""; $("#sFpl").value = s.fpl_repo || ""; $("#sCookie").value = s.cookies_browser || "chrome";
+    $("#sOut").value = s.out_dir || ""; $("#sFpl").value = s.fpl_repo || ""; $("#sCookie").value = s.cookies_browser || "chrome"; $("#sGpu").value = s.gpus === "all" ? "all" : "auto";
     $("#sHf").value = ""; $("#sHfState").textContent = s.hf_token_set ? "Token kayıtlı." : "Token yok: soru–cevap ayrımı yapılamaz.";
     $("#sFplState").textContent = s.fpl_repo ? (s.fpl_ok ? "presser.py bulundu." : "Bu klasörde presser.py yok.") : "";
     updateNote();
@@ -439,7 +452,7 @@ footer.open #log{display:block}
   $("#sOutPick").onclick = async () => { const r = await call("pick_folder"); if (r) $("#sOut").value = r; };
   $("#sFplPick").onclick = async () => { const r = await call("pick_folder"); if (r) $("#sFpl").value = r; };
   $("#sSave").onclick = async () => {
-    const s = await call("save_settings", { out_dir: $("#sOut").value, hf_token: $("#sHf").value, fpl_repo: $("#sFpl").value, cookies_browser: $("#sCookie").value });
+    const s = await call("save_settings", { out_dir: $("#sOut").value, hf_token: $("#sHf").value, fpl_repo: $("#sFpl").value, cookies_browser: $("#sCookie").value, gpus: $("#sGpu").value });
     if (s) { fillSettings(s); toast("Ayarlar kaydedildi."); $("#mSettings").classList.remove("show"); refreshDataset(); }
   };
   document.querySelectorAll("[data-close]").forEach(b => b.onclick = () => b.closest(".modal").classList.remove("show"));
@@ -458,9 +471,12 @@ footer.open #log{display:block}
       case "log": {
         const line = el("div", { class: ev.level }, ev.text); const log = $("#log"); log.append(line);
         while (log.childElementCount > 600) log.firstChild.remove();
-        log.scrollTop = log.scrollHeight; $("#lastLog").textContent = ev.text; return;
+        $("#lastLog").textContent = ev.text;
+        if (!onEvent._scroll) onEvent._scroll = requestAnimationFrame(() => { onEvent._scroll = 0; log.scrollTop = log.scrollHeight; });
+        return;
       }
       case "engine":
+        if (ev.state === "ready") state.spare = ev.spare || [];
         if (ev.state === "ready") { const old = new Map(state.gpus); state.gpus.clear(); for (const d of ev.devices || []) state.gpus.set(d.wid, { ...d, state: d.state || (old.get(d.wid) || {}).state || "loading" }); }
         if (ev.state === "error") { $("#bannerText").textContent = "Motor başlatılamadı: " + (ev.error || ""); $("#banner").classList.add("show"); }
         renderGpus(ev); return;
@@ -490,10 +506,15 @@ footer.open #log{display:block}
       if (ev.out_dir) j.out_dir = ev.out_dir;
       if (ev.error && ev.status !== "done_before") j.error = ev.error;
     }
-    if (ev.type === "failed") { j.kind = "err"; j.status = "Hata"; j.error = ev.error; }
-    renderQueue();
+    if (ev.type === "failed") { j.kind = ev.cancelled ? "warn" : "err"; j.status = ev.cancelled ? "Durduruldu" : "Hata"; j.error = ev.cancelled ? "" : ev.error; }
+    if (ev.type === "skipped" && ev.status === "duplicate") { j.status = "Zaten sırada"; j.error = ""; }
+    scheduleQueue();
   }
-  window.__stt = { onEvent };
+  // olaylar toplu gelir; kuyruk listesi kare başına en fazla bir kez çizilir (arayüz takılmasın)
+  let qTimer = 0;
+  function scheduleQueue() { if (!qTimer) qTimer = requestAnimationFrame(() => { qTimer = 0; renderQueue(); }); }
+  function onEvents(list) { for (const ev of list) { try { onEvent(ev); } catch (e) { console.error(e); } } }
+  window.__stt = { onEvent, onEvents };
 
   async function boot() {
     const h = await call("hello");

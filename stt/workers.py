@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import logging
 import multiprocessing as mp
+import os
 import queue
+import sys
 import threading
 import time
 import traceback
@@ -48,23 +50,41 @@ def _init(device: str, engine_cfg: dict, cache: dict, load_lock=None) -> None:
         from .engines import WhisperEngine, parse_device
         _, idx = parse_device(device)
         vram = (engine_cfg.get("gpu_mem") or {}).get(idx)
+        batch = engine_cfg.get("batch_size", -1)
+        if device.startswith("cuda") and idx in (engine_cfg.get("display_gpus") or []):
+            from .engines import auto_batch_size
+            cap = max(1, int(engine_cfg.get("display_batch") or 4))
+            batch = min(auto_batch_size("cuda", vram) if batch < 0 else batch, cap)
         # modeller SIRAYLA yüklenir: aynı anda iki 3 GB yükleme RAM'i (mkl_malloc) tüketebilir
         if load_lock is not None:
             load_lock.acquire()
         try:
             cache["engine"] = WhisperEngine(engine_cfg["model_path"], device, engine_cfg["compute_type"],
                                             engine_cfg["beam_size"], engine_cfg["condition_on_previous_text"],
-                                            engine_cfg.get("batch_size", -1), vram)
+                                            batch, vram)
         finally:
             if load_lock is not None:
                 load_lock.release()
 
 
+def lower_priority() -> None:
+    """Bu süreci düşük önceliğe al: masaüstü, tarayıcı ve oyunlar önce gelsin."""
+    try:
+        if os.name == "nt":
+            import ctypes
+            k32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+            k32.SetPriorityClass(k32.GetCurrentProcess(), 0x00004000)  # BELOW_NORMAL_PRIORITY_CLASS
+        else:
+            os.nice(5)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def worker_main(wid: str, device: str, engine_cfg: dict, task_q, result_q, shared_cache: dict | None = None,
                 load_lock=None):
     if shared_cache is None:  # ayrı süreç
-        import os
-        import sys
+        if engine_cfg.get("low_priority", True):
+            lower_priority()
         if sys.stdout is None or sys.stderr is None:  # pythonw (uygulama) altında
             devnull = open(os.devnull, "w")  # noqa: SIM115
             sys.stdout = sys.stdout or devnull
@@ -113,16 +133,34 @@ class WorkerPool:
                                                                       self.result_q, shared), daemon=True)
                 for i, d in enumerate(devices)}
         else:
-            ctx = mp.get_context("spawn")
-            self.task_q = ctx.Queue()
-            self.result_q = ctx.Queue()
-            self.load_lock = ctx.Lock()
+            self.ctx = mp.get_context("spawn")
+            self.task_q = self.ctx.Queue()
+            self.result_q = self.ctx.Queue()
+            self.load_lock = self.ctx.Lock()
             names = [d if devices.count(d) == 1 else f"{d}#{i}" for i, d in enumerate(devices)]
-            self.workers = {
-                n: ctx.Process(target=worker_main, args=(n, d, engine_cfg, self.task_q, self.result_q, None,
-                                                         self.load_lock),
-                               name=f"stt-{n}", daemon=True)
-                for n, d in zip(names, devices)}
+            self._spec = dict(zip(names, devices))
+            self._ecfg = engine_cfg
+            self.workers = {n: self._new_proc(n) for n in names}
+
+    def _new_proc(self, name: str):
+        return self.ctx.Process(target=worker_main, args=(name, self._spec[name], self._ecfg, self.task_q,
+                                                          self.result_q, None, self.load_lock),
+                                name=f"stt-{name}", daemon=True)
+
+    def respawn(self, name: str) -> bool:
+        """Çöken / takılan işçiyi yeniden başlat (yalnızca süreç havuzunda)."""
+        if self.threads or name not in self.workers:
+            return False
+        old = self.workers[name]
+        if old.is_alive():
+            old.terminate()
+            old.join(5)
+            if old.is_alive():
+                old.kill()
+                old.join(2)
+        self.workers[name] = self._new_proc(name)
+        self.workers[name].start()
+        return True
 
     def start(self):
         for w in self.workers.values():

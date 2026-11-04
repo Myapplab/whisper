@@ -19,7 +19,9 @@ class Config:
     compute_type: str = "float16"
     beam_size: int = 5
     batch_size: int = -1                 # -1 = karta göre otomatik (3090:16, 3080:8), 0/1 = kapalı
-    gpus: str = "auto"                   # "auto", "0,1", "0", "cpu"
+    gpus: str = "auto"                   # "auto" (monitörsüz kart), "all" (hepsi), "0,1", "0", "cpu"
+    display_batch: int = 4               # monitörün bağlı olduğu kart kullanılırsa en fazla bu toplu boyut
+    low_priority: bool = True            # tanıma süreçleri düşük öncelikte (bilgisayar donmasın)
     prompt: str | None = None
     condition_on_previous_text: bool = True
     # bölme
@@ -36,7 +38,7 @@ class Config:
     # indirme
     cookies_browser: str | None = "chrome"
     cookies_file: str | None = None
-    prep_workers: int = 3
+    prep_workers: int = 2
     # durum
     force: bool = False
     keep_audio: bool = False

@@ -120,8 +120,11 @@ set "EK=%EK% --fpl %GW% %TAKIM%"
 echo.
 "%PY%" -m stt "%GIRDI%" %EK%
 echo.
-echo Ciktilar: %STT_DIR%cikti
-start "" "%STT_DIR%cikti" 2>nul
+rem cikti klasoru ayarlardan (stt.toml) okunur; kurulum programi bunu Belgeler\STT Veri Seti yapar
+set "OUTDIR=%STT_DIR%cikti"
+for /f "delims=" %%o in ('"%PY%" -c "from pathlib import Path; from stt.config import load_config; print(Path(load_config().out_dir).resolve())" 2^>nul') do set "OUTDIR=%%o"
+echo Ciktilar: %OUTDIR%
+start "" "%OUTDIR%" 2>nul
 echo.
 set "TEKRAR="
 set /p "TEKRAR=Baska bir sey? (Enter = evet, h = cik): "

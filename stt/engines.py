@@ -35,23 +35,67 @@ def auto_batch_size(kind: str, vram_gb: float | None) -> int:
     return 16 if vram_gb >= 20 else 8 if vram_gb >= 9 else 4
 
 
-def gpu_table() -> dict[int, tuple[str, float]]:
-    """nvidia-smi: {index: (ad, GB)}. CUDA_DEVICE_ORDER=PCI_BUS_ID ile CUDA sırasıyla aynıdır."""
+def _smi(query: str) -> list[list[str]]:
     import shutil
     import subprocess
     exe = shutil.which("nvidia-smi")
     if not exe:
-        return {}
+        return []
+    kw = {"creationflags": 0x08000000} if os.name == "nt" else {}  # CREATE_NO_WINDOW
     try:
-        r = subprocess.run([exe, "--query-gpu=index,name,memory.total", "--format=csv,noheader,nounits"],
-                           capture_output=True, text=True, timeout=20)
-        out = {}
-        for line in r.stdout.splitlines():
-            i, name, mem = [x.strip() for x in line.split(",")]
-            out[int(i)] = (name.replace("NVIDIA GeForce ", ""), float(mem) / 1024)
-        return out
+        r = subprocess.run([exe, f"--query-gpu={query}", "--format=csv,noheader,nounits"],
+                           capture_output=True, text=True, timeout=20, **kw)
     except Exception:  # noqa: BLE001
-        return {}
+        return []
+    if r.returncode != 0:
+        return []
+    return [[x.strip() for x in line.split(",")] for line in r.stdout.splitlines() if line.strip()]
+
+
+def gpu_info() -> dict[int, dict]:
+    """nvidia-smi: {index: {name, gb, display}}. CUDA_DEVICE_ORDER=PCI_BUS_ID ile CUDA sırasıyla aynıdır.
+
+    display: True = bu karta monitör bağlı (masaüstü bu kartla çiziliyor), False = boş kart, None = bilinmiyor.
+    """
+    out: dict[int, dict] = {}
+    for row in _smi("index,name,memory.total"):
+        try:
+            i, name, mem = row[0], ",".join(row[1:-1]), row[-1]
+            out[int(i)] = {"name": name.replace("NVIDIA GeForce ", ""), "gb": float(mem) / 1024, "display": None}
+        except (ValueError, IndexError):
+            continue
+    for row in _smi("index,display_active"):  # ayrı sorgu: alan desteklenmezse ilk sorgu bozulmasın
+        try:
+            v = row[1].lower()
+            if int(row[0]) in out and v in ("enabled", "disabled"):
+                out[int(row[0])]["display"] = v == "enabled"
+        except (ValueError, IndexError):
+            continue
+    return out
+
+
+def gpu_table() -> dict[int, tuple[str, float]]:
+    """Geriye uyumluluk: {index: (ad, GB)}."""
+    return {i: (g["name"], g["gb"]) for i, g in gpu_info().items()}
+
+
+def choose_gpus(n: int, info: dict[int, dict], mode: str = "auto") -> list[int]:
+    """Kullanılacak CUDA kartları.
+
+    auto: monitörün bağlı olduğu kart boş bırakılır (bilgisayar, YouTube, tarayıcı akıcı kalsın).
+          Bütün kartlarda monitör varsa ya da tek kart varsa: belleği en büyük TEK kart.
+    all : bütün kartlar (en hızlı; ekran kartı tam yükte kalır).
+    """
+    idx = list(range(n))
+    if n <= 1 or mode == "all":
+        return idx
+    known = [i for i in idx if i in info and info[i].get("display") is not None]
+    if len(known) < n:  # bilinmiyor: en büyük kartı al (ötekini masaüstüne bırak)
+        return [max(idx, key=lambda i: (info.get(i, {}).get("gb", 0), -i))]
+    free = [i for i in idx if not info[i]["display"]]
+    if free:
+        return free
+    return [max(idx, key=lambda i: (info[i].get("gb", 0), -i))]
 
 
 class WhisperEngine:
@@ -68,7 +112,7 @@ class WhisperEngine:
         self.cond = condition_on_previous_text
         t = time.time()
         kw = dict(device=kind, device_index=idx, compute_type=compute_type,
-                  cpu_threads=(os.cpu_count() or 4) if kind == "cpu" else 2)
+                  cpu_threads=max(2, (os.cpu_count() or 4) - 2) if kind == "cpu" else 2)  # 2 çekirdek boşta kalsın
         try:
             self.model = WhisperModel(model_path, **kw)
         except Exception as e:  # noqa: BLE001

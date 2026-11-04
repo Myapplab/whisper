@@ -1,18 +1,27 @@
-stt - KOLAY KURULUM
-===================
+﻿STT - Basın Odası  |  KISA KULLANIM KILAVUZU
+============================================
 
-1) Bu klasoru kalici bir yere koyun (or. C:\stt). Masaustu de olur.
+KURULUM
+  STT-Kurulum.exe dosyasına çift tıklayın ve adımları izleyin (10-30 dakika, en az 9 GB boş alan).
+  - "Windows bilgisayarınızı korudu" çıkarsa: "Ek bilgi" > "Yine de çalıştır".
+  - Smart App Control dosyayı engellerse: dosyaya sağ tık > Özellikler > "Engellemeyi kaldır".
+  - Kurulum yarıda kalırsa tekrar çalıştırın; biten adımlar atlanır.
+    Sebep, kurulum klasöründeki kurulum.log dosyasında yazar.
 
-2) "Smart App Control" .bat dosyalarini engellerse: PowerShell acip sunu yapistirin:
-     cd C:\stt; Get-ChildItem -Recurse | Unblock-File; .\install.bat
-   Engel yoksa install.bat dosyasina CIFT TIKLAYIN.
-   - Python, PyTorch, ffmpeg ve Whisper modelini kendisi indirir (10-20 dk, ~6 GB).
-   - "Windows bilgisayarinizi korudu" cikarsa: "Ek bilgi" > "Yine de calistir".
-   - Sonunda "KURULUM BITTI" yazar.
+KULLANIM
+  1) Masaüstündeki STT simgesine çift tıklayın. İlk açılışta model 1-2 dakikada yüklenir.
+  2) Linkleri soldaki kutuya yapıştırın (her satıra bir tane) ya da video dosyalarını pencereye sürükleyin.
+  3) Dili seçin (bilmiyorsanız "Otomatik") ve "Başlat"a basın.
+  4) Biten işlerde "Metni göster" ya da "Klasörü aç".
+  Metinler: Belgeler\STT Veri Seti  (takım > maç > basın toplantısı)
 
-3) Kullanmak icin stt.bat dosyasina CIFT TIKLAYIN.
-   - Linki yapistirin ya da videoyu pencereye surukleyin, Enter.
-   - Sorulara Enter ile gecebilirsiniz.
-   - Bitince "cikti" klasoru kendiliginden acilir (.txt, .srt, .json, ozet.md).
+BİLGİSAYAR YAVAŞLARSA
+  STT, monitörün bağlı OLMADIĞI ekran kartını kullanır; böylece YouTube, tarayıcı ve oyunlar akıcı kalır.
+  Ayarlar > "Ekran kartı kullanımı" > "Önerilen" seçili olsun. ("Hepsi" en hızlısıdır ama bilgisayar takılabilir.)
+  Çalışan işleri durdurmak için Kuyruk bölümündeki "Durdur"a basın; aynı linki tekrar eklerseniz kaldığı yerden devam eder.
 
-Ayrintilar: README.md
+SORUN OLURSA
+  Uygulama günlüğü: %LOCALAPPDATA%\stt\stt_app.log
+  Bu dosyayı ve ekran görüntüsünü paylaşın.
+
+Ayrıntılar: README.md
