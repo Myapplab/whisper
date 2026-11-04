@@ -1,0 +1,14 @@
+# Elle kurulum için (install.bat bunu kullanır). Önce torch CUDA sürümü:
+#   pip install torch==2.8.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+faster-whisper>=1.1,<2
+ctranslate2>=4.5,<5
+yt-dlp[default]
+requests
+numpy
+jiwer>=3
+whisper-normalizer
+openai>=1.60
+pywebview>=5
+pyannote.audio==3.4.0
+huggingface_hub<1.0
+pytest

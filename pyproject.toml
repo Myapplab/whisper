@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stt"
+version = "1.1.0"
+description = "Link/video/ses -> metin: yt-dlp + ffmpeg + faster-whisper (çoklu GPU) + pyannote"
+requires-python = ">=3.11"
+dependencies = [
+    "faster-whisper>=1.1,<2",
+    "ctranslate2>=4.5,<5",
+    "yt-dlp[default]",
+    "requests",
+    "numpy",
+    "jiwer>=3",
+    "whisper-normalizer",
+    "openai>=1.60",
+    "pywebview>=5",
+]
+
+[project.optional-dependencies]
+diarize = ["pyannote.audio==3.4.0", "huggingface_hub<1.0"]
+test = ["pytest"]
+
+[project.scripts]
+stt = "stt.cli:main"
+
+[project.gui-scripts]
+stt-app = "stt.gui:main"
+
+[tool.setuptools]
+packages = ["stt"]
+
+[tool.setuptools.package-data]
+stt = ["gui.html", "assets/*"]

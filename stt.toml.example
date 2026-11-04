@@ -1,0 +1,31 @@
+# stt ayarları. install.bat bunu stt.toml olarak kopyalar.
+# Komut satırı seçenekleri bu dosyadaki değerleri ezer.
+
+out_dir = "cikti"                   # çıktı klasörü (ör. "D:/basin/cikti")
+model = "large-v3"
+compute_type = "float16"
+beam_size = 5
+gpus = "auto"                      # "auto" | "0,1" | "0" | "cpu"
+# lang = "en"                      # yoksa otomatik
+
+# Konuşmacı ayırma (pyannote). Token yerine HF_TOKEN ortam değişkeni de olur.
+diarize = false
+# hf_token = "hf_xxx"
+td_label = "Teknik direktör"
+reporter_label = "Muhabir"
+
+# İndirme
+cookies_browser = "chrome"         # chrome | firefox | edge | brave | none
+# cookies_file = "C:/Users/ben/cookies.txt"
+
+# FPL
+# fpl_repo = "D:/kod/fpl"
+# fpl_python = "python3"           # boşsa: python3 -> py -3 -> stt'nin python'u
+
+# OpenAI yedek motor (OPENAI_API_KEY ortam değişkeninden)
+openai_model = "gpt-transcribe"
+openai_workers = 4
+
+# Bölme
+split_min = 8                      # bundan uzun dosyalar VAD ile bölünür (dakika)
+chunk_min = 5                      # hedef parça uzunluğu (dakika)

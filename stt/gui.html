@@ -1,0 +1,515 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<title>STT — Basın Odası</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+/* Düzen: üst şerit (GPU durumu) + 3 sütun: yeni iş | kuyruk | veri seti; altta açılır günlük */
+:root{
+  --bg:#eef0f3; --panel:#ffffff; --panel-2:#f6f7f9; --ink:#14181d; --muted:#5d6672; --line:#dde1e6;
+  --accent:#c2410c; --accent-ink:#ffffff; --accent-soft:#fbe9df; --ok:#15803d; --ok-soft:#e3f3e8;
+  --warn:#a16207; --warn-soft:#fbf1d9; --err:#b91c1c; --err-soft:#fbe4e4; --busy:#1d4ed8; --busy-soft:#e3eafc;
+  --ui:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+  --display:"Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;
+  --mono:"Cascadia Mono","Cascadia Code",Consolas,ui-monospace,monospace;
+  --r:10px;
+}
+@media (prefers-color-scheme: dark){:root{
+  --bg:#0f1318; --panel:#161b22; --panel-2:#1c222b; --ink:#e6e9ee; --muted:#9aa3ae; --line:#28303a;
+  --accent:#f97316; --accent-ink:#1a0d04; --accent-soft:#3a2214; --ok:#4ade80; --ok-soft:#14301f;
+  --warn:#facc15; --warn-soft:#332b0f; --err:#f87171; --err-soft:#3a1717; --busy:#7aa2ff; --busy-soft:#1b2747;
+  color-scheme:dark}}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font:14px/1.45 var(--ui);display:grid;grid-template-rows:auto minmax(0,1fr) auto;grid-template-columns:minmax(0,1fr);overflow:hidden}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+/* üst şerit */
+header{display:flex;align-items:center;gap:18px;padding:10px 18px;background:var(--panel);border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:10px;min-width:0}
+.brand svg{flex:none}
+.brand b{font:600 17px var(--display);letter-spacing:.2px}
+.brand span{color:var(--muted);font-size:13px}
+.gpus{display:flex;gap:8px;flex-wrap:wrap;margin-left:8px;min-width:0}
+.gpu{display:flex;align-items:center;gap:8px;padding:5px 10px;border:1px solid var(--line);border-radius:999px;background:var(--panel-2);font-size:12.5px;max-width:340px}
+.gpu .dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex:none}
+.gpu.idle .dot{background:var(--ok)} .gpu.busy .dot{background:var(--busy);box-shadow:0 0 0 3px var(--busy-soft)}
+.gpu.error .dot{background:var(--err)}
+.gpu .what{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.spacer{flex:1}
+.btn{border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:7px 12px}
+.btn:hover{background:var(--panel-2)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+.btn.primary:hover{filter:brightness(1.07)}
+.btn.small{padding:4px 9px;font-size:12.5px}
+.btn:disabled{opacity:.55;cursor:default}
+.engine-banner{display:none;padding:8px 18px;background:var(--err-soft);color:var(--err);border-bottom:1px solid var(--line)}
+.engine-banner.show{display:flex;gap:12px;align-items:center}
+
+/* ana ızgara */
+main{display:grid;grid-template-columns:340px minmax(0,1fr) 380px;gap:14px;padding:14px;min-height:0}
+section.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);display:flex;flex-direction:column;min-height:0;min-width:0}
+.panel h2{font:600 12px var(--ui);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0}
+.ph{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid var(--line)}
+.pb{padding:14px;overflow:auto;min-height:0;display:flex;flex-direction:column;gap:14px}
+
+/* yeni iş */
+textarea{width:100%;min-height:150px;resize:vertical;border:1px solid var(--line);border-radius:8px;background:var(--panel-2);padding:10px;font:13px/1.5 var(--mono)}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.chips{display:flex;flex-direction:column;gap:6px}
+.chip{display:flex;align-items:center;gap:8px;padding:6px 8px;border:1px solid var(--line);border-radius:7px;background:var(--panel-2);font-size:12.5px}
+.chip span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono)}
+.chip button{border:0;background:none;color:var(--muted);font-size:15px;line-height:1;padding:0 2px}
+.field{display:flex;flex-direction:column;gap:6px}
+.field>label,.lbl{font-size:12.5px;color:var(--muted)}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{border:0;background:var(--panel);padding:6px 12px;border-right:1px solid var(--line)}
+.seg button:last-child{border-right:0}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--panel)}
+.toggle{display:flex;gap:10px;align-items:flex-start;cursor:pointer}
+.toggle input{appearance:none;width:34px;height:20px;border-radius:999px;background:var(--line);position:relative;flex:none;margin:1px 0 0;cursor:pointer;transition:background .15s}
+.toggle input::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:left .15s}
+.toggle input:checked{background:var(--accent)}
+.toggle input:checked::after{left:16px}
+.toggle small{display:block;color:var(--muted);font-size:12px}
+.hint{font-size:12.5px;color:var(--muted)}
+.note{font-size:12.5px;padding:8px 10px;border-radius:8px;background:var(--warn-soft);color:var(--warn)}
+.startbar{padding:14px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:8px}
+.startbar .btn.primary{padding:11px;font-size:15px}
+
+/* kuyruk */
+.empty{margin:auto;text-align:center;color:var(--muted);max-width:340px;padding:30px 10px}
+.empty b{display:block;color:var(--ink);font:600 16px var(--display);margin-bottom:6px}
+.job{border:1px solid var(--line);border-radius:9px;padding:12px 14px;display:flex;flex-direction:column;gap:8px;background:var(--panel)}
+.job .top{display:flex;gap:10px;align-items:flex-start}
+.job .t{font-weight:600;flex:1;min-width:0;overflow-wrap:anywhere}
+.pill{font-size:11.5px;font-weight:600;padding:2px 8px;border-radius:999px;white-space:nowrap;background:var(--panel-2);color:var(--muted);border:1px solid var(--line)}
+.pill.busy{background:var(--busy-soft);color:var(--busy);border-color:transparent}
+.pill.ok{background:var(--ok-soft);color:var(--ok);border-color:transparent}
+.pill.err{background:var(--err-soft);color:var(--err);border-color:transparent}
+.pill.warn{background:var(--warn-soft);color:var(--warn);border-color:transparent}
+.meta{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:12.5px;color:var(--muted)}
+.meta b{color:var(--ink);font-weight:600}
+.bar{height:6px;border-radius:999px;background:var(--panel-2);overflow:hidden;border:1px solid var(--line)}
+.bar i{display:block;height:100%;width:0;background:var(--accent);transition:width .3s}
+.job.done .bar i{background:var(--ok)}
+.job .err{color:var(--err);font-size:12.5px;overflow-wrap:anywhere}
+.job .src{font-family:var(--mono);font-size:11.5px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* veri seti */
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.stat{background:var(--panel-2);border-radius:8px;padding:8px 10px}
+.stat b{display:block;font:600 20px var(--display);font-variant-numeric:tabular-nums}
+.stat span{font-size:11.5px;color:var(--muted)}
+details{border-radius:8px}
+details>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:7px}
+details>summary::-webkit-details-marker{display:none}
+details>summary:hover{background:var(--panel-2)}
+details>summary::before{content:"▸";color:var(--muted);font-size:11px;transition:transform .15s}
+details[open]>summary::before{transform:rotate(90deg)}
+.lg>summary{font-weight:700}
+.tm>summary{font-weight:600}
+.tm{margin-left:12px}
+.mt{margin:2px 0 6px 30px;display:flex;flex-direction:column;gap:2px}
+.mt .mh{display:flex;align-items:center;gap:8px;font-size:12.5px;padding:4px 6px;border-radius:6px}
+.mt .mh:hover{background:var(--panel-2)}
+.mt .mh span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pr{display:flex;gap:6px;align-items:center;margin-left:14px;font-size:12.5px}
+.pr a{color:var(--accent);cursor:pointer;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pr a:hover{text-decoration:underline}
+.count{margin-left:auto;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
+.linkbtn{border:0;background:none;color:var(--muted);padding:0 2px;font-size:12px}
+.linkbtn:hover{color:var(--accent)}
+
+/* günlük */
+footer{background:var(--panel);border-top:1px solid var(--line);min-width:0}
+footer .fh{display:flex;align-items:center;gap:10px;padding:6px 18px;font-size:12.5px;color:var(--muted)}
+footer .last{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono)}
+#log{display:none;height:190px;overflow:auto;margin:0;padding:8px 18px 12px;font:12px/1.5 var(--mono);color:var(--muted);white-space:pre-wrap;border-top:1px solid var(--line)}
+footer.open #log{display:block}
+#log .WARNING{color:var(--warn)} #log .ERROR{color:var(--err)}
+
+/* modallar */
+.modal{position:fixed;inset:0;background:rgba(10,12,16,.45);display:none;align-items:center;justify-content:center;padding:24px;z-index:20}
+.modal.show{display:flex}
+.dlg{background:var(--panel);border:1px solid var(--line);border-radius:12px;width:min(560px,100%);max-height:100%;display:flex;flex-direction:column;box-shadow:0 20px 50px rgba(0,0,0,.25)}
+.dlg.wide{width:min(900px,100%)}
+.dlg .ph{justify-content:space-between}
+.dlg .pb{gap:12px}
+.dlg input[type=text],.dlg input[type=password],.dlg select{width:100%;border:1px solid var(--line);border-radius:8px;background:var(--panel-2);padding:8px 10px}
+.inline{display:flex;gap:8px}
+.inline input{flex:1}
+.reader{font-size:14px;line-height:1.6;white-space:normal}
+.reader h4{margin:16px 0 4px;font:600 13px var(--ui);color:var(--accent)}
+.reader h4.a{color:var(--ok)}
+.reader p{margin:0}
+.reader .hd{color:var(--muted);font-size:12.5px;white-space:pre-wrap;margin-bottom:6px}
+.toast{position:fixed;right:18px;bottom:52px;background:var(--ink);color:var(--panel);padding:10px 14px;border-radius:8px;opacity:0;transform:translateY(8px);transition:.2s;pointer-events:none;max-width:420px;z-index:30}
+.toast.show{opacity:1;transform:none}
+@media (max-width:1180px){main{grid-template-columns:300px minmax(0,1fr) 320px}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div>
+<header>
+  <div class="brand">
+    <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true"><rect x="1" y="1" width="26" height="26" rx="7" fill="var(--accent)"/><rect x="11" y="6" width="6" height="11" rx="3" fill="var(--accent-ink)"/><path d="M8.5 13.5a5.5 5.5 0 0 0 11 0M14 19v3.5M10.5 22.5h7" stroke="var(--accent-ink)" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg>
+    <div><b>STT</b> <span>Basın Odası</span></div>
+  </div>
+  <div class="gpus" id="gpus"><div class="gpu"><i class="dot"></i><span class="what">Motor başlatılıyor…</span></div></div>
+  <div class="spacer"></div>
+  <button class="btn" id="btnOut" type="button">Veri seti klasörü</button>
+  <button class="btn" id="btnSettings" type="button">Ayarlar</button>
+</header>
+<div class="engine-banner" id="banner"><span id="bannerText"></span><span class="spacer"></span><button class="btn small" id="btnRetry" type="button">Yeniden başlat</button></div>
+</div>
+
+<main>
+  <!-- YENİ İŞ -->
+  <section class="panel" aria-labelledby="h-new">
+    <div class="ph"><h2 id="h-new">Yeni iş</h2></div>
+    <div class="pb">
+      <div class="field">
+        <label for="links">Linkler — her satıra bir tane (YouTube, X, Instagram, kulüp siteleri…)</label>
+        <textarea id="links" spellcheck="false" placeholder="https://www.youtube.com/watch?v=…&#10;https://x.com/Arsenal/status/…&#10;&#10;Yazı arasına karışık yapıştırsanız da linkler bulunur."></textarea>
+      </div>
+      <div class="row">
+        <button class="btn small" id="btnFiles" type="button">Dosya ekle</button>
+        <button class="btn small" id="btnFolder" type="button">Klasör ekle</button>
+        <span class="hint">ya da dosyaları pencereye sürükleyin</span>
+      </div>
+      <div class="chips" id="chips"></div>
+      <div class="field">
+        <span class="lbl">Konuşulan dil</span>
+        <div class="seg" id="lang" role="group" aria-label="Konuşulan dil">
+          <button type="button" data-v="auto" aria-pressed="true">Otomatik</button>
+          <button type="button" data-v="en" aria-pressed="false">EN</button>
+          <button type="button" data-v="tr" aria-pressed="false">TR</button>
+          <button type="button" data-v="az" aria-pressed="false">AZ</button>
+        </div>
+      </div>
+      <label class="toggle"><input type="checkbox" id="optDiar"><span>Soru–cevap olarak ayır<small>Teknik direktör ve muhabirleri ayırır (HuggingFace token gerekir)</small></span></label>
+      <label class="toggle"><input type="checkbox" id="optFpl"><span>FPL presser.py'yi çalıştır<small>Premier League maçı bulunursa GW ve takım otomatik</small></span></label>
+      <div class="note" id="newNote" hidden></div>
+    </div>
+    <div class="startbar">
+      <button class="btn primary" id="btnStart" type="button">Başlat</button>
+      <span class="hint" id="startHint">Daha önce işlenen videolar otomatik atlanır.</span>
+    </div>
+  </section>
+
+  <!-- KUYRUK -->
+  <section class="panel" aria-labelledby="h-q">
+    <div class="ph"><h2 id="h-q">Kuyruk</h2><span class="count" id="qcount"></span><button class="linkbtn" id="btnClear" type="button">Bitenleri temizle</button></div>
+    <div class="pb" id="queue">
+      <div class="empty" id="qempty"><b>Henüz iş yok</b>Soldan link yapıştırın ya da video ekleyin, sonra Başlat'a basın. İki ekran kartı aynı anda çalışır.</div>
+    </div>
+  </section>
+
+  <!-- VERİ SETİ -->
+  <section class="panel" aria-labelledby="h-ds">
+    <div class="ph"><h2 id="h-ds">Veri seti</h2><span class="spacer"></span><button class="linkbtn" id="btnCsv" type="button">index.csv</button></div>
+    <div class="pb">
+      <div class="stats">
+        <div class="stat"><b id="sPress">0</b><span>basın toplantısı</span></div>
+        <div class="stat"><b id="sTeams">0</b><span>takım</span></div>
+        <div class="stat"><b id="sMatches">0</b><span>maç</span></div>
+      </div>
+      <div id="tree"></div>
+    </div>
+  </section>
+</main>
+
+<footer id="foot">
+  <div class="fh"><button class="linkbtn" id="btnLog" type="button">Günlük ▴</button><span class="last" id="lastLog"></span></div>
+  <pre id="log"></pre>
+</footer>
+
+<!-- AYARLAR -->
+<div class="modal" id="mSettings" role="dialog" aria-modal="true" aria-labelledby="h-set">
+  <div class="dlg">
+    <div class="ph"><h2 id="h-set">Ayarlar</h2><button class="linkbtn" data-close type="button">Kapat ✕</button></div>
+    <div class="pb">
+      <div class="field"><label for="sOut">Veri seti klasörü</label>
+        <div class="inline"><input type="text" id="sOut"><button class="btn small" id="sOutPick" type="button">Seç</button></div></div>
+      <div class="field"><label for="sHf">HuggingFace token (soru–cevap ayrımı için)</label>
+        <input type="password" id="sHf" placeholder="hf_…  (boş bırakırsanız mevcut token kalır)">
+        <span class="hint" id="sHfState"></span>
+        <span class="hint">huggingface.co/pyannote/speaker-diarization-3.1 ve /segmentation-3.0 sayfalarında “Agree” deyin.</span></div>
+      <div class="field"><label for="sFpl">FPL repo klasörü (presser.py'nin olduğu yer)</label>
+        <div class="inline"><input type="text" id="sFpl" placeholder="boş = FPL yok"><button class="btn small" id="sFplPick" type="button">Seç</button></div>
+        <span class="hint" id="sFplState"></span></div>
+      <div class="field"><label for="sCookie">Giriş isteyen siteler için çerez tarayıcısı</label>
+        <select id="sCookie"><option value="chrome">Chrome</option><option value="edge">Edge</option><option value="firefox">Firefox</option><option value="brave">Brave</option><option value="none">Kullanma</option></select></div>
+    </div>
+    <div class="startbar"><button class="btn primary" id="sSave" type="button">Kaydet</button>
+      <span class="hint">Klasör ya da token değişirse motor, sıradaki işler bitince yeni ayarlarla yeniden açılır.</span></div>
+  </div>
+</div>
+
+<!-- METİN OKUYUCU -->
+<div class="modal" id="mRead" role="dialog" aria-modal="true" aria-labelledby="h-read">
+  <div class="dlg wide">
+    <div class="ph"><h2 id="h-read">Metin</h2><span class="spacer"></span><button class="btn small" id="rOpen" type="button">Dosyayı aç</button><button class="btn small" id="rFolder" type="button">Klasörü aç</button><button class="linkbtn" data-close type="button">Kapat ✕</button></div>
+    <div class="pb reader" id="reader"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+(() => {
+  const $ = (s, r = document) => r.querySelector(s);
+  const el = (tag, attrs = {}, ...kids) => {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) {
+      if (k === "class") n.className = v; else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+      else if (v !== null && v !== undefined && v !== false) n.setAttribute(k, v === true ? "" : v);
+    }
+    for (const k of kids.flat()) if (k !== null && k !== undefined && k !== false) n.append(k.nodeType ? k : document.createTextNode(String(k)));
+    return n;
+  };
+  const api = () => (window.pywebview && window.pywebview.api) || null;
+  const call = async (name, ...args) => { const a = api(); if (!a || !a[name]) return null; try { return await a[name](...args); } catch (e) { toast("Hata: " + e); return null; } };
+  const dirname = p => p.replace(/[\\/][^\\/]*$/, "");
+  const fmtDur = s => { s = Math.round(s || 0); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60; return (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(x).padStart(2, "0"); };
+  const PHASE = { "mac-oncesi": "maç öncesi", "mac-sonrasi": "maç sonrası" };
+
+  const state = { files: [], lang: "auto", jobs: new Map(), gpus: new Map(), settings: {} };
+
+  function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove("show"), 3500); }
+
+  // ---------- yeni iş
+  function renderChips() {
+    const c = $("#chips"); c.replaceChildren();
+    state.files.forEach((p, i) => c.append(el("div", { class: "chip" }, el("span", { title: p }, p),
+      el("button", { type: "button", "aria-label": "Kaldır", onclick: () => { state.files.splice(i, 1); renderChips(); } }, "×"))));
+  }
+  $("#lang").addEventListener("click", e => {
+    const b = e.target.closest("button"); if (!b) return;
+    state.lang = b.dataset.v;
+    for (const x of $("#lang").children) x.setAttribute("aria-pressed", String(x === b));
+  });
+  $("#btnFiles").onclick = async () => { const r = await call("pick_files"); if (r && r.length) { state.files.push(...r); renderChips(); } };
+  $("#btnFolder").onclick = async () => { const r = await call("pick_folder"); if (r) { state.files.push(r); renderChips(); } };
+  $("#optDiar").onchange = updateNote;
+  function updateNote() {
+    const n = $("#newNote"); const msgs = [];
+    if ($("#optDiar").checked && !state.settings.hf_token_set) msgs.push("Soru–cevap ayrımı için Ayarlar'dan HuggingFace token girin.");
+    if ($("#optFpl").checked && !state.settings.fpl_ok) msgs.push("FPL için Ayarlar'dan presser.py'nin olduğu klasörü seçin.");
+    n.textContent = msgs.join(" "); n.hidden = !msgs.length;
+  }
+  $("#optFpl").onchange = updateNote;
+  $("#btnStart").onclick = async () => {
+    const text = $("#links").value;
+    if (!text.trim() && !state.files.length) { toast("Önce link yapıştırın ya da dosya ekleyin."); return; }
+    $("#btnStart").disabled = true;
+    const r = await call("start", text, state.files, { lang: state.lang, diarize: $("#optDiar").checked, fpl_auto: $("#optFpl").checked });
+    $("#btnStart").disabled = false;
+    if (!r) return;
+    if (!r.count) { toast("Geçerli link ya da dosya bulunamadı."); return; }
+    toast(r.count + " iş kuyruğa eklendi" + (r.warning ? " — " + r.warning : ""));
+    $("#links").value = ""; state.files = []; renderChips();
+  };
+
+  // ---------- kuyruk
+  function job(uid, init) {
+    let j = state.jobs.get(uid);
+    if (!j) {
+      j = { uid, title: init.title || init.source || "…", source: init.source || "", status: "Sırada", kind: "", done: 0, total: 0 };
+      state.jobs.set(uid, j);
+    }
+    return j;
+  }
+  function renderQueue() {
+    const q = $("#queue"); q.replaceChildren();
+    const arr = [...state.jobs.values()].reverse();
+    $("#qcount").textContent = arr.length ? arr.filter(j => j.kind === "ok").length + " / " + arr.length + " bitti" : "";
+    if (!arr.length) { q.append($("#qempty") || el("div", { class: "empty" }, "Henüz iş yok")); return; }
+    for (const j of arr) {
+      const pct = j.kind === "ok" ? 100 : j.total ? Math.round(100 * j.done / j.total) : 0;
+      const ds = j.dataset || {};
+      const tags = [];
+      if (ds.team) tags.push(el("span", {}, el("b", {}, ds.team)));
+      if (ds.home && ds.away) tags.push(el("span", {}, ds.home + " vs " + ds.away));
+      else if (ds.opponent) tags.push(el("span", {}, "rakip: " + ds.opponent));
+      if (ds.gw) tags.push(el("span", { class: "mono" }, "GW" + String(ds.gw).padStart(2, "0")));
+      else if (ds.competition) tags.push(el("span", {}, ds.competition));
+      if (ds.phase) tags.push(el("span", {}, PHASE[ds.phase] || ds.phase));
+      if (ds.match_date) tags.push(el("span", { class: "mono" }, ds.match_date));
+      if (ds.manager) tags.push(el("span", {}, ds.manager));
+      if (j.duration) tags.push(el("span", { class: "mono" }, fmtDur(j.duration)));
+      if (j.speakers) tags.push(el("span", {}, j.speakers + " konuşmacı"));
+      const card = el("div", { class: "job" + (j.kind === "ok" ? " done" : "") },
+        el("div", { class: "top" }, el("div", { class: "t" }, j.title), el("span", { class: "pill " + (j.kind || "") }, j.status)),
+        j.source && j.source !== j.title ? el("div", { class: "src", title: j.source }, j.source) : null,
+        (j.kind === "busy" || j.kind === "ok") ? el("div", { class: "bar" }, el("i", { style: "width:" + pct + "%" })) : null,
+        tags.length ? el("div", { class: "meta" }, tags) : null,
+        j.diar_error ? el("div", { class: "err" }, "Soru–cevap ayrılamadı: " + j.diar_error) : null,
+        j.error ? el("div", { class: "err" }, j.error) : null,
+        j.fpl ? el("div", { class: "meta" }, "FPL GW" + String(j.fpl.gw).padStart(2, "0") + " " + j.fpl.team + " — presser.py " + (j.fpl_rc === 0 ? "çalıştı" : "hata verdi (günlüğe bakın)")) : null,
+        (j.txt || j.out_dir) ? el("div", { class: "row" },
+          j.txt ? el("button", { class: "btn small", type: "button", onclick: () => openReader(j.txt) }, "Metni göster") : null,
+          j.out_dir ? el("button", { class: "btn small", type: "button", onclick: () => call("open", j.out_dir) }, "Klasörü aç") : null) : null);
+      q.append(card);
+    }
+  }
+  $("#btnClear").onclick = () => { for (const [k, j] of state.jobs) if (j.kind === "ok" || j.kind === "") if (j.status !== "Sırada") state.jobs.delete(k); renderQueue(); };
+
+  // ---------- GPU şeridi
+  function renderGpus(engine) {
+    const g = $("#gpus"); g.replaceChildren();
+    if (engine && engine.state !== "ready") {
+      g.append(el("div", { class: "gpu" + (engine.state === "error" ? " error" : "") }, el("i", { class: "dot" }),
+        el("span", { class: "what" }, engine.state === "error" ? "Motor hatası" : "Model yükleniyor… (ilk açılışta 1-2 dk)")));
+      return;
+    }
+    for (const [wid, d] of state.gpus) {
+      const label = d.state === "busy" ? (d.task === "diarize" ? "konuşmacı ayırıyor · " : "çeviriyor · ") + (d.title || "") : d.state === "error" ? "hata" : d.state === "idle" ? "boşta" : "yükleniyor…";
+      g.append(el("div", { class: "gpu " + (d.state || ""), title: d.error || "" }, el("i", { class: "dot" }),
+        el("b", {}, d.name || wid), d.gb ? el("span", { class: "mono" }, d.gb + " GB") : null, el("span", { class: "what" }, label)));
+    }
+  }
+
+  // ---------- veri seti
+  function renderDataset(ds) {
+    const t = $("#tree"); t.replaceChildren();
+    let teams = 0, matches = 0;
+    $("#sPress").textContent = ds.count || 0;
+    if (!ds.leagues || !ds.leagues.length) {
+      t.append(el("div", { class: "empty" }, el("b", {}, "Veri seti boş"), "İşlenen her basın toplantısı burada lig › takım › maç olarak görünür."));
+    }
+    for (const lg of ds.leagues || []) {
+      const d = el("details", { class: "lg", open: lg.league === "Premier League" },
+        el("summary", {}, lg.league === "Diger" ? "Diğer takımlar" : lg.league, el("span", { class: "count" }, lg.teams.length + " takım")));
+      for (const tm of lg.teams) {
+        teams++; matches += tm.matches.length;
+        const td = el("details", { class: "tm" }, el("summary", {}, tm.team, el("span", { class: "count" }, tm.matches.length + " maç"),
+          el("button", { class: "linkbtn", type: "button", title: "Klasörü aç", onclick: e => { e.preventDefault(); call("open", tm.folder); } }, "↗")));
+        const box = el("div", { class: "mt" });
+        for (const m of tm.matches) {
+          box.append(el("div", { class: "mh" }, el("span", { title: m.name }, m.name),
+            el("button", { class: "linkbtn", type: "button", title: "Klasörü aç", onclick: () => call("open", m.folder) }, "↗")));
+          for (const p of m.pressers) {
+            const label = [p.date, PHASE[p.phase] || "", p.manager || ""].filter(Boolean).join(" · ");
+            box.append(el("div", { class: "pr" }, el("a", { onclick: () => openReader(p.txt), title: p.txt }, label || "metin"),
+              p.diarized ? el("span", { class: "count" }, (p.questions || 0) + " soru") : null));
+          }
+        }
+        td.append(box); d.append(td);
+      }
+      t.append(d);
+    }
+    $("#sTeams").textContent = teams; $("#sMatches").textContent = matches;
+    $("#btnCsv").hidden = !ds.index_csv; $("#btnCsv").onclick = () => call("open", ds.index_csv);
+  }
+  const refreshDataset = async () => { const d = await call("dataset"); if (d) renderDataset(d); };
+
+  // ---------- metin okuyucu
+  async function openReader(path) {
+    const txt = await call("read_text", path); if (txt === null) return;
+    const r = $("#reader"); r.replaceChildren();
+    const blocks = txt.split(/\n\s*\n/);
+    r.append(el("div", { class: "hd" }, blocks.shift() || ""));
+    for (const b of blocks) {
+      const m = b.match(/^((?:Soru \d+|Cevap|Açılış) - [^\n:]+):\n([\s\S]*)$/);
+      if (m) r.append(el("h4", { class: m[1].startsWith("Soru") ? "" : "a" }, m[1]), el("p", {}, m[2]));
+      else r.append(el("p", { style: "margin-top:10px" }, b));
+    }
+    $("#h-read").textContent = path.split(/[\\/]/).pop();
+    $("#rOpen").onclick = () => call("open", path);
+    $("#rFolder").onclick = () => call("open", dirname(path));
+    $("#mRead").classList.add("show");
+  }
+
+  // ---------- ayarlar
+  function fillSettings(s) {
+    state.settings = s;
+    $("#sOut").value = s.out_dir || ""; $("#sFpl").value = s.fpl_repo || ""; $("#sCookie").value = s.cookies_browser || "chrome";
+    $("#sHf").value = ""; $("#sHfState").textContent = s.hf_token_set ? "Token kayıtlı." : "Token yok: soru–cevap ayrımı yapılamaz.";
+    $("#sFplState").textContent = s.fpl_repo ? (s.fpl_ok ? "presser.py bulundu." : "Bu klasörde presser.py yok.") : "";
+    updateNote();
+  }
+  $("#btnSettings").onclick = () => $("#mSettings").classList.add("show");
+  $("#sOutPick").onclick = async () => { const r = await call("pick_folder"); if (r) $("#sOut").value = r; };
+  $("#sFplPick").onclick = async () => { const r = await call("pick_folder"); if (r) $("#sFpl").value = r; };
+  $("#sSave").onclick = async () => {
+    const s = await call("save_settings", { out_dir: $("#sOut").value, hf_token: $("#sHf").value, fpl_repo: $("#sFpl").value, cookies_browser: $("#sCookie").value });
+    if (s) { fillSettings(s); toast("Ayarlar kaydedildi."); $("#mSettings").classList.remove("show"); refreshDataset(); }
+  };
+  document.querySelectorAll("[data-close]").forEach(b => b.onclick = () => b.closest(".modal").classList.remove("show"));
+  document.querySelectorAll(".modal").forEach(m => m.addEventListener("click", e => { if (e.target === m) m.classList.remove("show"); }));
+  document.addEventListener("keydown", e => { if (e.key === "Escape") document.querySelectorAll(".modal.show").forEach(m => m.classList.remove("show")); });
+  $("#btnOut").onclick = () => call("open_out");
+  $("#btnRetry").onclick = () => { call("retry_engine"); $("#banner").classList.remove("show"); };
+  $("#btnLog").onclick = () => { $("#foot").classList.toggle("open"); $("#btnLog").textContent = $("#foot").classList.contains("open") ? "Günlük ▾" : "Günlük ▴"; };
+
+  // ---------- olaylar (Python -> JS)
+  const STATUS = {
+    queued: ["Sırada", ""], prep: ["İndiriliyor", "busy"], planned: ["Hazırlandı", "busy"], progress: ["Metne çevriliyor", "busy"],
+  };
+  function onEvent(ev) {
+    switch (ev.type) {
+      case "log": {
+        const line = el("div", { class: ev.level }, ev.text); const log = $("#log"); log.append(line);
+        while (log.childElementCount > 600) log.firstChild.remove();
+        log.scrollTop = log.scrollHeight; $("#lastLog").textContent = ev.text; return;
+      }
+      case "engine":
+        if (ev.state === "ready") { const old = new Map(state.gpus); state.gpus.clear(); for (const d of ev.devices || []) state.gpus.set(d.wid, { ...d, state: d.state || (old.get(d.wid) || {}).state || "loading" }); }
+        if (ev.state === "error") { $("#bannerText").textContent = "Motor başlatılamadı: " + (ev.error || ""); $("#banner").classList.add("show"); }
+        renderGpus(ev); return;
+      case "worker": {
+        const g = state.gpus.get(ev.wid) || { name: ev.wid };
+        state.gpus.set(ev.wid, { ...g, state: ev.state, task: ev.task, title: ev.title, error: ev.error });
+        renderGpus({ state: "ready" }); return;
+      }
+      case "fatal": $("#bannerText").textContent = ev.error; $("#banner").classList.add("show"); return;
+      case "dropped": state.files.push(...ev.paths); renderChips(); toast(ev.paths.length + " dosya eklendi"); return;
+    }
+    if (!ev.uid) return;
+    const j = job(ev.uid, ev);
+    if (ev.title && !/^https?:/.test(ev.title)) j.title = ev.title;
+    if (ev.meta && !j.dataset) j.dataset = { manager: ev.meta.manager, home: ev.meta.home, away: ev.meta.away };
+    if (STATUS[ev.type]) [j.status, j.kind] = STATUS[ev.type];
+    if (ev.type === "planned") { j.duration = ev.duration; j.total = ev.chunks; }
+    if (ev.type === "progress") { j.done = ev.done; j.total = ev.total; j.status = "Metne çevriliyor " + ev.done + "/" + ev.total; }
+    if (ev.type === "diar") { if (ev.ok) j.speakers = ev.speakers; else j.diar_error = ev.error; }
+    if (ev.type === "done") {
+      Object.assign(j, { status: "Bitti", kind: "ok", txt: ev.txt, out_dir: ev.out_dir, dataset: ev.dataset, speakers: ev.speakers || 0,
+        diar_error: ev.diar_error, duration: ev.duration, fpl: ev.fpl, fpl_rc: ev.fpl_rc });
+      refreshDataset();
+    }
+    if (ev.type === "skipped") {
+      j.kind = "warn"; j.status = ev.status === "drm" ? "Atlandı: DRM" : ev.status === "skipped_noaudio" ? "Atlandı: ses yok" : "Daha önce işlendi";
+      if (ev.out_dir) j.out_dir = ev.out_dir;
+      if (ev.error && ev.status !== "done_before") j.error = ev.error;
+    }
+    if (ev.type === "failed") { j.kind = "err"; j.status = "Hata"; j.error = ev.error; }
+    renderQueue();
+  }
+  window.__stt = { onEvent };
+
+  async function boot() {
+    const h = await call("hello");
+    if (!h) return;
+    fillSettings(h.settings);
+    for (const b of $("#lang").children) b.setAttribute("aria-pressed", String(b.dataset.v === (h.settings.lang || "auto")));
+    state.lang = h.settings.lang || "auto";
+    $("#optDiar").checked = !!h.settings.diarize || !!h.settings.hf_token_set;
+    $("#optFpl").checked = !!h.settings.fpl_ok && !!h.settings.fpl_auto;
+    updateNote();
+    onEvent({ type: "engine", ...h.engine });
+    renderDataset(h.dataset);
+  }
+  if (window.pywebview && window.pywebview.api) boot(); else window.addEventListener("pywebviewready", boot);
+  renderQueue();
+})();
+</script>
+</body>
+</html>
