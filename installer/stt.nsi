@@ -4,7 +4,7 @@ Unicode true
 !include "LogicLib.nsh"
 
 !define APPNAME "STT - Basın Odası"
-!define VERSION "1.1.0"
+!define VERSION "1.2.0"
 !define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\STT"
 
 Name "${APPNAME}"
@@ -16,7 +16,7 @@ ShowUninstDetails show
 SetCompressor /SOLID lzma
 BrandingText "STT ${VERSION}"
 
-VIProductVersion "1.1.0.0"
+VIProductVersion "1.2.0.0"
 VIAddVersionKey /LANG=1055 "ProductName" "${APPNAME}"
 VIAddVersionKey /LANG=1055 "FileDescription" "${APPNAME} kurulumu"
 VIAddVersionKey /LANG=1055 "FileVersion" "${VERSION}"
@@ -27,12 +27,12 @@ VIAddVersionKey /LANG=1055 "LegalCopyright" "STT"
 !define MUI_UNICON "staged\stt\assets\stt.ico"
 !define MUI_ABORTWARNING
 !define MUI_WELCOMEPAGE_TITLE "STT - Basın Odası kurulumu"
-!define MUI_WELCOMEPAGE_TEXT "Basın toplantısı videolarını metne çeviren STT kurulacak.$\r$\n$\r$\nKurulum internetten şunları indirir (ilk kurulumda toplam ~6 GB, 10-20 dakika):$\r$\n  • Python 3.11 (yoksa)$\r$\n  • PyTorch + NVIDIA CUDA kütüphaneleri$\r$\n  • Whisper large-v3 modeli$\r$\n  • ffmpeg ve deno$\r$\n$\r$\nYönetici izni gerekmez. Kurulum yarıda kalırsa tekrar çalıştırın; biten adımlar atlanır."
+!define MUI_WELCOMEPAGE_TEXT "Basın toplantısı videolarını metne çeviren STT kurulacak.$\r$\n$\r$\nKurulum internetten şunları indirir (ilk kurulumda toplam ~6 GB, 10-20 dakika):$\r$\n  • Python 3.11 (yoksa)$\r$\n  • PyTorch + NVIDIA CUDA kütüphaneleri$\r$\n  • Whisper large-v3 modeli$\r$\n  • ffmpeg ve deno$\r$\n$\r$\nYönetici izni gerekmez. Kurulum yarıda kalırsa tekrar çalıştırın; biten adımlar atlanır.$\r$\nKurulumdan sonra yalnızca masaüstündeki STT simgesini kullanın; başka dosya gerekmez."
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !define MUI_FINISHPAGE_TITLE "STT kuruldu"
-!define MUI_FINISHPAGE_TEXT "Masaüstündeki ve Başlat menüsündeki STT simgesiyle açabilirsiniz."
+!define MUI_FINISHPAGE_TEXT "Masaüstündeki ve Başlat menüsündeki STT simgesiyle açabilirsiniz.$\r$\n$\r$\nBir sorun olursa uygulamadaki Kontrol düğmesine basın."
 !define MUI_FINISHPAGE_RUN "$INSTDIR\.venv\Scripts\pythonw.exe"
 !define MUI_FINISHPAGE_RUN_PARAMETERS "-m stt.gui"
 !define MUI_FINISHPAGE_RUN_TEXT "STT'yi şimdi aç"

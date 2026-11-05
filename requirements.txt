@@ -1,4 +1,4 @@
-# Elle kurulum için (install.bat bunu kullanır). Önce torch CUDA sürümü:
+# Elle kurulum için (geliştirme; kullanıcı kurulumu STT-Kurulum.exe). Önce torch CUDA sürümü:
 #   pip install torch==2.8.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
 faster-whisper>=1.1,<2
 ctranslate2>=4.5,<5

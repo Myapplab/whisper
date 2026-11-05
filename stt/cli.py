@@ -145,8 +145,8 @@ def _run_pipeline(cfg: Config, items=None, watch_dir: Path | None = None) -> int
 
 
 def main(argv: list[str] | None = None) -> int:
-    from .util import add_tool_paths
-    add_tool_paths()
+    from .util import prepare_env
+    prepare_env()
     argv = list(sys.argv[1:] if argv is None else argv)
     cfg = load_config()
     sub = SUBCOMMANDS.get(argv[0].lower()) if argv else None

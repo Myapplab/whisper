@@ -1,7 +1,7 @@
 # whisper multilingual.tiktoken -> HF tokenizers tokenizer.json (faster-whisper icin)
 import sys, json
 import importlib.util, glob, os
-_wt = glob.glob(os.path.join(sys.prefix, "lib", "python3.11", "site-packages", "whisper", "tokenizer.py"))[0]
+_wt = glob.glob(os.path.join(sys.prefix, "lib", "python3.*", "site-packages", "whisper", "tokenizer.py"))[0]
 _spec = importlib.util.spec_from_file_location("wtok", _wt); _m = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(_m)
 get_encoding = _m.get_encoding
 from transformers.convert_slow_tokenizer import TikTokenConverter

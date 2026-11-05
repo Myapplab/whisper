@@ -1,4 +1,4 @@
-# install.bat bu sürümleri sabitler (CUDA 12.8 torch'u PyPI'daki CPU sürümüyle değişmesin)
+# Kurulum (installer/kur.ps1) bu sürümleri sabitler (CUDA 12.8 torch PyPI CPU sürümüyle değişmesin)
 torch==2.8.0
 torchaudio==2.8.0
 # pyannote.audio 3.4, huggingface_hub 1.0'da kaldırılan use_auth_token parametresini kullanıyor

@@ -27,11 +27,15 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
 - **Uygulama:** `pythonw -m stt.gui` (pywebview + Edge WebView2; `stt/gui.py` + `stt/gui.html`).
   Python ↔ JS: `App` sınıfının `_` ile başlamayan metotları JS'e açıktır (iç alanlar `_` ile başlamalı!).
   Olaylar `Pipeline.events` → `window.__stt.onEvent(...)`.
-- **CLI:** `stt.bat <link|dosya|klasör|liste.txt> [--lang en] [--diarize] [--fpl 11 ARS]`,
-  alt komutlar: `kontrol [--derin]`, `olc`, `izle KLASOR`, `durum`. Çift tıklanınca etkileşimli
-  (panodaki linkleri okur).
+- **CLI (gelişmiş):** `C:\stt\.venv\Scripts\stt.exe <link|dosya|klasör|liste.txt> [--lang en] [--diarize] [--fpl 11 ARS]`,
+  alt komutlar: `kontrol [--derin]`, `olc`, `izle KLASOR`, `durum`. (`stt.bat` / `install.bat` / `BENI_OKU.txt` 1.2.0'da
+  kaldırıldı: kullanıcı yalnızca setup.exe + masaüstü simgesi kullanır.)
+- **Ortam hazırlığı** `stt/util.py: prepare_env()` (GUI + CLI açılışında): `tools\ffmpeg*\bin`, `tools\deno`,
+  kayıt defterindeki güncel PATH, winget yolları, `CUDA_VISIBLE_DEVICES` kaldırma, `CUDA_DEVICE_ORDER`, UTF-8.
 - **Kurulum:** `installer/stt.nsi` (NSIS) + `installer/kur.ps1`; `installer/build.sh` → `dist/STT-Kurulum.exe`.
-  Eski yol: `install.bat` (venv + torch cu128 + `pip install -c constraints.txt -e .[diarize,test]`).
+  ffmpeg/deno winget ile değil, `<kurulum>\tools`'a indirilir; yt-dlp her kurulumda güncellenir; eski bat dosyaları silinir.
+- **GUI'de Kontrol düğmesi** `stt kontrol`'ü ayrı süreçte çalıştırıp sonucu gösterir; kullanıcıdan bunun ekran görüntüsünü iste.
+  Günlük: `%LOCALAPPDATA%\stt\stt_app.log`.
 
 ## Kullanıcının makinesi (önemli)
 - Windows 11, RTX 3090 (24 GB) + RTX 3080 (10 GB), sürücü 610.88. Kurulum `C:\stt` (venv `C:\stt\.venv`),
@@ -55,7 +59,7 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
 - Kullanıcı ileride uygulamayı paylaşmak istiyor (tek kurulum dosyası).
 
 ## Geliştirme (bulut/Linux)
-- Testler: `python -m pytest -q tests` (26 test).
+- Testler: `python -m pytest -q tests`.
 - GPU yok ve HuggingFace engelliyse test modeli: GitHub `rhasspy/models` `asr_faster-whisper-small-int8`
   + `dev/make_tokenizer.py` (openai-whisper tiktoken → tokenizer.json) + `dev/add_alignment_heads.py`.
   `--model <klasör> --gpus cpu,cpu` ile uçtan uca çalışır.

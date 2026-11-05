@@ -132,6 +132,8 @@ footer .last{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-spa
 #log{display:none;height:190px;overflow:auto;margin:0;padding:8px 18px 12px;font:12px/1.5 var(--mono);color:var(--muted);white-space:pre-wrap;border-top:1px solid var(--line)}
 footer.open #log{display:block}
 #log .WARNING{color:var(--warn)} #log .ERROR{color:var(--err)}
+pre.check{margin:0;max-height:60vh;overflow:auto;font:12px/1.55 var(--mono);white-space:pre-wrap;color:var(--ink)}
+pre.check .bad{color:var(--err);font-weight:600} pre.check .warn{color:var(--warn)} pre.check .ok{color:var(--ok)}
 
 /* modallar */
 .modal{position:fixed;inset:0;background:rgba(10,12,16,.45);display:none;align-items:center;justify-content:center;padding:24px;z-index:20}
@@ -163,10 +165,11 @@ footer.open #log{display:block}
   </div>
   <div class="gpus" id="gpus"><div class="gpu"><i class="dot"></i><span class="what">Motor başlatılıyor…</span></div></div>
   <div class="spacer"></div>
+  <button class="btn" id="btnCheck" type="button">Kontrol</button>
   <button class="btn" id="btnOut" type="button">Veri seti klasörü</button>
   <button class="btn" id="btnSettings" type="button">Ayarlar</button>
 </header>
-<div class="engine-banner" id="banner"><span id="bannerText"></span><span class="spacer"></span><button class="btn small" id="btnRetry" type="button">Yeniden başlat</button></div>
+<div class="engine-banner" id="banner"><span id="bannerText"></span><span class="spacer"></span><button class="btn small" id="btnBannerCheck" type="button">Kontrol</button><button class="btn small" id="btnRetry" type="button">Yeniden başlat</button></div>
 </div>
 
 <main>
@@ -249,6 +252,14 @@ footer.open #log{display:block}
     </div>
     <div class="startbar"><button class="btn primary" id="sSave" type="button">Kaydet</button>
       <span class="hint">Klasör ya da token değişirse motor, sıradaki işler bitince yeni ayarlarla yeniden açılır.</span></div>
+  </div>
+</div>
+
+<!-- KONTROL -->
+<div class="modal" id="mCheck" role="dialog" aria-modal="true" aria-labelledby="h-check">
+  <div class="dlg wide">
+    <div class="ph"><h2 id="h-check">Kurulum kontrolü</h2><span class="spacer"></span><button class="btn small" id="cCopy" type="button">Kopyala</button><button class="btn small" id="cLog" type="button">Günlük dosyası</button><button class="linkbtn" data-close type="button">Kapat ✕</button></div>
+    <div class="pb"><div class="hint" id="cSum"></div><pre class="check" id="cOut"></pre></div>
   </div>
 </div>
 
@@ -446,6 +457,25 @@ footer.open #log{display:block}
   document.querySelectorAll(".modal").forEach(m => m.addEventListener("click", e => { if (e.target === m) m.classList.remove("show"); }));
   document.addEventListener("keydown", e => { if (e.key === "Escape") document.querySelectorAll(".modal.show").forEach(m => m.classList.remove("show")); });
   $("#btnOut").onclick = () => call("open_out");
+  let checking = false;
+  async function runCheck() {
+    $("#mCheck").classList.add("show");
+    if (checking) return;
+    checking = true;
+    $("#cSum").textContent = "Kontrol ediliyor… (1-2 dakika sürebilir)"; $("#cOut").replaceChildren();
+    const r = await call("check");
+    checking = false;
+    if (!r) { $("#cSum").textContent = "Kontrol çalıştırılamadı."; return; }
+    $("#cSum").textContent = r.ok ? (r.text.includes("[UYARI]") ? "Kritik sorun yok. Sarı satırlar yalnızca uyarıdır." : "Her şey hazır.") : "Sorun bulundu: kırmızı satırlara bakın. Bu pencerenin ekran görüntüsünü paylaşabilirsiniz.";
+    for (const line of r.text.split("\n")) {
+      const cls = line.startsWith("[HATA]") ? "bad" : line.startsWith("[UYARI]") ? "warn" : line.startsWith("[ OK ]") ? "ok" : "";
+      $("#cOut").append(el("div", { class: cls }, line || "\u00a0"));
+    }
+  }
+  $("#btnCheck").onclick = runCheck;
+  $("#btnBannerCheck").onclick = runCheck;
+  $("#cLog").onclick = () => call("open_log");
+  $("#cCopy").onclick = async () => { try { await navigator.clipboard.writeText($("#cOut").innerText); toast("Kopyalandı."); } catch (e) { toast("Kopyalanamadı"); } };
   $("#btnRetry").onclick = () => { call("retry_engine"); $("#banner").classList.remove("show"); };
   $("#btnLog").onclick = () => { $("#foot").classList.toggle("open"); $("#btnLog").textContent = $("#foot").classList.contains("open") ? "Günlük ▾" : "Günlük ▴"; };
 

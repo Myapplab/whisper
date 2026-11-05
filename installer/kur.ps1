@@ -46,36 +46,44 @@ Step "PyTorch + CUDA 12.8 (ilk kurulumda ~3 GB, birkac dakika surer)"
 Run $venv @("-m", "pip", "install", "--progress-bar", "off", "torch==2.8.0", "torchaudio==2.8.0", "--index-url", "https://download.pytorch.org/whl/cu128") "PyTorch kurulumu"
 Step "Uygulama kutuphaneleri (faster-whisper, yt-dlp, pyannote, arayuz)"
 Run $venv @("-m", "pip", "install", "--progress-bar", "off", "-c", "constraints.txt", "-e", ".[diarize]") "Kutuphane kurulumu"
+# YouTube sik degisir: her kurulumda yt-dlp en yeni surume
+Run $venv @("-m", "pip", "install", "--progress-bar", "off", "-q", "-U", "yt-dlp[default]") "yt-dlp guncelleme"
 
-# --- 3. ffmpeg ve deno (once winget, olmazsa dogrudan indirme)
+# --- 3. ffmpeg ve deno: uygulamanin kendi "tools" klasorune (winget/PATH gerekmez)
 $tools = Join-Path $InstDir "tools"
-function Have($n) { return [bool](Get-Command $n -ErrorAction SilentlyContinue) -or (Test-Path (Join-Path $tools "$n*")) }
-if (-not (Have "ffmpeg")) {
-  Step "ffmpeg kuruluyor"
-  $ok = $false
-  if (Get-Command winget -ErrorAction SilentlyContinue) {
-    try { Run "winget" @("install", "-e", "--id", "Gyan.FFmpeg", "--silent", "--accept-source-agreements", "--accept-package-agreements") "winget ffmpeg"; $ok = $true } catch { Write-Output "$_" }
-  }
-  if (-not $ok) {
-    New-Item -ItemType Directory -Force $tools | Out-Null
-    $z = Join-Path $env:TEMP "ffmpeg.zip"
-    Invoke-WebRequest "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile $z -UseBasicParsing
-    Expand-Archive $z -DestinationPath $tools -Force; Remove-Item $z
+New-Item -ItemType Directory -Force $tools | Out-Null
+function Fetch($url, $out) {
+  for ($i = 1; $i -le 3; $i++) {
+    try { Invoke-WebRequest $url -OutFile $out -UseBasicParsing; return } catch {
+      if ($i -eq 3) { throw }
+      Write-Output "  indirme hatasi, tekrar deneniyor ($i/3): $_"; Start-Sleep -Seconds (3 * $i)
+    }
   }
 }
-if (-not (Have "deno")) {
-  Step "deno kuruluyor (YouTube icin)"
-  $ok = $false
-  if (Get-Command winget -ErrorAction SilentlyContinue) {
-    try { Run "winget" @("install", "-e", "--id", "DenoLand.Deno", "--silent", "--accept-source-agreements", "--accept-package-agreements") "winget deno"; $ok = $true } catch { Write-Output "$_" }
+if (-not (Test-Path (Join-Path $tools "ffmpeg*\bin\ffmpeg.exe"))) {
+  Step "ffmpeg indiriliyor (~100 MB)"
+  try {
+    $z = Join-Path $env:TEMP "stt-ffmpeg.zip"
+    Fetch "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" $z
+    Expand-Archive $z -DestinationPath $tools -Force; Remove-Item $z -ErrorAction SilentlyContinue
+  } catch {
+    if (Get-Command ffmpeg -ErrorAction SilentlyContinue) { Write-Output "ffmpeg indirilemedi ama sistemde var, o kullanilacak." }
+    else { throw "ffmpeg indirilemedi: $_" }
   }
-  if (-not $ok) {
+}
+if (-not (Test-Path (Join-Path $tools "deno\deno.exe"))) {
+  Step "deno indiriliyor (YouTube icin, ~40 MB)"
+  try {
     New-Item -ItemType Directory -Force (Join-Path $tools "deno") | Out-Null
-    $z = Join-Path $env:TEMP "deno.zip"
-    Invoke-WebRequest "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip" -OutFile $z -UseBasicParsing
-    Expand-Archive $z -DestinationPath (Join-Path $tools "deno") -Force; Remove-Item $z
+    $z = Join-Path $env:TEMP "stt-deno.zip"
+    Fetch "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip" $z
+    Expand-Archive $z -DestinationPath (Join-Path $tools "deno") -Force; Remove-Item $z -ErrorAction SilentlyContinue
+  } catch {
+    if (Get-Command deno -ErrorAction SilentlyContinue) { Write-Output "deno indirilemedi ama sistemde var, o kullanilacak." }
+    else { Write-Output "UYARI: deno indirilemedi ($_). YouTube indirmeleri calismayabilir; kurulumu sonra tekrar calistirin." }
   }
 }
+Get-ChildItem -Recurse $tools -Include *.exe, *.dll -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue
 
 # --- 4. Ayar dosyasi (veri seti klasoru)
 $toml = Join-Path $InstDir "stt.toml"
@@ -90,5 +98,14 @@ if (-not (Test-Path $toml)) {
 # --- 5. Whisper large-v3 modeli (~3 GB, bir kez)
 Step "Whisper large-v3 modeli indiriliyor (~3 GB, bir kez)"
 Run $venv @("-c", "from faster_whisper.utils import download_model; print(download_model('large-v3'))") "Model indirme"
+
+Step "Son kontrol"
+Run $venv @("-c", "import faster_whisper, ctranslate2, yt_dlp, webview; print('kutuphaneler tamam, GPU sayisi:', ctranslate2.get_cuda_device_count())") "Kutuphane kontrolu"
+
+# eski elle kurulumdan kalan dosyalar: artik gerekmiyor (her sey uygulamada)
+foreach ($f in @("stt.bat", "install.bat", "BENI_OKU.txt", "linkler_pano.txt")) {
+  $p = Join-Path $InstDir $f
+  if (Test-Path $p) { Remove-Item $p -Force -ErrorAction SilentlyContinue }
+}
 
 Step "Kurulum tamamlandi"

@@ -1,4 +1,4 @@
-# stt ayarları. install.bat bunu stt.toml olarak kopyalar.
+# stt ayarları. Kurulum (STT-Kurulum.exe) bunu stt.toml olarak kopyalar; uygulamadaki Ayarlar da buraya yazar.
 # Komut satırı seçenekleri bu dosyadaki değerleri ezer.
 
 out_dir = "cikti"                   # çıktı klasörü (ör. "D:/basin/cikti")

@@ -42,14 +42,67 @@ def setup_logging(verbose: bool = False) -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
-def add_tool_paths() -> None:
-    """Kurulumun indirdiği ffmpeg / deno (tools klasörü) PATH'e eklensin."""
-    root = Path(__file__).resolve().parent.parent / "tools"
+def _path_add(d, first: bool = False) -> None:
+    d = str(d)
+    cur = os.environ.get("PATH", "")
+    parts = [p for p in cur.split(os.pathsep) if p]
+    if any(os.path.normcase(p.rstrip("\\/")) == os.path.normcase(d.rstrip("\\/")) for p in parts):
+        if not first:
+            return
+        parts = [p for p in parts if os.path.normcase(p.rstrip("\\/")) != os.path.normcase(d.rstrip("\\/"))]
+    parts = [d, *parts] if first else [*parts, d]
+    os.environ["PATH"] = os.pathsep.join(parts)
+
+
+def add_tool_paths(root: Path | None = None) -> None:
+    """Kurulumun indirdiği ffmpeg / deno (tools klasörü) PATH'in en başına eklensin."""
+    root = root or Path(__file__).resolve().parent.parent / "tools"
     if not root.is_dir():
         return
     for d in [*root.glob("ffmpeg*/bin"), root / "deno"]:
         if d.is_dir():
-            os.environ["PATH"] = str(d) + os.pathsep + os.environ.get("PATH", "")
+            _path_add(d, first=True)
+
+
+def _windows_registry_path() -> list[str]:
+    """Kayıt defterindeki güncel PATH (kurulumdan sonra açılan eski pencereler bunu bilmez)."""
+    import winreg  # type: ignore[import-not-found]
+    out: list[str] = []
+    for hive, sub in ((winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+                      (winreg.HKEY_CURRENT_USER, "Environment")):
+        try:
+            with winreg.OpenKey(hive, sub) as k:
+                val, _ = winreg.QueryValueEx(k, "Path")
+        except OSError:
+            continue
+        out += [os.path.expandvars(p) for p in str(val).split(";") if p.strip()]
+    return out
+
+
+def prepare_env() -> None:
+    """Uygulama/CLI açılışı: eskiden stt.bat'ın yaptığı ortam hazırlığı (ffmpeg, deno, GPU sırası, UTF-8)."""
+    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"   # cuda:N == nvidia-smi N
+    # başka programların koyduğu kart kısıtlaması (3080 görünmüyordu); kart seçimi stt.toml 'gpus' ile
+    os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+    os.environ.setdefault("PYTHONUTF8", "1")        # alt süreçler (presser.py vb.) UTF-8 yazsın
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    if os.name == "nt":
+        try:
+            for p in _windows_registry_path():
+                _path_add(p)
+        except Exception:  # noqa: BLE001
+            pass
+        la, home = os.environ.get("LOCALAPPDATA", ""), os.environ.get("USERPROFILE", "")
+        extra = []
+        if la:
+            extra += glob.glob(os.path.join(la, "Microsoft", "WinGet", "Packages", "Gyan.FFmpeg*", "ffmpeg-*", "bin"))
+            extra.append(os.path.join(la, "Microsoft", "WinGet", "Links"))
+        if home:
+            extra.append(os.path.join(home, ".deno", "bin"))
+        for d in extra:
+            if os.path.isdir(d):
+                _path_add(d)
+    add_tool_paths()
 
 
 _DLL_DONE = False
