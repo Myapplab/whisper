@@ -74,3 +74,23 @@ def test_diarizer_lowers_batch_on_ram_error(tmp_path, monkeypatch):
     dz.batch = 8
     turns = dz.run(_wav(tmp_path))
     assert turns and dz.batch == 2 and pipe.embedding_batch_size == 2
+
+
+def test_diar_gpu_error_restarts_diar_process(tmp_path):
+    p = _pipe(tmp_path, ("a",))
+    job, tasks = _job(p, tmp_path)
+
+    class DP:
+        workers = {"diar": None}
+        respawned = []
+
+        def respawn(self, n):
+            self.respawned.append(n)
+            return True
+    p.dpool = DP()
+    d = {"id": "u_test:d", "kind": "diarize", "job": job.item.key, "wav": "x"}
+    p.tasks[d["id"]] = d
+    job.pending.add(d["id"])
+    p._on_msg({"type": "error", "wid": "diar", "tid": d["id"],
+               "error": "RuntimeError: Konuşmacı ayırma ekran kartında başarısız oldu (cudnn); işlemciye geçilmedi."})
+    assert p.dpool.respawned == ["diar"] and "işlemciye geçilmedi" in job.diar_error

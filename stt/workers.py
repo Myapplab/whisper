@@ -47,8 +47,11 @@ def _handle(task: dict, wid: str, device: str, engine_cfg: dict, cache: dict):
                 from .engines import Diarizer
                 cache["diar"] = Diarizer(engine_cfg["diar_model"], engine_cfg["hf_token"], ddev,
                                          agc=engine_cfg.get("agc", True), batch=engine_cfg.get("diar_batch", 8),
-                                         gpu_frac=engine_cfg.get("diar_gpu_frac"), ram_pct=engine_cfg.get("ram_limit_pct", 70))
-            return {"turns": cache["diar"].run(task["wav"], task.get("min_speakers"), task.get("max_speakers"))}
+                                         gpu_frac=engine_cfg.get("diar_gpu_frac"), ram_pct=engine_cfg.get("ram_limit_pct", 70),
+                                         cpu_ok=engine_cfg.get("diar_cpu", False))
+            d = cache["diar"]
+            return {"turns": d.run(task["wav"], task.get("min_speakers"), task.get("max_speakers")),
+                    "device": d.device}
     raise ValueError(f"bilinmeyen görev: {kind}")
 
 

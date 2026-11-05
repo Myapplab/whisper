@@ -91,6 +91,12 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   2 kez tekrar. Film/müzik altında VAD konuşmayı kaçırıyordu (metnin ~%30'u yok): `fill_gaps` — 12 sn'den uzun
   metinsiz aralık VAD'siz tekrar çevrilir, `keep_gap_segment` uydurmaları eler.
 
+- **1.6.2:** konuşmacı ayırma ASLA kendiliğinden işlemciye geçmez (`diar_cpu`=false; kullanıcı: "işlemci fanı çok
+  dönüyor, yalnızca GPU"; i3-10100). Eski davranış: bir cuDNN hatasından sonra diar süreci CPU'da kalıyor, sonraki
+  bütün videolar CPU'da (görünmeden) ayrılıyordu. Şimdi: cuDNN kapalı tekrar → olmazsa hata + diar süreci yeniden
+  başlatılır (sonraki video temiz CUDA). `torch.set_num_threads(2)`. İşçi günlükleri dosyaya gitmez → bitişte ana
+  süreç `[diar] konuşmacı ayırma bitti (cihaz, sn)` yazar.
+
 ## Arayüzler
 - **Uygulama:** `pythonw -m stt.gui` (pywebview + Edge WebView2; `stt/gui.py` + `stt/gui.html`). Pencere
   `window_geometry` (ekranın ~%60'ı, en çok 1100×720, boyut `%LOCALAPPDATA%\stt\pencere.json`'da), dar pencerede
@@ -157,7 +163,7 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
 - Kullanıcı ileride uygulamayı paylaşmak istiyor (tek kurulum dosyası).
 
 ## Geliştirme (bulut/Linux)
-- Testler: `python -m pytest -q tests` (102 test; `test_v161.py` = tek iş durdurma/bellek/boşluk; `test_v16.py` = 1.6.0 özellikleri; `test_speakers.py` = podcast/film modu; `test_updater.py` = güncelleme/geri alma; `test_stability.py` = GPU seçimi, işçi yeniden başlatma, iptal,
+- Testler: `python -m pytest -q tests` (104 test; `test_v161.py` = tek iş durdurma/bellek/boşluk; `test_v16.py` = 1.6.0 özellikleri; `test_speakers.py` = podcast/film modu; `test_updater.py` = güncelleme/geri alma; `test_stability.py` = GPU seçimi, işçi yeniden başlatma, iptal,
   bloklamayan arayüz, cuDNN geri çekilmesi; `test_app.py` = ortam hazırlığı, ayarlar, hata mesajları).
 - GPU yok ve HuggingFace engelliyse test modeli: GitHub `rhasspy/models` `asr_faster-whisper-small-int8`
   + `dev/make_tokenizer.py` (openai-whisper tiktoken → tokenizer.json) + `dev/add_alignment_heads.py`.

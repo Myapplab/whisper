@@ -292,8 +292,19 @@ def test_diarizer_falls_back_to_cpu(tmp_path):
     pipe = _Pipe(["cuDNN error: CUDNN_STATUS_EXECUTION_FAILED", "CUDA error: an illegal memory access"])
     cpu = _Pipe([])
     d = _fake_diarizer(pipe, cpu_pipe=cpu)
+    d.cpu_ok = True  # yalnızca ayarlarda diar_cpu açıksa
     turns = d.run(_wav(tmp_path))
     assert len(turns) == 2 and d.device == "cpu" and cpu.calls == 1
+
+
+def test_diarizer_never_uses_cpu_by_default(tmp_path):
+    import pytest
+    pipe = _Pipe(["cuDNN error: CUDNN_STATUS_EXECUTION_FAILED", "CUDA error: an illegal memory access"])
+    cpu = _Pipe([])
+    d = _fake_diarizer(pipe, cpu_pipe=cpu)
+    with pytest.raises(RuntimeError, match="işlemciye geçilmedi"):
+        d.run(_wav(tmp_path))
+    assert d.device == "cuda:1" and cpu.calls == 0
 
 
 def test_diarizer_other_errors_raise(tmp_path):

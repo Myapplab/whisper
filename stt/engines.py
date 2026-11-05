@@ -444,8 +444,9 @@ class Diarizer:
     agc = True  # testler __new__ ile kurar
     batch = 8
     ram_pct = 70
+    cpu_ok = False  # işlemciye (CPU) geçilmez: kullanıcıda fan çok dönüyor, i3'te çok yavaş
     def __init__(self, model: str, token: str | None, device: str, agc: bool = True, batch: int = 8,
-                 gpu_frac: float | None = None, ram_pct: int = 70):
+                 gpu_frac: float | None = None, ram_pct: int = 70, cpu_ok: bool = False):
         os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")  # pyannote 3.x + torch>=2.6
         setup_cuda_dlls()
         import torch
@@ -455,12 +456,21 @@ class Diarizer:
         self.torch = torch
         self.model, self.token = model, token
         self.agc = agc
-        self.batch, self.ram_pct = max(1, int(batch or 8)), ram_pct
+        self.batch, self.ram_pct, self.cpu_ok = max(1, int(batch or 8)), ram_pct, cpu_ok
         torch.backends.cudnn.benchmark = False
+        try:  # ekran kartında da torch işlemcide iş parçacıkları açar; 2 ile sınırla (fan / donma)
+            torch.set_num_threads(2)
+        except Exception:  # noqa: BLE001
+            pass
+        kind, idx = parse_device(device)
+        if kind == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError("Konuşmacı ayırma ekran kartını göremedi (torch CUDA yok); işlemcide yapılmıyor. "
+                               "NVIDIA sürücüsünü güncelleyin ya da kurulumu tekrar çalıştırın.")
+        if kind != "cuda" and not cpu_ok:
+            raise RuntimeError("Konuşmacı ayırma için uygun ekran kartı yok; işlemcide (CPU) yapılmıyor.")
         self.pipe = self._load()
         self.device = "cpu"
-        kind, idx = parse_device(device)
-        if kind == "cuda" and torch.cuda.is_available():
+        if kind == "cuda":
             if gpu_frac:  # ekran kartı belleğinin en çok bu oranı (ör. 3090 %90, monitörlü 3080 %70)
                 try:
                     torch.cuda.set_per_process_memory_fraction(min(0.95, max(0.2, gpu_frac)), idx)
@@ -569,6 +579,9 @@ class Diarizer:
                     turns = self._run(audio, kw)
                 except RuntimeError as e2:
                     log.warning("[%s] yine olmadı (%s)", self.device, str(e2)[:120])
+            if turns is None and not self.cpu_ok:
+                raise RuntimeError(f"Konuşmacı ayırma ekran kartında başarısız oldu ({str(e)[:160]}); "
+                                   "işlemciye geçilmedi. Bir sonraki videoda ekran kartı baştan açılır.")
             if turns is None:
                 # ekran kartında olmuyor: işlemcide (CPU) baştan yükle; yavaş ama metin soru-cevap olarak çıkar
                 log.warning("[%s] konuşmacı ayırma işlemciye (CPU) alındı; bu kayıt biraz daha uzun sürer", self.device)

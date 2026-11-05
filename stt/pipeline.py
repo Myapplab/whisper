@@ -68,7 +68,8 @@ def diar_hint(err: str) -> str:
     if is_ram_error(err):
         return ram_hint(err)
     if "cudnn" in e or "cuda error" in e:
-        return ("Ekran kartında ve işlemcide konuşmacı ayırma başarısız oldu. NVIDIA sürücüsünü güncelleyin; "
+        return ("Konuşmacı ayırma ekran kartında başarısız oldu (işlemciye geçilmedi; sonraki videoda kart "
+                "baştan açılır). Sürerse NVIDIA sürücüsünü güncelleyin; "
                 "'Kontrol'ün ekran görüntüsünü paylaşın. (" + err[:160] + ")")
     if "proxyerror" in e or "max retries" in e or "connectionerror" in e or "timed out" in e:
         return "huggingface.co'ya bağlanılamadı (internet/güvenlik duvarı). Model bir kez inince internet gerekmez."
@@ -187,7 +188,7 @@ class Pipeline:
                 "diar_model": cfg.diar_model, "hf_token": cfg.hf_token, "languages": cfg.languages,
                 "agc": cfg.agc, "vad_threshold": cfg.vad_threshold, "isolate_gpu": cfg.isolate_gpu,
                 "gpu_limit_pct": cfg.gpu_limit_pct, "display_gpu_limit_pct": cfg.display_gpu_limit_pct,
-                "ram_limit_pct": cfg.ram_limit_pct, "diar_batch": cfg.diar_batch, "fill_gaps": cfg.fill_gaps}
+                "ram_limit_pct": cfg.ram_limit_pct, "diar_batch": cfg.diar_batch, "diar_cpu": cfg.diar_cpu, "fill_gaps": cfg.fill_gaps}
         if cfg.engine == "openai":
             devices = ["api"] * max(1, cfg.openai_workers)
             self.pool = WorkerPool(devices, ecfg, threads=True)
@@ -814,6 +815,13 @@ class Pipeline:
                     self.dqueued_n = 0
                     self.emit("worker", wid="diar", state="loading")
                 return
+            if task["kind"] == "diarize" and self.dpool is not None and "diar" in self.dpool.workers \
+                    and any(x in m["error"].lower() for x in ("cuda", "cudnn", "cublas", "ekran kart")):
+                # ekran kartı hatası: süreci kapat, sonraki video temiz bir CUDA ile başlasın (CPU'ya düşmesin)
+                self.dpool.respawn("diar")
+                self.idle.discard("diar")
+                self.dqueued_n = 0
+                self.emit("worker", wid="diar", state="loading")
             if task["kind"] == "diarize":
                 job.diar_error = diar_hint(m["error"])
                 log.warning("KONUŞMACI AYIRMA YAPILAMADI: %s  -> metin konuşmacısız yazılacak.", job.diar_error)
@@ -849,6 +857,8 @@ class Pipeline:
                              task["idx"] + 1, total, fmt_clock(dur), dur / max(0.01, m["elapsed"]))
             else:
                 (job.work / "konusmaci.json").write_text(json.dumps(payload), encoding="utf-8")
+                log.info("[diar] konuşmacı ayırma bitti (%s, %.0f sn): %s", payload.get("device") or "?",
+                         m.get("elapsed", 0), job.item.title[:60])
                 self.emit("diar", job.item, ok=True, speakers=len({t[2] for t in payload.get("turns", [])}))
         job.pending.discard(tid)
         self._maybe_finalize(job)
