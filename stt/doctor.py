@@ -53,7 +53,24 @@ def run_doctor(cfg, deep: bool = False) -> int:
         add(OK, "curl_cffi", f"{getattr(curl_cffi, '__version__', '?')} (Dailymotion vb. tarayıcı taklidi)")
     except Exception:  # noqa: BLE001
         add(WARN, "curl_cffi", "yok -> Dailymotion gibi siteler inmez; uygulamada Güncelle'ye basın")
-    js =next((n for n in ("deno", "node", "bun", "qjs") if which(n)), None)
+    try:
+        import playwright  # noqa: F401
+        from .browser import _launch
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as pw:
+            br = _launch(pw)
+            ver = br.version
+            br.close()
+        add(OK, "Gizli tarayıcı", f"Playwright + {ver} (doğrudan inmeyen siteler için)")
+    except ImportError:
+        add(WARN, "Gizli tarayıcı", "playwright yok -> bazı siteler inmeyebilir; uygulamada Güncelle'ye basın")
+    except Exception as e:  # noqa: BLE001
+        add(WARN, "Gizli tarayıcı", f"açılamadı: {str(e)[:120]}")
+    from .fetch import cookie_browsers, installed_browsers
+    inst = installed_browsers()
+    add(OK if inst else WARN, "Tarayıcılar", (", ".join(inst) or "bulunamadı") + "  (çerez sırası: "
+        + (", ".join(cookie_browsers(cfg.cookies_browser)) or "kapalı") + ")")
+    js = next((n for n in ("deno", "node", "bun", "qjs") if which(n)), None)
     if js:
         add(OK, "JS çalışma zamanı", f"{js}: {(_ver([which(js), '--version']) or '?')[:50]} (YouTube için)")
     else:
@@ -199,8 +216,21 @@ def run_doctor(cfg, deep: bool = False) -> int:
 
     if cfg.cookies_browser:
         add(OK, "Çerezler", f"tarayıcı: {cfg.cookies_browser}"
-            + (" (Windows'ta Chrome çerezleri için Chrome kapalı olmalı; olmazsa firefox ya da cookies.txt)"
+            + (" (Windows'ta Chrome çerezleri çoğu zaman okunamaz; diğer tarayıcılar da sırayla denenir)"
                if sys.platform == "win32" and cfg.cookies_browser == "chrome" else ""))
+    if cfg.llm_provider:
+        try:
+            from .llm import LLM
+            llm = LLM(cfg, Path(cfg.out_dir) / ".stt")
+            st = llm.status()
+            add(OK if st["ready"] else WARN, "Yapay zekâ", f"{cfg.llm_provider}: " + ("anahtar var" if st["ready"] else
+                "ANAHTAR YOK (Ayarlar > Yapay zekâ)") + f"; bu ay ~${st['month_usd']:.3f} / sınır ${cfg.llm_budget_usd}")
+        except Exception as e:  # noqa: BLE001
+            add(WARN, "Yapay zekâ", str(e)[:120])
+    else:
+        add(OK, "Yapay zekâ", "kapalı (isteğe bağlı: haber taslağı, soru-cevap düzeltme, konu filtresi)")
+    if cfg.api_port:
+        add(OK, "Yerel API", f"http://127.0.0.1:{cfg.api_port}/api/status")
     print()
     print("Sonuç:", "her şey hazır." if bad == 0 else f"{bad} kritik sorun var.")
     return 1 if bad else 0

@@ -88,12 +88,27 @@ def test_all_workers_fatal_sets_reason(tmp_path):
     events = []
     pipe.events = events.append
     pipe.pool = _FakePool()
+    pipe.restarts = {"cuda:0": 99, "cuda:1": 99}  # yeniden deneme hakkı bitmiş
     try:
         pipe._on_msg({"type": "fatal", "wid": "cuda:0", "error": "RuntimeError: CUDA failed with error out of memory"})
         assert pipe.failed_reason is None  # biri hâlâ yükleniyor olabilir
         pipe._on_msg({"type": "fatal", "wid": "cuda:1", "error": "RuntimeError: mkl_malloc: failed to allocate memory"})
         assert pipe.failed_reason and pipe.failed_reason.startswith("Model yüklenemedi")
         assert events[-1]["type"] == "fatal"
+    finally:
+        pipe.pool = None
+        pipe.close()
+
+
+def test_transient_fatal_is_retried(tmp_path):
+    pipe = _pipe(tmp_path)
+    events = []
+    pipe.events = events.append
+    pipe.pool = _FakePool()
+    try:
+        pipe._on_msg({"type": "fatal", "wid": "cuda:0", "error": "RuntimeError: mkl_malloc: failed to allocate memory"})
+        assert pipe.failed_reason is None and "cuda:0" not in pipe.fatal
+        assert events[-1]["state"] == "loading"
     finally:
         pipe.pool = None
         pipe.close()

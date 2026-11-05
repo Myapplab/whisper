@@ -23,8 +23,13 @@ class Config:
     gpus: str = "auto"                   # "auto" (monitörsüz kart), "all" (hepsi), "0,1", "0", "cpu"
     display_batch: int = 4               # monitörün bağlı olduğu kart kullanılırsa en fazla bu toplu boyut
     low_priority: bool = True            # tanıma süreçleri düşük öncelikte (bilgisayar donmasın)
+    isolate_gpu: bool = True             # her işçi yalnızca kendi kartını görür (monitörlü kartta CUDA bağlamı yok)
+    ui_gpu: bool = False                 # arayüz (WebView2) ekran kartı hızlandırması; kapalı = ekran kararmasın
     prompt: str | None = None
     condition_on_previous_text: bool = True
+    agc: bool = True                     # otomatik kazanç: uzaktaki muhabir sesini yükselt (tanıma + ayırma)
+    vad_threshold: float = 0.4           # Whisper VAD eşiği (düşük = sessiz konuşmayı da yakalar)
+    worker_restarts: int = 6             # art arda en fazla bu kadar yeniden başlatma (başarılı görev sayacı sıfırlar)
     # bölme
     split_min: float = 8.0               # bundan uzun dosyalar VAD ile parçalanır (dakika)
     chunk_min: float = 5.0               # hedef parça uzunluğu (dakika)
@@ -38,9 +43,30 @@ class Config:
     td_label: str = "Teknik direktör"
     reporter_label: str = "Muhabir"
     # indirme
-    cookies_browser: str | None = "chrome"
+    cookies_browser: str | None = "auto"  # auto = kurulu tarayıcıları sırayla dene (firefox, edge, chrome, brave...)
     cookies_file: str | None = None
     prep_workers: int = 2
+    download_retries: int = 3            # geçici ağ hatalarında indirme tekrarı
+    browser_capture: bool = True         # son çare: gizli tarayıcıyla (Edge/Chrome) sayfadaki videoyu yakala
+    ytdlp_autoupdate: bool = True        # yt-dlp günde bir kez güncellenir (siteler sık değişiyor)
+    # kanal / oynatma listesi
+    channel_max: int = 200               # bir kanaldan en fazla bu kadar video listelenir (yeniden eskiye)
+    follow_interval_h: float = 6.0       # kanal takibi kaç saatte bir yeni video arasın
+    # canlı yayın
+    live_chunk_s: float = 20.0           # canlı yayında kaç saniyede bir metin çıksın
+    live_max_h: float = 6.0              # canlı kayıt en fazla (saat)
+    # yapay zekâ (isteğe bağlı): özet, haber taslağı, soru-cevap düzeltme, konu filtresi
+    llm_provider: str | None = None      # None | gemini | claude | openai
+    llm_model: str | None = None         # boş = sağlayıcının ucuz/hızlı modeli
+    gemini_api_key: str | None = None
+    anthropic_api_key: str | None = None
+    llm_budget_usd: float = 5.0          # aylık harcama sınırı (tahmini); aşılınca yapay zekâ adımları atlanır
+    llm_news: bool = False               # her metin için haber taslağı + alıntılar (haber.md)
+    llm_qa: bool = True                  # konuşmacı ayrılamazsa soru-cevabı yapay zekâyla ayır
+    # dış programlar (haber sitesi / haber radarı)
+    api_port: int = 0                    # 0 = kapalı; ör. 8765 -> http://127.0.0.1:8765/api
+    api_token: str | None = None
+    webhook_url: str | None = None       # her biten iş için JSON POST
     # durum
     force: bool = False
     keep_audio: bool = False
@@ -71,6 +97,11 @@ ENV_MAP = {
     "STT_COOKIES_FILE": "cookies_file",
     "STT_MODEL": "model",
     "STT_GPUS": "gpus",
+    "GOOGLE_API_KEY": "gemini_api_key",
+    "GEMINI_API_KEY": "gemini_api_key",   # sonra gelen önceliklidir
+    "ANTHROPIC_API_KEY": "anthropic_api_key",
+    "STT_API_PORT": "api_port",
+    "STT_LLM": "llm_provider",
 }
 
 
@@ -132,4 +163,12 @@ def normalize(cfg: Config) -> Config:
         cfg.cookies_browser = None
     if isinstance(cfg.lang, str) and cfg.lang.strip().lower() in ("", "auto", "otomatik", "oto"):
         cfg.lang = None
+    if isinstance(cfg.llm_provider, str):
+        v = cfg.llm_provider.strip().lower()
+        v = {"google": "gemini", "anthropic": "claude", "gpt": "openai"}.get(v, v)
+        cfg.llm_provider = v if v in ("gemini", "claude", "openai") else None
+    for k in ("gemini_api_key", "anthropic_api_key", "hf_token", "api_token", "webhook_url", "llm_model"):
+        v = getattr(cfg, k)
+        if isinstance(v, str) and not v.strip():
+            setattr(cfg, k, None)
     return cfg

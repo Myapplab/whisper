@@ -52,10 +52,80 @@ def _smi(query: str) -> list[list[str]]:
     return [[x.strip() for x in line.split(",")] for line in r.stdout.splitlines() if line.strip()]
 
 
-def gpu_info() -> dict[int, dict]:
+def windows_display_adapters() -> list[str] | None:
+    """Windows: masaüstünü çizen (monitör bağlı) ekran kartlarının adları. Windows değilse None.
+
+    nvidia-smi'nin display_active alanı bazı sürücülerde monitörlü kartta da 'Disabled' diyor; o zaman iki kart
+    da 'boş' sanılıp monitörlü kart (3080) tam yükte kullanılıyor, ekran kararıp geri geliyordu (TDR).
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class DD(ctypes.Structure):
+            _fields_ = [("cb", wintypes.DWORD), ("DeviceName", wintypes.WCHAR * 32),
+                        ("DeviceString", wintypes.WCHAR * 128), ("StateFlags", wintypes.DWORD),
+                        ("DeviceID", wintypes.WCHAR * 128), ("DeviceKey", wintypes.WCHAR * 128)]
+        out, i = [], 0
+        enum = ctypes.windll.user32.EnumDisplayDevicesW  # type: ignore[attr-defined]
+        while i < 64:
+            d = DD()
+            d.cb = ctypes.sizeof(DD)
+            if not enum(None, i, ctypes.byref(d), 0):
+                break
+            if d.StateFlags & 0x1:  # DISPLAY_DEVICE_ATTACHED_TO_DESKTOP
+                out.append(d.DeviceString)
+            i += 1
+        return out
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _norm_gpu(name: str) -> str:
+    n = name.lower()
+    for p in ("nvidia ", "geforce ", "quadro "):
+        n = n.replace(p, "")
+    return " ".join(n.split())
+
+
+def mark_display(out: dict[int, dict], adapters: list[str] | None) -> None:
+    """Windows'un 'masaüstüne bağlı' listesiyle monitörlü kartları işaretle (adlar ayırt edilebiliyorsa)."""
+    if adapters is None or not out:
+        return
+    names = [_norm_gpu(g["name"]) for g in out.values()]
+    if len(set(names)) != len(names):  # iki aynı model kart: adla ayırt edilemez, nvidia-smi'ye güven
+        return
+    att = [_norm_gpu(a) for a in adapters]
+    for g in out.values():
+        n = _norm_gpu(g["name"])
+        hit = any(n == a or n in a or a in n for a in att if a)
+        if hit:
+            g["display"] = True  # nvidia-smi 'Disabled' dese bile: Windows bu kartla çiziyor
+        elif g.get("display") is None and att:
+            g["display"] = False  # masaüstü listesinde yok (monitör başka kartta / iGPU'da)
+        # nvidia-smi 'Enabled' dediyse koru (yanlışlıkla korumak yalnızca biraz hız kaybettirir)
+
+
+_GPU_CACHE: tuple[float, dict] | None = None
+
+
+def gpu_info(max_age: float = 60.0) -> dict[int, dict]:
+    """Önbellekli (nvidia-smi her açılışta 4-5 kez çağrılıyordu)."""
+    global _GPU_CACHE
+    if _GPU_CACHE and time.time() - _GPU_CACHE[0] < max_age:
+        return {i: dict(g) for i, g in _GPU_CACHE[1].items()}
+    out = _gpu_info()
+    _GPU_CACHE = (time.time(), out)
+    return {i: dict(g) for i, g in out.items()}
+
+
+def _gpu_info() -> dict[int, dict]:
     """nvidia-smi: {index: {name, gb, display}}. CUDA_DEVICE_ORDER=PCI_BUS_ID ile CUDA sırasıyla aynıdır.
 
     display: True = bu karta monitör bağlı (masaüstü bu kartla çiziliyor), False = boş kart, None = bilinmiyor.
+    Kaynaklar: nvidia-smi display_attached / display_mode / display_active + Windows EnumDisplayDevices.
     """
     out: dict[int, dict] = {}
     for row in _smi("index,name,memory.total"):
@@ -64,14 +134,36 @@ def gpu_info() -> dict[int, dict]:
             out[int(i)] = {"name": name.replace("NVIDIA GeForce ", ""), "gb": float(mem) / 1024, "display": None}
         except (ValueError, IndexError):
             continue
-    for row in _smi("index,display_active"):  # ayrı sorgu: alan desteklenmezse ilk sorgu bozulmasın
-        try:
-            v = row[1].lower()
-            if int(row[0]) in out and v in ("enabled", "disabled"):
-                out[int(row[0])]["display"] = v == "enabled"
-        except (ValueError, IndexError):
-            continue
+    # her alan ayrı sorgu: biri desteklenmezse (sürücüye göre değişiyor) ötekiler bozulmasın
+    for field in ("display_attached", "display_mode", "display_active"):
+        for row in _smi(f"index,{field}"):
+            try:
+                v = row[1].strip().lower()
+                i = int(row[0])
+            except (ValueError, IndexError):
+                continue
+            if i not in out:
+                continue
+            if v in ("enabled", "yes", "true", "1"):
+                out[i]["display"] = True
+            elif v in ("disabled", "no", "false", "0") and out[i]["display"] is None:
+                out[i]["display"] = False
+    mark_display(out, windows_display_adapters())
     return out
+
+
+def cuda_device_count() -> int:
+    """CUDA kart sayısı. Önce nvidia-smi (ana süreçte CUDA başlatmamak için: monitörlü kartta bağlam açmak
+    ekranın kararmasına yol açabiliyor), yoksa CTranslate2."""
+    gi = gpu_info()
+    if gi:
+        return len(gi)
+    try:
+        setup_cuda_dlls()
+        import ctranslate2
+        return ctranslate2.get_cuda_device_count()
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 def gpu_table() -> dict[int, tuple[str, float]]:
@@ -120,14 +212,17 @@ def pick_language(probs: list[dict[str, float]], allowed: set[str]) -> tuple[str
 class WhisperEngine:
     def __init__(self, model_path: str, device: str, compute_type: str, beam_size: int,
                  condition_on_previous_text: bool = True, batch_size: int = -1, vram_gb: float | None = None,
-                 languages: str | None = None):
+                 languages: str | None = None, label: str | None = None, agc: bool = True,
+                 vad_threshold: float = 0.4):
         setup_cuda_dlls()
         kind, idx = parse_device(device)
         from faster_whisper import WhisperModel
 
         if kind == "cpu" and compute_type in ("float16", "int8_float16"):
             compute_type = "int8"
-        self.device = device
+        self.device = label or device  # günlükte gerçek kart adı (işçi yalnızca kendi kartını görür: cuda:0)
+        self.agc = agc
+        self.vad = {"min_silence_duration_ms": 500, "threshold": vad_threshold}
         self.beam_size = beam_size
         self.cond = condition_on_previous_text
         self.allowed = {x.strip() for x in (languages or DEFAULT_LANGS).split(",") if x.strip()}
@@ -177,6 +272,9 @@ class WhisperEngine:
 
     def transcribe(self, wav: str, start: float, end: float, lang: str | None, prompt: str | None) -> dict:
         audio = load_wav(wav, start, end)
+        if self.agc:
+            from .audio import agc
+            agc(audio)
         if not lang:
             lang = self.detect_language(audio)
         while True:
@@ -194,14 +292,12 @@ class WhisperEngine:
         if self.batched is not None:
             segs, info = self.batched.transcribe(
                 audio, language=lang, beam_size=self.beam_size, vad_filter=True, word_timestamps=True,
-                initial_prompt=prompt, batch_size=self.batch_size,
-                vad_parameters={"min_silence_duration_ms": 500},
+                initial_prompt=prompt, batch_size=self.batch_size, vad_parameters=self.vad,
             )
         else:
             segs, info = self.model.transcribe(
                 audio, language=lang, beam_size=self.beam_size, vad_filter=True, word_timestamps=True,
-                initial_prompt=prompt, condition_on_previous_text=self.cond,
-                vad_parameters={"min_silence_duration_ms": 500},
+                initial_prompt=prompt, condition_on_previous_text=self.cond, vad_parameters=self.vad,
             )
         out = []
         for s in segs:
@@ -278,7 +374,8 @@ class OpenAIEngine:
 
 
 class Diarizer:
-    def __init__(self, model: str, token: str | None, device: str):
+    agc = True
+    def __init__(self, model: str, token: str | None, device: str, agc: bool = True, label: str | None = None):
         os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")  # pyannote 3.x + torch>=2.6
         setup_cuda_dlls()
         import torch
@@ -287,6 +384,7 @@ class Diarizer:
             raise RuntimeError("Konuşmacı ayırma için HF token gerekli (--hf-token ya da HF_TOKEN)")
         self.torch = torch
         self.model, self.token = model, token
+        self.agc = agc
         torch.backends.cudnn.benchmark = False
         self.pipe = self._load()
         self.device = "cpu"
@@ -316,6 +414,9 @@ class Diarizer:
 
     def run(self, wav: str, min_speakers=None, max_speakers=None) -> list[list]:
         audio = load_wav(wav)
+        if self.agc:  # uzaktan konuşan muhabirler de ayrı konuşmacı olarak bulunsun
+            from .audio import agc
+            agc(audio)
         t = time.time()
         kw = {}
         if min_speakers:

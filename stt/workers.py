@@ -13,6 +13,19 @@ import traceback
 from .util import log
 
 
+def shift_payload(payload: dict, offset: float) -> dict:
+    """Ayrı dosyadan (canlı yayın parçası) gelen zamanları genel zaman çizgisine taşı."""
+    if not offset:
+        return payload
+    for s in payload.get("segments", []):
+        s["start"] = round(s["start"] + offset, 3)
+        s["end"] = round(s["end"] + offset, 3)
+        for w in s.get("words") or []:
+            w["start"] = round(w["start"] + offset, 3)
+            w["end"] = round(w["end"] + offset, 3)
+    return payload
+
+
 def _handle(task: dict, wid: str, device: str, engine_cfg: dict, cache: dict):
     kind = task["kind"]
     if kind == "transcribe":
@@ -20,27 +33,38 @@ def _handle(task: dict, wid: str, device: str, engine_cfg: dict, cache: dict):
         if eng is None:
             raise RuntimeError("motor yok")
         if engine_cfg["engine"] == "openai":
-            return eng.transcribe(task["wav"], task["start"], task["end"], task["lang"], task["prompt"],
-                                  task.get("speech_start"), task.get("speech_end"))
-        return eng.transcribe(task["wav"], task["start"], task["end"], task["lang"], task["prompt"])
+            res = eng.transcribe(task["wav"], task["start"], task["end"], task["lang"], task["prompt"],
+                                 task.get("speech_start"), task.get("speech_end"))
+        else:
+            res = eng.transcribe(task["wav"], task["start"], task["end"], task["lang"], task["prompt"])
+        return shift_payload(res, task.get("offset") or 0.0)
     if kind == "diarize":
         lock = cache.setdefault("_diar_lock", threading.Lock())
         with lock:
             if "diar" not in cache:
-                ddev = device
-                if not device.startswith("cuda"):
-                    try:
-                        import torch
-                        ddev = "cuda:0" if torch.cuda.is_available() else "cpu"
-                    except Exception:  # noqa: BLE001
-                        ddev = "cpu"
+                # kart pipeline'da seçilir (monitörlü karta asla kendiliğinden gidilmez); "auto" = işlemci
+                ddev = device if device.startswith("cuda") else "cpu"
                 from .engines import Diarizer
-                cache["diar"] = Diarizer(engine_cfg["diar_model"], engine_cfg["hf_token"], ddev)
+                cache["diar"] = Diarizer(engine_cfg["diar_model"], engine_cfg["hf_token"], ddev,
+                                         agc=engine_cfg.get("agc", True))
             return {"turns": cache["diar"].run(task["wav"], task.get("min_speakers"), task.get("max_speakers"))}
     raise ValueError(f"bilinmeyen görev: {kind}")
 
 
-def _init(device: str, engine_cfg: dict, cache: dict, load_lock=None) -> None:
+def isolate_gpu(device: str) -> str:
+    """Bu süreç YALNIZCA kendi kartını görsün (CUDA_VISIBLE_DEVICES). Döner: süreç içi aygıt adı (cuda:0).
+
+    Böylece 3090'daki işçi, monitörün bağlı olduğu 3080'de hiçbir CUDA bağlamı açmaz (ekran kararması / TDR).
+    CUDA kütüphaneleri yüklenmeden ÖNCE çağrılmalı (işçi süreci başında)."""
+    if not device.startswith("cuda"):
+        return device
+    idx = device.split(":")[1] if ":" in device else "0"
+    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+    os.environ["CUDA_VISIBLE_DEVICES"] = idx
+    return "cuda:0"
+
+
+def _init(device: str, engine_cfg: dict, cache: dict, load_lock=None, run_device: str | None = None) -> None:
     if engine_cfg.get("role") == "diar":  # yalnızca konuşmacı ayırma: model ilk görevde yüklenir
         cache["engine"] = None
         return
@@ -62,9 +86,11 @@ def _init(device: str, engine_cfg: dict, cache: dict, load_lock=None) -> None:
         if load_lock is not None:
             load_lock.acquire()
         try:
-            cache["engine"] = WhisperEngine(engine_cfg["model_path"], device, engine_cfg["compute_type"],
+            cache["engine"] = WhisperEngine(engine_cfg["model_path"], run_device or device, engine_cfg["compute_type"],
                                             engine_cfg["beam_size"], engine_cfg["condition_on_previous_text"],
-                                            batch, vram, engine_cfg.get("languages"))
+                                            batch, vram, engine_cfg.get("languages"), label=device,
+                                            agc=engine_cfg.get("agc", True),
+                                            vad_threshold=engine_cfg.get("vad_threshold", 0.4))
         finally:
             if load_lock is not None:
                 load_lock.release()
@@ -106,8 +132,11 @@ def worker_main(wid: str, device: str, engine_cfg: dict, task_q, result_q, share
         for noisy in ("faster_whisper", "speechbrain", "lightning", "pytorch_lightning", "httpx"):
             logging.getLogger(noisy).setLevel(logging.WARNING)
     cache: dict = shared_cache if shared_cache is not None else {}
+    run_device = device
+    if shared_cache is None and engine_cfg.get("isolate_gpu", True):
+        run_device = isolate_gpu(device)
     try:
-        _init(device, engine_cfg, cache, load_lock)
+        _init(device, engine_cfg, cache, load_lock, run_device)
         result_q.put({"type": "ready", "wid": wid})
         while True:
             task = task_q.get()
@@ -116,7 +145,7 @@ def worker_main(wid: str, device: str, engine_cfg: dict, task_q, result_q, share
             result_q.put({"type": "start", "wid": wid, "tid": task["id"]})
             t = time.time()
             try:
-                payload = _handle(task, wid, device, engine_cfg, cache)
+                payload = _handle(task, wid, run_device, engine_cfg, cache)
                 result_q.put({"type": "done", "wid": wid, "tid": task["id"], "payload": payload,
                               "elapsed": time.time() - t})
             except Exception as e:  # noqa: BLE001

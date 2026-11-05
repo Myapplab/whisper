@@ -15,9 +15,18 @@ KULLANIM
   4) Biten işlerde "Metni göster" ya da "Klasörü aç".
   Metinler: Belgeler\STT Veri Seti  (takım > maç > basın toplantısı)
 
+  KANAL / OYNATMA LİSTESİ: "Kanal · liste" sekmesine kanal linkini yapıştırın (ör. youtube.com/@Arsenal),
+    konuyu seçin (Basın toplantısı), "Videoları listele", sonra "Seçilenleri başlat". "Takibe al" derseniz
+    yeni videolar kendiliğinden işlenir.
+  CANLI YAYIN: "Canlı yayın" sekmesine linki yapıştırın; metin ~20 saniyede bir akar. Bitirmek için
+    kuyruktaki "Canlıyı bitir".
+  YARIM KALAN İŞLER: uygulama kapanırsa bir sonraki açılışta "Devam et" çıkar.
+  HATA OLAN İŞ: kartındaki "Tekrar dene".
+
 BİLGİSAYAR YAVAŞLARSA
   STT, monitörün bağlı OLMADIĞI ekran kartını kullanır; böylece YouTube, tarayıcı ve oyunlar akıcı kalır.
   Ayarlar > "Ekran kartı kullanımı" > "Önerilen" seçili olsun. ("Hepsi" en hızlısıdır ama bilgisayar takılabilir.)
+  Ekran kararıp geliyorsa: Ayarlar > Ekran kartı > "Yalnızca RTX 3090" seçin.
   Çalışan işleri durdurmak için Kuyruk bölümündeki "Durdur"a basın; aynı linki tekrar eklerseniz kaldığı yerden devam eder.
 
 SORUN OLURSA

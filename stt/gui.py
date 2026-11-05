@@ -25,6 +25,7 @@ from .util import log
 HTML_PATH = Path(__file__).with_name("gui.html")
 URL_RE = re.compile(r"https?://[^\s<>\"']+")
 SETTING_KEYS = ("out_dir", "hf_token", "fpl_repo", "cookies_browser", "lang", "diarize", "fpl_auto", "gpus")
+UI_STATE = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "stt" / "pencere.json"
 
 
 def _redirect_std() -> Path:
@@ -105,6 +106,17 @@ class App:
         self._wake = threading.Event()
         self._sender_started = False
         self._logpath: Path | None = None
+        self._items: dict = {}                 # uid -> Item ("Tekrar dene" için)
+        self._jobs: dict[str, dict] = {}       # uid -> son durum (yerel API / sayaçlar)
+        self._gpus: dict = {}                  # nvidia-smi kart listesi (Ayarlar'daki kart seçimi)
+        self._api = None
+        self._llm = None
+        self._pending: list[dict] = []
+        try:  # uygulama kapanınca yarım kalan işler: açılışta "Devam et" önerilir
+            from .state import State
+            self._pending = State(Path(self._cfg.out_dir).resolve() / ".stt").queue_all()
+        except Exception:  # noqa: BLE001
+            log.debug("bekleyen işler okunamadı", exc_info=True)
 
     # ---------------------------------------------------------- JS'e olay
     MAX_OUTBOX = 3000
@@ -118,6 +130,7 @@ class App:
         """
         if ev.get("type") == "fatal":  # tüm işçiler başlatılamadı: motor hata durumunda görünsün
             self._engine_state.update(state="error", error=ev.get("error"))
+        self._track(ev)
         if ev.get("type") == "worker":  # son durum: sayfa yeniden açılırsa GPU kartları doğru görünsün
             for d in self._engine_state.get("devices", []):
                 if d.get("wid") == ev.get("wid"):
@@ -128,6 +141,51 @@ class App:
                 keep = [e for e in self._outbox if e.get("type") != "log"]
                 self._outbox = keep[-self.MAX_OUTBOX:]
         self._wake.set()
+
+    def _track(self, ev: dict) -> None:
+        uid = ev.get("uid")
+        typ = ev.get("type")
+        if not uid or typ in ("log", "worker", "engine"):
+            return
+        j = self._jobs.setdefault(uid, {"uid": uid, "source": ev.get("source"), "status": "queued"})
+        if ev.get("title") and not str(ev["title"]).startswith("http"):
+            j["title"] = ev["title"]
+        st = {"queued": "queued", "prep": "downloading", "planned": "running", "progress": "running",
+              "retrying": "retrying", "done": "done", "failed": "cancelled" if ev.get("cancelled") else "failed",
+              "skipped": "skipped"}.get(typ)
+        if typ == "live":
+            st = "live" if ev.get("state") in ("start", "info", "text") else "finalizing"
+            if ev.get("txt"):
+                j["live_txt"] = ev["txt"]
+        if st:
+            j["status"] = st
+        for k in ("txt", "json", "out_dir", "error", "duration", "dataset", "done", "total"):
+            if ev.get(k) is not None:
+                j[k] = ev[k]
+        if len(self._jobs) > 2000:
+            for k in list(self._jobs)[:500]:
+                self._jobs.pop(k, None)
+
+    def job_counts(self) -> dict:
+        out: dict = {}
+        for j in list(self._jobs.values()):
+            out[j["status"]] = out.get(j["status"], 0) + 1
+        return out
+
+    def jobs_list(self) -> list[dict]:
+        return list(self._jobs.values())[-300:]
+
+    def results(self, limit: int = 100) -> list[dict]:
+        jl = Path(self._cfg.out_dir).resolve() / "index.jsonl"
+        if not jl.exists():
+            return []
+        rows = []
+        for line in jl.read_text(encoding="utf-8").splitlines()[-limit:]:
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                pass
+        return rows[::-1]
 
     def _take_batch(self) -> list[dict]:
         with self._lock:
@@ -171,6 +229,7 @@ class App:
                 self._pipe.events = self._push
                 self._pipe.start()
                 gi = gpu_info()
+                self._gpus = gi
                 devs = []
                 ds = self._pipe.devices or ["api"]
                 used = set()
@@ -227,8 +286,11 @@ class App:
         if not getattr(self, "_upd_checked", False):  # açılışta bir kez, arka planda
             self._upd_checked = True
             threading.Thread(target=self._auto_update_check, name="guncelleme", daemon=True).start()
+            threading.Thread(target=self._follow_loop, name="takip", daemon=True).start()
         return {"version": __version__, "settings": self.get_settings(), "engine": self._engine_state,
-                "dataset": self.dataset()}
+                "dataset": self.dataset(), "pending": [{"uid": x["uid"], "title": x["title"], "source": x["source"]}
+                                                       for x in self._pending],
+                "follows": self.follow_list()}
 
     # ---------------------------------------------------------- güncelleme
     def _auto_update_check(self) -> None:
@@ -270,35 +332,112 @@ class App:
 
     def get_settings(self) -> dict:
         c = self._cfg
+        g = (c.gpus or "auto").lower()
+        cards = [{"id": str(i), "name": v["name"], "gb": round(v["gb"]), "display": bool(v.get("display"))}
+                 for i, v in sorted(self._gpus.items())]
+        llm = self.llm()
         return {"out_dir": str(Path(c.out_dir).resolve()), "hf_token_set": bool(c.hf_token),
                 "fpl_repo": str(c.fpl_repo or ""), "fpl_ok": bool(c.fpl_repo and (Path(c.fpl_repo) / "presser.py").is_file()),
-                "cookies_browser": c.cookies_browser or "none", "lang": c.lang or "auto", "diarize": bool(c.diarize),
-                "fpl_auto": bool(c.fpl_auto), "gpus": "all" if (c.gpus or "").lower() == "all" else
-                "auto" if (c.gpus or "auto").lower() == "auto" else c.gpus}
+                "cookies_browser": c.cookies_browser or "none", "cookies_file": c.cookies_file or "",
+                "lang": c.lang or "auto", "diarize": bool(c.diarize), "fpl_auto": bool(c.fpl_auto),
+                "gpus": g if g in ("auto", "all") else str(c.gpus), "gpu_cards": cards,
+                "browser_capture": bool(c.browser_capture), "ui_gpu": bool(c.ui_gpu),
+                "llm_provider": c.llm_provider or "none", "llm_model": c.llm_model or "",
+                "gemini_key_set": bool(c.gemini_api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")),
+                "anthropic_key_set": bool(c.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")),
+                "openai_key_set": bool(os.environ.get("OPENAI_API_KEY")),
+                "llm_budget_usd": c.llm_budget_usd, "llm_news": bool(c.llm_news), "llm_qa": bool(c.llm_qa),
+                "llm": llm.status(), "api_port": c.api_port or 0, "api_token_set": bool(c.api_token),
+                "webhook_url": c.webhook_url or "", "follow_interval_h": c.follow_interval_h}
 
     def save_settings(self, s: dict) -> dict:
-        upd = {}
+        upd: dict = {}
         if s.get("out_dir"):
             upd["out_dir"] = s["out_dir"].replace("\\", "/")
-        if s.get("hf_token"):
-            upd["hf_token"] = s["hf_token"].strip()
+        for k in ("hf_token", "gemini_api_key", "anthropic_api_key", "api_token"):
+            if s.get(k):  # boş = mevcut anahtar kalsın
+                upd[k] = str(s[k]).strip()
         if "fpl_repo" in s:
             upd["fpl_repo"] = (s.get("fpl_repo") or "").replace("\\", "/")
+        if "cookies_file" in s:
+            upd["cookies_file"] = (s.get("cookies_file") or "").replace("\\", "/")
         if s.get("cookies_browser"):
             upd["cookies_browser"] = s["cookies_browser"]
-        for k in ("diarize", "fpl_auto"):
+        for k in ("diarize", "fpl_auto", "browser_capture", "ui_gpu", "llm_news", "llm_qa"):
             if k in s:
                 upd[k] = bool(s[k])
         if s.get("lang"):
             upd["lang"] = s["lang"]
-        if s.get("gpus") in ("auto", "all"):
-            upd["gpus"] = s["gpus"]
+        g = str(s.get("gpus") or "").strip()
+        if g in ("auto", "all") or re.fullmatch(r"\d+(,\d+)*", g):
+            upd["gpus"] = g
+        if "llm_provider" in s:
+            upd["llm_provider"] = s["llm_provider"] if s["llm_provider"] in ("gemini", "claude", "openai") else ""
+        if "llm_model" in s:
+            upd["llm_model"] = (s.get("llm_model") or "").strip()
+        for k, typ in (("llm_budget_usd", float), ("api_port", int), ("follow_interval_h", float)):
+            if s.get(k) not in (None, ""):
+                try:
+                    upd[k] = typ(s[k])
+                except (TypeError, ValueError):
+                    pass
+        if "webhook_url" in s:
+            upd["webhook_url"] = (s.get("webhook_url") or "").strip()
         save_settings(upd)
         old = (str(self._cfg.out_dir), self._cfg.hf_token, self._cfg.gpus)
+        old_port = self._cfg.api_port
         self._cfg = load_config()
+        self._llm = None
+        if self._pipe is not None:
+            for k in ("llm_provider", "llm_model", "gemini_api_key", "anthropic_api_key", "llm_budget_usd", "llm_news",
+                      "llm_qa", "webhook_url", "cookies_browser", "cookies_file", "browser_capture"):
+                setattr(self._pipe.cfg, k, getattr(self._cfg, k))
+            self._pipe._llm = None
         if (str(self._cfg.out_dir), self._cfg.hf_token, self._cfg.gpus) != old:
             self._restart.set()  # işler bitince motor yeni ayarlarla açılır
+        if self._cfg.api_port != old_port:
+            self._start_api()
         return self.get_settings()
+
+    # ---------------------------------------------------------- yapay zekâ
+    def llm(self):
+        if self._llm is None:
+            from .llm import LLM
+            self._llm = LLM(self._cfg, Path(self._cfg.out_dir).resolve() / ".stt")
+        return self._llm
+
+    def llm_test(self) -> dict:
+        try:
+            out = self.llm().complete("Kısa yanıt ver.", "Sadece 'tamam' yaz.", max_tokens=50)
+            return {"ok": True, "text": out.strip()[:100], "status": self.llm().status()}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e)[:300]}
+
+    def make_news(self, path: str) -> dict:
+        """Var olan bir metin için haber taslağı (txt ya da json yolu)."""
+        p = Path(path)
+        js = p if p.suffix == ".json" else p.with_suffix(".json")
+        if not js.exists():
+            return {"ok": False, "error": "Bu metnin .json dosyası bulunamadı."}
+        try:
+            from .llm import write_news
+            res = write_news(self.llm(), js)
+            return {"ok": True, "news": str(res["news"])}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e)[:300]}
+
+    # ---------------------------------------------------------- yerel API
+    def _start_api(self) -> None:
+        if self._api is not None:
+            try:
+                self._api.shutdown()
+            except Exception:  # noqa: BLE001
+                pass
+            self._api = None
+        if self._cfg.api_port:
+            from .api import start_api
+            self._api = start_api(self, self._cfg.api_port)
+
 
     def pick_files(self) -> list[str]:
         import webview
@@ -308,44 +447,226 @@ class App:
             "Link listesi (*.txt)", "Tüm dosyalar (*.*)"))
         return list(res or [])
 
+    def pick_cookie_file(self) -> str:
+        import webview
+        kind = getattr(getattr(webview, "FileDialog", None), "OPEN", None) or webview.OPEN_DIALOG
+        res = self._window.create_file_dialog(kind, allow_multiple=False,
+                                              file_types=("cookies.txt (*.txt)", "Tüm dosyalar (*.*)"))
+        return (res[0] if isinstance(res, (list, tuple)) and res else res) or ""
+
     def pick_folder(self) -> str:
         import webview
         kind = getattr(getattr(webview, "FileDialog", None), "FOLDER", None) or webview.FOLDER_DIALOG
         res = self._window.create_file_dialog(kind)
         return (res[0] if isinstance(res, (list, tuple)) else res) or ""
 
+    def _item_opts(self, it, opts: dict) -> None:
+        it.extra.update({"lang": opts.get("lang") or "auto", "diarize": bool(opts.get("diarize")),
+                         "fpl_auto": bool(opts.get("fpl_auto")),
+                         "speaker_mode": opts.get("speaker_mode") if opts.get("speaker_mode") in
+                         ("auto", "basin", "herkes") else "auto"})
+        if opts.get("news"):
+            it.extra["llm_news"] = True
+        if opts.get("live"):
+            it.extra["live"] = True
+        if opts.get("collection"):
+            it.extra["collection"] = str(opts["collection"])[:120]
+        try:
+            n = int(opts.get("speakers") or 0)
+        except (TypeError, ValueError):
+            n = 0
+        if 0 < n <= 20:
+            it.extra["speakers"] = n
+
+    def _enqueue(self, it) -> None:
+        import uuid
+        it.extra.setdefault("uid", uuid.uuid4().hex[:10])
+        self._items[it.extra["uid"]] = it
+        self._push({"type": "queued", "uid": it.extra["uid"], "source": it.source, "title": it.title,
+                    "live": bool(it.extra.get("live"))})
+        self._inbox.put(it)
+
     def start(self, text: str, paths: list[str], opts: dict) -> dict:
-        inputs = [u.rstrip(").,;") for u in URL_RE.findall(text or "")]
+        from .channel import is_collection_url
+        urls = [u.rstrip(").,;") for u in URL_RE.findall(text or "")]
+        collections = [u for u in urls if is_collection_url(u)] if not opts.get("live") else []
+        inputs = [u for u in urls if u not in collections]
         for line in (text or "").splitlines():
             line = line.strip().strip('"')
             if line and not is_url(line) and not URL_RE.search(line) and Path(line).exists():
                 inputs.append(line)
         inputs += [p for p in (paths or []) if p]
         items = expand_inputs(inputs)
-        import uuid
         for it in items:
-            it.extra.setdefault("uid", uuid.uuid4().hex[:10])
-            it.extra.update({"lang": opts.get("lang") or "auto", "diarize": bool(opts.get("diarize")),
-                             "fpl_auto": bool(opts.get("fpl_auto")),
-                             "speaker_mode": opts.get("speaker_mode") if opts.get("speaker_mode") in
-                             ("auto", "basin", "herkes") else "auto"})
-            try:
-                n = int(opts.get("speakers") or 0)
-            except (TypeError, ValueError):
-                n = 0
-            if 0 < n <= 20:
-                it.extra["speakers"] = n
-            self._push({"type": "queued", "uid": it.extra["uid"], "source": it.source, "title": it.title})
-            self._inbox.put(it)
+            self._item_opts(it, opts)
+            self._enqueue(it)
         warn = None
         if opts.get("diarize") and not self._cfg.hf_token:
             warn = "Konuşmacı ayırma için HuggingFace token gerekli (Ayarlar). Bu işler konuşmacısız yazılacak."
+        if opts.get("news") and not self.llm().available():
+            warn = "Haber taslağı için Ayarlar > Yapay zekâ bölümünde bir API anahtarı girin."
         if self._engine_state.get("state") == "error":
             warn = ("Motor çalışmıyor: " + str(self._engine_state.get("error") or "")[:200]
                     + " — İşler sırada bekliyor; üstteki 'Yeniden başlat'a basın ya da 'Kontrol'e bakın.")
-        if not items:
+        if collections:
+            warn = (f"{len(collections)} kanal/oynatma listesi linki 'Kanal / liste' sekmesine taşındı: orada konuyu "
+                    "seçip videoları listeleyin.")
+        elif not items:
             warn = "Link ya da dosya bulunamadı."
-        return {"count": len(items), "warning": warn}
+        return {"count": len(items), "warning": warn, "collections": collections,
+                "uids": [it.extra["uid"] for it in items]}
+
+    # ---------------------------------------------------------- tekrar dene / yarım kalanlar
+    def retry(self, uid: str) -> dict:
+        it = self._items.get(uid)
+        if it is None:
+            return {"ok": False, "error": "İş bulunamadı (uygulama yeniden açıldıysa linki tekrar ekleyin)."}
+        it.extra.pop("_gen", None)
+        self._push({"type": "queued", "uid": uid, "source": it.source, "title": it.title, "retry": True})
+        self._inbox.put(it)
+        return {"ok": True}
+
+    def retry_failed(self) -> dict:
+        n = 0
+        for uid, j in list(self._jobs.items()):
+            if j.get("status") in ("failed",) and uid in self._items:
+                self.retry(uid)
+                n += 1
+        return {"count": n}
+
+    def resume_pending(self) -> dict:
+        from .sources import Item
+        n = 0
+        for row in self._pending:
+            it = Item(row["kind"], row["source"], title=row["title"] or row["source"], extra=dict(row["extra"]))
+            it.extra["uid"] = row["uid"]
+            if it.kind == "file" and not Path(it.source).exists():
+                continue
+            self._enqueue(it)
+            n += 1
+        self._pending = []
+        return {"count": n}
+
+    def clear_pending(self) -> dict:
+        try:
+            from .state import State
+            State(Path(self._cfg.out_dir).resolve() / ".stt").queue_clear()
+        except Exception:  # noqa: BLE001
+            pass
+        self._pending = []
+        return {"ok": True}
+
+    def stop_live(self, uid: str) -> bool:
+        return bool(self._pipe is not None and self._pipe.stop_live(uid))
+
+    # ---------------------------------------------------------- kanal / oynatma listesi
+    def list_channel(self, url: str, opts: dict) -> dict:
+        from .channel import list_videos, select
+        url = (url or "").strip()
+        if not url:
+            return {"ok": False, "error": "Kanal ya da oynatma listesi linki girin."}
+        try:
+            data = list_videos(url, self._cfg, limit=int(opts.get("limit") or self._cfg.channel_max))
+        except Exception as e:  # noqa: BLE001
+            from .fetch import explain_error
+            return {"ok": False, "error": explain_error(str(e))}
+        use_ai = bool(opts.get("ai")) and self.llm().available()
+        items = select(data["items"], opts.get("topic") or "basin", opts.get("custom"), opts.get("exclude"),
+                       llm=self.llm() if use_ai else None,
+                       llm_topic=opts.get("custom") or {"basin": "basın toplantıları (press conference)",
+                                                        "roportaj": "röportajlar"}.get(opts.get("topic") or "", ""))
+        name = data.get("channel") or data.get("title") or url
+        topic = {"basin": "basın toplantıları", "roportaj": "röportajlar", "hepsi": "tümü"}.get(opts.get("topic") or "",
+                                                                                              opts.get("custom") or "")
+        coll = f"{name} - {topic}".strip(" -") if topic else name
+        st = None
+        try:
+            from .state import State
+            from .sources import normalize_url
+            from .util import text_hash
+            st = State(Path(self._cfg.out_dir).resolve() / ".stt")
+            for e in items:
+                e["done"] = st.is_done("u_" + text_hash(normalize_url(e["url"])))
+        except Exception:  # noqa: BLE001
+            pass
+        return {"ok": True, "title": data.get("title"), "channel": data.get("channel"), "items": items,
+                "matched": sum(1 for e in items if e.get("match")), "collection": coll, "ai": use_ai}
+
+    def start_selected(self, urls: list[str], opts: dict) -> dict:
+        from .sources import Item
+        n = 0
+        for u in urls or []:
+            it = Item("url", u, title=u)
+            self._item_opts(it, {**opts, "live": False})
+            self._enqueue(it)
+            n += 1
+        return {"count": n}
+
+    # ---------------------------------------------------------- kanal takibi
+    def _follows(self):
+        from .channel import Follows
+        return Follows(Path(self._cfg.out_dir).resolve() / ".stt")
+
+    def follow_list(self) -> list[dict]:
+        try:
+            return [{k: r.get(k) for k in ("id", "url", "name", "topic", "custom", "last", "found")}
+                    for r in self._follows().all()]
+        except Exception:  # noqa: BLE001
+            return []
+
+    def follow_add(self, url: str, opts: dict) -> dict:
+        """Kanalı takibe al. backfill=False ise ŞU ANKİ videolar 'görüldü' sayılır, yalnızca yenileri işlenir."""
+        res = self.list_channel(url, opts) if not opts.get("items") else {"ok": True, "items": opts["items"]}
+        if not res.get("ok"):
+            return res
+        seen = [] if opts.get("backfill") else [e.get("id") or e["url"] for e in res["items"]]
+        keep = {k: opts.get(k) for k in ("lang", "diarize", "speaker_mode", "speakers", "news", "ai", "fpl_auto")}
+        row = self._follows().add(url, res.get("collection") or opts.get("collection") or url, opts.get("topic") or "basin", opts.get("custom") or "",
+                                  opts.get("exclude") or "", keep, seen)
+        if opts.get("backfill"):
+            self.start_selected([e["url"] for e in res["items"] if e.get("match") and not e.get("done")],
+                                {**keep, "collection": row["name"]})
+        self._follows().update(row["id"], last=time.time())
+        return {"ok": True, "follow": row, "follows": self.follow_list()}
+
+    def follow_remove(self, fid: str) -> list[dict]:
+        self._follows().remove(fid)
+        return self.follow_list()
+
+    def follow_check_now(self) -> dict:
+        return {"count": self._check_follows(force=True)}
+
+    def _check_follows(self, force: bool = False) -> int:
+        from .channel import check_follow
+        f = self._follows()
+        rows = f.all() if force else f.due(self._cfg.follow_interval_h)
+        total = 0
+        for row in rows:
+            try:
+                new = check_follow(row, self._cfg, llm=self.llm() if self.llm().available() else None)
+            except Exception as e:  # noqa: BLE001
+                log.warning("Takip (%s) kontrol edilemedi: %s", row.get("name"), str(e)[:200])
+                f.update(row["id"], last=time.time())
+                continue
+            if new:
+                log.info("Takip: %s -> %d yeni video", row.get("name"), len(new))
+                self.start_selected([e["url"] for e in new], {**(row.get("opts") or {}), "collection": row["name"]})
+            seen = (row.get("seen") or []) + [e.get("id") or e["url"] for e in new]
+            f.update(row["id"], last=time.time(), seen=seen[-2000:], found=(row.get("found") or 0) + len(new))
+            total += len(new)
+        if rows:
+            self._push({"type": "follows", "follows": self.follow_list()})
+        return total
+
+    def _follow_loop(self) -> None:
+        time.sleep(60)
+        while not self._stop.is_set():
+            try:
+                self._check_follows()
+            except Exception:  # noqa: BLE001
+                log.exception("kanal takibi")
+            self._stop.wait(600)
+
 
     def open(self, p: str) -> None:
         open_path(p)
@@ -486,16 +807,54 @@ def _shutdown(app: "App") -> None:
     app._restart.set()
     pipe = app._pipe
     try:
-        if pipe is not None and pipe.pool is not None and not pipe.pool.threads:
-            for w in pipe.pool.workers.values():
-                if w.is_alive():
-                    w.terminate()
-            for w in pipe.pool.workers.values():
-                w.join(3)
+        if pipe is not None:
+            for job in list(pipe.jobs.values()):  # canlı kayıt: ffmpeg'i kapat
+                if getattr(job, "recorder", None) is not None:
+                    job.recorder.stop("uygulama kapandı")
+            for pool in pipe._pools():
+                if pool.threads:
+                    continue
+                for w in pool.workers.values():
+                    if w.is_alive():
+                        w.terminate()
+                for w in pool.workers.values():
+                    w.join(3)
     except Exception:  # noqa: BLE001
         pass
     logging.shutdown()
     os._exit(0)
+
+
+def window_geometry(screen: tuple[int, int] | None, saved: dict | None) -> dict:
+    """Açılış penceresi: ekranın ~%65'i (en çok 1180x760), son kullanılan boyut hatırlanır.
+    Eskiden 1360x860 sabitti; dizüstü / %125-150 ölçekli ekranlarda pencere ekrandan taşıyordu."""
+    sw, sh = screen or (1600, 900)
+    w = int(min(1100, max(800, sw * 0.6)))
+    h = int(min(720, max(540, sh * 0.68)))
+    if saved:
+        try:
+            sw_, sh_ = int(saved.get("w", 0)), int(saved.get("h", 0))
+            if 760 <= sw_ <= sw and 520 <= sh_ <= sh:
+                w, h = sw_, sh_
+        except (TypeError, ValueError):
+            pass
+    w, h = min(w, sw), min(h, sh)
+    return {"width": w, "height": h, "min_size": (min(760, w), min(520, h))}
+
+
+def _load_ui_state() -> dict:
+    try:
+        return json.loads(UI_STATE.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _save_ui_state(d: dict) -> None:
+    try:
+        UI_STATE.parent.mkdir(parents=True, exist_ok=True)
+        UI_STATE.write_text(json.dumps(d), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def main() -> int:
@@ -511,21 +870,57 @@ def main() -> int:
                         handlers=[logging.FileHandler(logpath, encoding="utf-8")])
     from .util import quiet_warnings
     quiet_warnings()
+    app = App()
+    if not app._cfg.ui_gpu:
+        # arayüz ekran kartını kullanmasın: çoklu ekran kartında WebView2 açılırken ekran kararıp geri geliyordu
+        os.environ.setdefault("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--disable-gpu --disable-gpu-compositing")
     import webview
 
-    app = App()
     app._logpath = logpath
     log.addHandler(_UiLogHandler(app))
     log.info("STT %s başlıyor (günlük: %s)", __version__, logpath)
-    app._window = webview.create_window(
-        "STT — Basın Odası", url=str(HTML_PATH), js_api=app, width=1360, height=860, min_size=(1000, 640),
-        background_color="#0f1318", text_select=True)
+    if app._cfg.ytdlp_autoupdate and not (TOOL_DIR / ".git").exists():
+        from .fetch import start_ytdlp_update
+        start_ytdlp_update(Path(app._cfg.out_dir).resolve() / ".stt")
+    screen = None
+    try:
+        sc = webview.screens[0]
+        screen = (int(sc.width), int(sc.height))
+    except Exception:  # noqa: BLE001
+        pass
+    ui = _load_ui_state()
+    geo = window_geometry(screen, ui)
+    wkw = dict(url=str(HTML_PATH), js_api=app, width=geo["width"], height=geo["height"], min_size=geo["min_size"],
+               resizable=True, background_color="#0f1318", text_select=True)
+    try:
+        app._window = webview.create_window("STT — Basın Odası", maximized=bool(ui.get("max")), **wkw)
+    except TypeError:  # eski pywebview
+        app._window = webview.create_window("STT — Basın Odası", **wkw)
+    size = {"w": geo["width"], "h": geo["height"], "max": bool(ui.get("max"))}
+
+    def on_resized(width, height):
+        if not size["max"]:
+            size.update(w=int(width), h=int(height))
+
+    def on_maximized():
+        size["max"] = True
+
+    def on_restored():
+        size["max"] = False
+
+    for ev, fn in (("resized", on_resized), ("maximized", on_maximized), ("restored", on_restored)):
+        try:
+            getattr(app._window.events, ev).__iadd__(fn)
+        except Exception:  # noqa: BLE001
+            pass
 
     def on_closing():
+        _save_ui_state(size)
         app._stop.set()
         app._restart.set()
 
     app._window.events.closing += on_closing
+    app._start_api()
 
     def on_loaded():
         try:  # dosyaları pencereye sürükleyip bırakma

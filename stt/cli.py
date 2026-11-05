@@ -5,6 +5,8 @@
   stt kontrol [--derin]
   stt olc [klasör] [--ornek] [--hedef 8]
   stt durum
+  stt kanal <kanal/liste linki> [--konu basin|roportaj|hepsi] [--kelime "a,b"] [--haric "women"] [--sadece-liste]
+  stt serve [--port 8765]          (yerel API: haber sitesi / haber radarı için)
 """
 from __future__ import annotations
 
@@ -17,7 +19,8 @@ from .config import Config, load_config
 from .util import log, setup_logging
 
 SUBCOMMANDS = {"izle": "watch", "watch": "watch", "kontrol": "doctor", "doctor": "doctor", "check": "doctor",
-               "olc": "bench", "ölç": "bench", "bench": "bench", "durum": "status", "status": "status"}
+               "olc": "bench", "ölç": "bench", "bench": "bench", "durum": "status", "status": "status",
+               "kanal": "channel", "channel": "channel", "liste": "channel", "serve": "serve", "api": "serve"}
 
 
 def _common(p: argparse.ArgumentParser) -> None:
@@ -43,6 +46,9 @@ def _common(p: argparse.ArgumentParser) -> None:
     g.add_argument("--mod", "--speaker-mode", dest="speaker_mode", choices=("auto", "basin", "herkes"),
                    help="auto (varsayılan) | basin: teknik direktör + muhabir | herkes: podcast/film, Konuşmacı 1..N")
     g.add_argument("--td-label", dest="td_label")
+    g.add_argument("--canli", "--live", dest="live", action="store_true", help="canlı yayını anlık çevir")
+    g.add_argument("--haber", "--news", dest="news", action="store_true",
+                   help="yapay zekâ ile haber taslağı (stt.toml: llm_provider + anahtar)")
     g.add_argument("--reporter-label", dest="reporter_label")
     g = p.add_argument_group("indirme")
     g.add_argument("--cookies-browser", dest="cookies_browser", help="chrome | firefox | edge | none")
@@ -188,6 +194,63 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{len(rows)} kayıt")
         return 0
 
+    if sub == "channel":
+        p = argparse.ArgumentParser(prog="stt kanal", description="Kanal / oynatma listesindeki videoları konuya göre işle")
+        p.add_argument("link")
+        p.add_argument("--konu", default="basin", help="basin (basın toplantısı) | roportaj | hepsi")
+        p.add_argument("--kelime", help="ek anahtar kelimeler, virgülle")
+        p.add_argument("--haric", help="başlıkta geçerse alma (ör. women,u21)")
+        p.add_argument("--en-fazla", dest="limit", type=int, default=None, help="en fazla kaç video listelensin")
+        p.add_argument("--sadece-liste", dest="only_list", action="store_true", help="yalnızca listele, işleme")
+        _common(p)
+        a = p.parse_args(argv[1:])
+        setup_logging(a.verbose)
+        cfg = _apply(cfg, a)
+        from .channel import list_videos, select
+        from .sources import Item
+        data = list_videos(a.link, cfg, limit=a.limit)
+        items = select(data["items"], a.konu, a.kelime, a.haric)
+        hit = [e for e in items if e["match"]]
+        for e in items:
+            print(f"{'✓' if e['match'] else ' '} {e.get('date') or '          '}  {e['title'][:90]}")
+        print(f"{len(hit)}/{len(items)} video konuya uyuyor ({data.get('channel') or data.get('title')})")
+        if a.only_list or not hit:
+            return 0
+        name = f"{data.get('channel') or data.get('title') or 'kanal'} - {a.konu}"
+        its = []
+        for e in hit:
+            it = Item("url", e["url"], title=e["title"])
+            it.extra["collection"] = name
+            if a.news:
+                it.extra["llm_news"] = True
+            its.append(it)
+        return _run_pipeline(cfg, its)
+
+    if sub == "serve":
+        p = argparse.ArgumentParser(prog="stt serve", description="Yerel API (http://127.0.0.1:PORT/api/status)")
+        p.add_argument("--port", type=int, default=None)
+        _common(p)
+        a = p.parse_args(argv[1:])
+        setup_logging(a.verbose)
+        cfg = _apply(cfg, a)
+        cfg.api_port = a.port or cfg.api_port or 8765
+        import threading
+        import time
+
+        from .gui import App
+        app = App()
+        app._cfg = cfg
+        app._start_api()
+        threading.Thread(target=app._runner, name="motor", daemon=True).start()
+        threading.Thread(target=app._follow_loop, name="takip", daemon=True).start()
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            from .gui import _shutdown
+            _shutdown(app)
+        return 0
+
     if sub == "watch":
         p = argparse.ArgumentParser(prog="stt izle", description="Klasörü izle, yeni dosyaları işle")
         p.add_argument("klasor")
@@ -223,5 +286,10 @@ def main(argv: list[str] | None = None) -> int:
     if not items:
         log.error("İşlenecek bir şey bulunamadı.")
         return 2
+    for it in items:
+        if a.live:
+            it.extra["live"] = True
+        if a.news:
+            it.extra["llm_news"] = True
     log.info("%d öğe işlenecek", len(items))
     return _run_pipeline(cfg, items)

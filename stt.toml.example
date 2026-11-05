@@ -18,7 +18,7 @@ td_label = "Teknik direktör"
 reporter_label = "Muhabir"
 
 # İndirme
-cookies_browser = "chrome"         # chrome | firefox | edge | brave | none
+cookies_browser = "auto"           # auto (kurulu tarayıcılar sırayla, Firefox önce) | firefox | edge | chrome | none
 # cookies_file = "C:/Users/ben/cookies.txt"
 
 # FPL
@@ -32,3 +32,29 @@ openai_workers = 4
 # Bölme
 split_min = 8                      # bundan uzun dosyalar VAD ile bölünür (dakika)
 chunk_min = 5                      # hedef parça uzunluğu (dakika)
+# browser_capture = true            # doğrudan inmeyen sitelerde gizli tarayıcıyla (Edge) video adresini yakala
+# ytdlp_autoupdate = true           # yt-dlp günde bir kez güncellenir
+
+# Ekran kartı / ses
+# ui_gpu = false                    # arayüzde ekran kartı hızlandırması (kapalı = ekran kararmaz)
+# agc = true                        # sessiz muhabir sorularını yükselt
+# vad_threshold = 0.4
+
+# Canlı yayın
+# live_chunk_s = 20
+
+# Kanal takibi
+# follow_interval_h = 6
+
+# Yapay zekâ (isteğe bağlı): gemini | claude | openai. Anahtarlar ortam değişkeninden de okunur
+# (GEMINI_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY). Bu dosyayı paylaşmayın.
+# llm_provider = "gemini"
+# llm_model = ""                    # boş: Gemini'de en yeni Flash, Claude'da claude-haiku-5-5
+# llm_budget_usd = 5.0              # aylık sınır (tahmini)
+# llm_news = false                  # her metin için haber taslağı
+# llm_qa = true                     # konuşmacı ayrılamazsa soru-cevabı yapay zekâyla ayır
+
+# Dış programlar
+# api_port = 8765                   # http://127.0.0.1:8765/api/status
+# api_token = "..."
+# webhook_url = "https://..."

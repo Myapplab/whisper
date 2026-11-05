@@ -13,6 +13,12 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   hepsi monitörlüyse / tek kartsa en büyük tek kart, toplu boyut `display_batch` (4) ile sınırlı. `gpus="all"` =
   hepsi. İşçiler ve ffmpeg BELOW_NORMAL öncelikte. Sebep: kullanıcıda ekran kartı tam yükte kalınca bilgisayar
   donuyor, YouTube/tarayıcı çöküyordu. Takılan görev (`_task_timeout`) ya da çöken işçi yeniden başlatılır.
+- **1.6.0 ekran kartı koruması:** monitörlü kart `engines.gpu_info` = nvidia-smi `display_attached/display_mode/
+  display_active` + Windows `EnumDisplayDevices` (`mark_display`; bazı sürücüler monitörlü kartta da "Disabled"
+  diyordu → 3080 tam yük, ekran kararıp geliyordu = TDR). Her işçi `workers.isolate_gpu` ile yalnızca kendi kartını
+  görür (`CUDA_VISIBLE_DEVICES`, süreç içinde `cuda:0`; günlükte gerçek ad `label`). Ana süreç CUDA başlatmaz
+  (`cuda_device_count` nvidia-smi). `Pipeline._diar_device` monitörlü karta asla kendiliğinden gitmez. WebView2
+  `--disable-gpu` (`ui_gpu=false`). gpu_info 60 sn önbellekli.
 - **Konuşmacı ayırma ayrı süreçte** (`Pipeline.dpool`, wid `diar`, ilk ayırma görevinde açılır, belleği en büyük
   kartta): aynı süreçte torch + CTranslate2 → `invalid device ordinal` ve 1.2.0'da `CUDNN_STATUS_EXECUTION_FAILED`
   + `MemoryError` görüldü. `Diarizer.run`: cuDNN hatasında cuDNN kapalı tekrar dener, olmazsa CPU'da baştan yükler.
@@ -49,8 +55,37 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
 - Yedek motor: `--engine openai` (varsayılan model `gpt-transcribe`, OPENAI_API_KEY).
 - WER: `stt olc [klasör] [--ornek]` (jiwer + whisper normalizer, hedef < %8).
 
+- **1.6.0 sağlamlık:** kalıcı kuyruk (`State.queue_*`; `Pipeline.submit` ekler, `emit` done/failed/skipped siler;
+  GUI açılışta "Devam et"). İndirme geçici ağ hatasında tekrar (`is_transient`, `download_retries`). İşçi yeniden
+  başlatma geri çekilmeli (`_respawn_due`, `worker_restarts`=6, başarılı görev sayacı sıfırlar); RAM/sürücü
+  kaynaklı `fatal` da yeniden denenir. `_dispatch` boşta sayımında yalnız ana havuz (eskiden "diar" de sayılıyordu).
+  `_maybe_finalize` kilitli tek giriş (canlı + normal).
+- **Ses:** `audio.agc` (en çok +20 dB, gürültü kapısı) tanımaya ve ayırmaya; VAD eşiği 0.4. Ayrılamazsa
+  `llm.label_qa` ile metinden soru-cevap (`speaker_source`).
+- **İndirme zinciri (`fetch.download_url`):** yt-dlp (düz → `impersonate=chrome` → tarayıcı çerezleri
+  `cookie_browsers("auto")` Firefox önce, `browser_cookie_file` önbellek → cookies.txt) → sayfadaki gömülü
+  oynatıcılar `find_embeds` (yt-dlp'ye) → sayfadaki m3u8/mp4 → `browser.capture_media` (Playwright + kurulu Edge,
+  ağ isteklerini yakalar, reklamı eler, ffprobe ile en uzun). yt-dlp günde bir `start_ytdlp_update` (GUI açılışı,
+  yt_dlp içe aktarılmadan önce; `.git` varsa yapılmaz). Canlı yayın `match_filter` ile algılanır → `LiveStream`.
+  Üçüncü taraf "downloader" sitelerine link GÖNDERİLMEZ (bkz. docs/ARASTIRMA.md).
+- **Kanal / liste (`stt/channel.py`):** `list_videos` (YouTube kanal kökü → /videos + /streams, düz liste),
+  `select` (TOPICS çok dilli kalıplar, ek/hariç kelime, isteğe bağlı LLM), `Follows` (`.stt/takip.json`, GUI
+  `_follow_loop` 10 dk'da bir, `follow_interval_h`), `add_to_collection` → `Koleksiyonlar/<ad>/liste.csv,
+  tum_metinler.txt`. CLI `stt kanal`.
+- **Canlı (`stt/live.py`):** `LiveRecorder` ffmpeg s16le → ~`live_chunk_s` sessiz noktadan kesim → parça wav,
+  görev `offset` ile (işçi `shift_payload`), backlog'un önüne. Dil ilk ~60 sn oylamayla (`_live_vote`), bitişte
+  farklı dildeki parçalar yeniden çevrilir (`:r` görevleri). Metin `Canli Yayinlar/*.txt`; bitince tam çıktı.
+  Temiz EOF / `was_live` = yayın bitti (VOD'u baştan kaydetme).
+- **Yapay zekâ (`stt/llm.py`):** gemini (REST, model boşsa `pick_gemini` en yeni kararlı flash), claude
+  (resmi `anthropic` SDK, varsayılan `claude-haiku-5-5`, effort low; sonnet-5-5'te `fallbacks="default"`), openai.
+  `Usage` aylık tahmini $ (`llm_budget_usd`). `write_news` → `- haber.md/.json`. Anahtarlar stt.toml'da ya da
+  ortam değişkeninde; **repoya yazma**.
+- **Dış programlar:** `stt/api.py` yerel HTTP API (127.0.0.1, `api_port`, `api_token`), `webhook_url`, `stt serve`.
+
 ## Arayüzler
-- **Uygulama:** `pythonw -m stt.gui` (pywebview + Edge WebView2; `stt/gui.py` + `stt/gui.html`).
+- **Uygulama:** `pythonw -m stt.gui` (pywebview + Edge WebView2; `stt/gui.py` + `stt/gui.html`). Pencere
+  `window_geometry` (ekranın ~%60'ı, en çok 1100×720, boyut `%LOCALAPPDATA%\stt\pencere.json`'da), dar pencerede
+  `#views` sekmeleri (<1250 px veri seti sekmede, <860 px tek sütun). Yeni iş sekmeleri: Linkler / Kanal · liste / Canlı.
   Python ↔ JS: `App` sınıfının `_` ile başlamayan metotları JS'e açıktır (iç alanlar `_` ile başlamalı!).
   Olaylar `Pipeline.events` → `App._push` (yalnızca kuyruğa koyar, ASLA beklemez) → `_sender` iş parçacığı
   toplu olarak `window.__stt.onEvents([...])`. evaluate_js'i başka yerden çağırma: WebView2 takılınca bütün
@@ -90,6 +125,10 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
 - HF token kullanıcının ortam değişkeninde (`HF_TOKEN`) — **repoya asla yazma** (`stt.toml` .gitignore'da).
 
 ## Sürüm geçmişi (kısa)
+- 1.6.0: kullanıcı şikâyetleri: "birkaç videoyu aynı anda yapamıyor", "muhabiri ayıramıyor", "3080 çok kullanılıyor,
+  açınca ekranlar gidip geliyor", "pencere çok büyük", "YouTube dışı siteler (Dailymotion, ok.ru...) inmiyor".
+  Eklenenler: kanal/liste + konu süzgeci + takip, canlı yayın, yapay zekâ (Gemini şimdi, Claude ileride),
+  yerel API/webhook. Windows'ta henüz denenmedi (özellikle EnumDisplayDevices, Playwright+Edge, WebView2 --disable-gpu).
 - 1.2.0 (dal optimistic-edison) ve 1.2.1 (dal inspiring-ritchie) ayrı oturumlarda paralel geliştirildi; 1.3.0'da
   `main`'de birleştirildi. **Yeni işi her zaman güncel `main`'den başlat** ki dallar yine ayrışmasın.
 - 1.4.0: uygulama içi güncelleme + `installer/guncelle.ps1` (kullanıcı zip indirip PowerShell'le uğraşırken
@@ -109,11 +148,14 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
 - Kullanıcı ileride uygulamayı paylaşmak istiyor (tek kurulum dosyası).
 
 ## Geliştirme (bulut/Linux)
-- Testler: `python -m pytest -q tests` (66 test; `test_speakers.py` = podcast/film modu; `test_updater.py` = güncelleme/geri alma; `test_stability.py` = GPU seçimi, işçi yeniden başlatma, iptal,
+- Testler: `python -m pytest -q tests` (94 test; `test_v16.py` = 1.6.0 özellikleri; `test_speakers.py` = podcast/film modu; `test_updater.py` = güncelleme/geri alma; `test_stability.py` = GPU seçimi, işçi yeniden başlatma, iptal,
   bloklamayan arayüz, cuDNN geri çekilmesi; `test_app.py` = ortam hazırlığı, ayarlar, hata mesajları).
 - GPU yok ve HuggingFace engelliyse test modeli: GitHub `rhasspy/models` `asr_faster-whisper-small-int8`
   + `dev/make_tokenizer.py` (openai-whisper tiktoken → tokenizer.json) + `dev/add_alignment_heads.py`.
   `--model <klasör> --gpus cpu,cpu` ile uçtan uca çalışır.
 - GUI testi: `dev/gui_bridge.py` (pywebview yerine HTTP köprüsü) + Playwright (`dev/gui_drive.js`,
   `dev/gui_screens.js`). Ayrıntı: `dev/README.md`.
+- Gizli tarayıcı testi: yerel `python -m http.server` + JS ile yüklenen HLS sayfası (`docs/ARASTIRMA.md`); Linux'ta
+  Playwright `/opt/pw-browsers` Chromium'unu bulur (`browser._launch`). Canlı testi: `.m3u8` ya da dosya +
+  `live_readrate`.
 - Commit/PR mesajlarında model adı yazma.

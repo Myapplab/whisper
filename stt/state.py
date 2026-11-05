@@ -22,6 +22,9 @@ class State:
         )
         self._db.execute("CREATE TABLE IF NOT EXISTS alias(alias TEXT PRIMARY KEY, key TEXT)")
         self._db.execute("CREATE TABLE IF NOT EXISTS hashes(path TEXT PRIMARY KEY, size INT, mtime INT, key TEXT)")
+        # bitmemiş işler: uygulama kapanırsa / bilgisayar yeniden başlarsa bir sonraki açılışta sürdürülür
+        self._db.execute("CREATE TABLE IF NOT EXISTS queue(uid TEXT PRIMARY KEY, kind TEXT, source TEXT, "
+                         "title TEXT, extra TEXT, added REAL)")
         self._db.commit()
 
     def _resolve(self, key: str) -> str:
@@ -72,6 +75,36 @@ class State:
             self._db.execute("INSERT OR REPLACE INTO hashes VALUES(?,?,?,?)", (path, st.st_size, st.st_mtime_ns, key))
             self._db.commit()
         return key
+
+    # ---------------------------------------------------------- kalıcı kuyruk
+    def queue_add(self, uid: str, kind: str, source: str, title: str, extra: dict) -> None:
+        ex = {k: v for k, v in extra.items() if not k.startswith("_")}
+        with self._lock:
+            self._db.execute("INSERT OR REPLACE INTO queue VALUES(?,?,?,?,?,?)",
+                             (uid, kind, source, title, json.dumps(ex, ensure_ascii=False, default=str), time.time()))
+            self._db.commit()
+
+    def queue_remove(self, uid: str) -> None:
+        with self._lock:
+            self._db.execute("DELETE FROM queue WHERE uid=?", (uid,))
+            self._db.commit()
+
+    def queue_all(self) -> list[dict]:
+        with self._lock:
+            rows = self._db.execute("SELECT uid,kind,source,title,extra,added FROM queue ORDER BY added").fetchall()
+        out = []
+        for uid, kind, source, title, extra, added in rows:
+            try:
+                ex = json.loads(extra or "{}")
+            except ValueError:
+                ex = {}
+            out.append({"uid": uid, "kind": kind, "source": source, "title": title, "extra": ex, "added": added})
+        return out
+
+    def queue_clear(self) -> None:
+        with self._lock:
+            self._db.execute("DELETE FROM queue")
+            self._db.commit()
 
     def all(self) -> list[dict]:
         with self._lock:

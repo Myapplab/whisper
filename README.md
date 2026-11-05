@@ -29,6 +29,46 @@ Masaüstündeki **STT** simgesine çift tıklayın (terminal açılmaz).
 - Uygulama açılmazsa günlük: `%LOCALAPPDATA%\stt\stt_app.log`, ya da konsolda
   `C:\stt\.venv\Scripts\python.exe -m stt.gui`.
 
+## 1.6.0 yenilikleri
+
+- **Çok video, hatasız:** kuyruk kalıcıdır — uygulama kapanırsa / bilgisayar yeniden başlarsa açılışta
+  *"Yarım kalan N iş var: Devam et"* çıkar (biten parçalar korunur). Ağ hatasında indirme 30/60/90 sn arayla
+  tekrar denenir; çöken GPU işçisi geri çekilmeli olarak yeniden açılır; hatalı işlerde **Tekrar dene**,
+  kuyrukta **Hatalıları tekrar dene**.
+- **Ekran kararması / 3080 tam yük:** monitörlü kart Windows'tan da (EnumDisplayDevices) bulunur; her işçi yalnızca
+  kendi kartını görür; konuşmacı ayırma monitörlü karta gitmez; arayüz ekran kartı kullanmaz. Ayarlar'da
+  *"Yalnızca RTX 3090"* gibi tek kart seçilebilir.
+- **Muhabir sesi:** otomatik kazanç (sessiz soruları +20 dB'ye kadar yükseltir) + daha hassas VAD; yine
+  ayrılamazsa (yapay zekâ ayarlıysa) soru-cevap metinden ayrılır.
+- **Pencere:** ekranın ~%60'ı kadar açılır (en çok 1100×720), istediğiniz gibi büyür/küçülür, son boyutu
+  hatırlar; dar pencerede *Kuyruk / Veri seti* sekmeleri.
+- **Diğer siteler (Dailymotion, ok.ru, Instagram, kulüp siteleri...):** yt-dlp günde bir kez güncellenir;
+  tarayıcı taklidi; çerezler kurulu tarayıcılardan sırayla (Firefox önce); sayfadaki gömülü oynatıcılar
+  (YouTube, Brightcove, JW Player, Vimeo, ok.ru) bulunur; olmazsa **gizli tarayıcı** (Edge) sayfayı açıp
+  oynatıcının asıl video adresini yakalar (reklam değil, en uzun video). Ayrıntı: `docs/ARASTIRMA.md`.
+- **Kanal · liste sekmesi:** bir YouTube kanalı / oynatma listesi linki verin, konu seçin (*Basın toplantısı*,
+  *Röportaj*, *Hepsi* + ek/hariç kelimeler; 10+ dilde "press conference" kalıpları), *Videoları listele* →
+  uyanlar işaretli gelir → *Seçilenleri başlat*. Metinler veri setine ve ayrıca
+  `Koleksiyonlar/<kanal - konu>/` altında `liste.csv` + `tum_metinler.txt` olarak toplanır.
+  **Takibe al:** kanaldaki yeni videolar her 6 saatte bir kontrol edilip konuya uyanlar otomatik işlenir.
+  Komut satırı: `stt kanal https://www.youtube.com/@Arsenal --konu basin --haric women`.
+- **Canlı yayın sekmesi:** YouTube/Twitch/Kick/Dailymotion canlı ya da `.m3u8`; ~20 sn'lik parçalarla anında
+  metin (kartta canlı akar, `Canli Yayinlar/` klasörüne yazılır); kopunca yeniden bağlanır; *Canlıyı bitir* ya
+  da yayın bitince tam çıktı + konuşmacı ayrımı. Normal linkler sekmesine canlı yayın linki yapıştırılsa da
+  otomatik algılanır. Komut satırı: `stt <link> --canli`.
+- **Yapay zekâ (isteğe bağlı):** Ayarlar › Yapay zekâ: Google Gemini (anahtar: aistudio.google.com),
+  Anthropic Claude (varsayılan `claude-haiku-5-5`, kaliteli yazım için `claude-sonnet-5-5`) ya da OpenAI.
+  *Haber taslağı* (`- haber.md` / `- haber.json`: başlık, spot, haber, özet, birebir alıntılar + çeviri,
+  sakatlık/kadro notları, etiketler), soru-cevap düzeltme, kanal başlıklarını konuya göre süzme.
+  Aylık harcama sınırı (varsayılan $5, tahmini) aşılınca yapay zekâ adımları atlanır.
+- **Haber sitesi / haber radarı için:** yerel API (`api_port = 8765` ya da `stt serve`) ve webhook:
+
+  ```
+  POST http://127.0.0.1:8765/api/jobs   {"inputs": ["https://..."], "options": {"lang": "en", "diarize": true, "news": true}}
+  GET  http://127.0.0.1:8765/api/jobs   ·   GET /api/results   ·   GET /api/status   ·   POST /api/channel
+  ```
+  Ayrıntı: `stt/api.py` başındaki açıklama.
+
 ## Güncelleme
 
 STT her açılışta GitHub'daki (herkese açık) `Myapplab/whisper` deposunda yeni sürüm olup olmadığına bakar.
