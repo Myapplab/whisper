@@ -526,7 +526,8 @@ class Diarizer:
 
     def _run(self, audio, kw) -> list[list]:
         out = self.pipe({"waveform": self.torch.from_numpy(audio)[None], "sample_rate": SR}, **kw)
-        ann = getattr(out, "speaker_diarization", out)  # pyannote 4.x DiarizeOutput
+        # pyannote 4.x DiarizeOutput: metinle hizalama için örtüşmesiz çıktı önce
+        ann = getattr(out, "exclusive_speaker_diarization", None) or getattr(out, "speaker_diarization", out)
         return [[round(seg.start, 3), round(seg.end, 3), str(spk)] for seg, _, spk in ann.itertracks(yield_label=True)]
 
     def _run_lowmem(self, audio, kw) -> list[list]:

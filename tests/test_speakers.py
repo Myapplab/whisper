@@ -121,3 +121,48 @@ def test_general_txt_header():
            "speakers": {"S0": {"label": "Konuşmacı 1", "seconds": 3.0}}, "match": {"team": "Arsenal"}}
     txt = to_txt(doc)
     assert txt.startswith("Pod\n1 konuşmacı: Konuşmacı 1 (00:03)\n") and "basın toplantısı" not in txt
+
+
+# ------------------------------------------------ cümle düzeyinde konuşmacı atama (1.6.3)
+def _ws(t0, words, step=0.4):
+    return [_w(round(t0 + i * step, 2), round(t0 + (i + 1) * step, 2), " " + x) for i, x in enumerate(words)]
+
+
+def test_boundary_drift_does_not_split_sentence():
+    from stt.merge import assign_speakers
+    # TD cümlesinin son 3 kelimesi kelime zamanı kaydığı için muhabirin turuna düşüyor
+    ws = _ws(0.0, "I think the team played really well tonight honestly.".split())
+    seg = {"start": 0.0, "end": ws[-1]["end"], "text": "x", "words": ws}
+    turns = [[0.0, 2.3, "TD"], [2.3, 6.0, "MUH"]]
+    out = assign_speakers([seg], turns)
+    assert [s["speaker_id"] for s in out] == ["TD"]
+
+
+def test_next_sentence_goes_to_other_speaker():
+    from stt.merge import assign_speakers
+    ws = _ws(0.0, "We will see. What about Saka?".split())
+    seg = {"start": 0.0, "end": ws[-1]["end"], "text": "x", "words": ws}
+    out = assign_speakers([seg], [[0.0, 1.3, "TD"], [1.3, 3.0, "MUH"]])
+    assert [(s["speaker_id"], s["text"]) for s in out] == [("TD", "We will see."), ("MUH", "What about Saka?")]
+
+
+def test_long_change_inside_sentence_is_split():
+    from stt.merge import assign_speakers
+    a = _ws(0.0, "and that is why we pressed so high today and".split())
+    b = _ws(a[-1]["end"], "sorry can I ask about the injury news".split())
+    seg = {"start": 0.0, "end": b[-1]["end"], "text": "x", "words": a + b}
+    out = assign_speakers([seg], [[0.0, a[-1]["end"], "TD"], [b[0]["start"], 10.0, "MUH"]])
+    assert [s["speaker_id"] for s in out] == ["TD", "MUH"]
+    assert out[1]["text"].startswith("sorry")
+
+
+def test_exclusive_turns_longer_wins_overlap():
+    from stt.merge import exclusive_turns
+    turns = [[0.0, 10.0, "TD"], [4.0, 4.6, "MUH"], [9.0, 12.0, "MUH"]]
+    assert exclusive_turns(turns) == [[0.0, 10.0, "TD"], [10.0, 12.0, "MUH"]]
+
+
+def test_smooth_by_duration():
+    from stt.merge import _smooth
+    assert _smooth(["A", "B", "B", "A"], durs=[1, 0.3, 0.3, 1]) == ["A"] * 4
+    assert _smooth(["A", "B", "B", "A"], durs=[1, 0.8, 0.8, 1]) == ["A", "B", "B", "A"]

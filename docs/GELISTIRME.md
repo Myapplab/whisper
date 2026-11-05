@@ -139,6 +139,11 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   yükleniyor (`WorkerPool.load_lock`), işçiler torch import etmiyor.
 - HF token kullanıcının ortam değişkeninde (`HF_TOKEN`) — **repoya asla yazma** (`stt.toml` .gitignore'da).
 
+- **1.6.3:** konuşmacı ataması cümle düzeyinde (`merge.assign_speakers`): kelime → tur (örtüşmesiz,
+  `exclusive_turns`: örtüşen yerde uzun tur kazanır; 4.x'te `exclusive_speaker_diarization` önce), sonra cümle
+  (`. ? ! …` ya da >0.6 sn sessizlik) başına süre ağırlıklı çoğunluk oyu; cümle ortasında yalnızca iki konuşmacı da
+  ≥1.5 sn ve ≥4 kelime konuşmuşsa bölünür. Şikâyet: "kelimeler farklı konuşmacılara yazılıyor".
+
 ## Sürüm geçmişi (kısa)
 - 1.6.0: kullanıcı şikâyetleri: "birkaç videoyu aynı anda yapamıyor", "muhabiri ayıramıyor", "3080 çok kullanılıyor,
   açınca ekranlar gidip geliyor", "pencere çok büyük", "YouTube dışı siteler (Dailymotion, ok.ru...) inmiyor".

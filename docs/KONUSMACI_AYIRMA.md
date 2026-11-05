@@ -18,13 +18,14 @@ Bu dosya bir sonraki oturumun uygulayacağı plandır. Sırayla yap; her adımda
    Kişi sayısı biliniyorsa (`Kişi sayısı` alanı) büyük ölçüde düzelir.
 
 ## Yapılacaklar (öncelik sırası)
-1. **Cümle düzeyinde atama** (`stt/merge.py`, ucuz, en görünür kazanç):
+1. ✅ **(1.6.3 yapıldı)** **Cümle düzeyinde atama** (`stt/merge.py`, ucuz, en görünür kazanç):
    - Segmenti önce cümlelere böl (`. ? !` ve 0.6 sn'den uzun kelime arası).
    - Her cümleye, kelime sürelerinin toplamıyla **çoğunluk oyu** ver.
    - Cümle ortasında ancak öbür konuşmacı ≥1.5 sn VE ≥4 kelime sürüyorsa böl.
    - `_smooth`'u kelime sayısı yerine süreye (ör. <1.0 sn) göre yap.
    - Test: `tests/test_speakers.py`'ye sınırda kayan kelimeler örneği.
-2. **Örtüşmesiz (exclusive) ayırma:** pyannote.audio 4.x + `pyannote/speaker-diarization-community-1`;
+2. **Örtüşmesiz (exclusive) ayırma:** (1.6.3: 3.x yaklaşığı `merge.exclusive_turns` ve 4.x çıktısını okuma yapıldı;
+   kalan: 4.x + community-1 modelinin kurulumu) pyannote.audio 4.x + `pyannote/speaker-diarization-community-1`;
    çıktıdaki `exclusive_speaker_diarization` tam bu iş (metinle hizalama) için. Kodda 4.x desteği zaten var
    (`getattr(out, "speaker_diarization", out)` → `exclusive_speaker_diarization` önce denenmeli).
    Kurulumda sürüm (torch 2.8 ile uyum) ve HF koşul sayfası kontrol edilmeli; `diar_model` ayarı ile seçilebilir yap,

@@ -74,19 +74,33 @@ def _speaker_at(t0: float, t1: float, turns: list[list], idx_hint: int = 0) -> t
     return best, j
 
 
-def _smooth(labels: list[str | None], min_run: int = 2) -> list[str | None]:
-    """Tek kelimelik konuşmacı sıçramalarını (min_run'dan kısa) komşu konuşmacıya kat."""
-    out = list(labels)
-    runs: list[list[int]] = []  # [başlangıç, bitiş)
-    for i, lab in enumerate(out):
-        if runs and out[runs[-1][0]] == lab:
+def _dur(w: dict) -> float:
+    return max(0.02, w["end"] - w["start"])
+
+
+def _runs(labels: list) -> list[list[int]]:
+    """Ardışık aynı etiketli bölgeler: [başlangıç, bitiş) listesi."""
+    runs: list[list[int]] = []
+    for i, lab in enumerate(labels):
+        if runs and labels[runs[-1][0]] == lab:
             runs[-1][1] = i + 1
         else:
             runs.append([i, i + 1])
+    return runs
+
+
+def _smooth(labels: list[str | None], min_run: int = 2, durs: list[float] | None = None,
+            min_sec: float = 1.0) -> list[str | None]:
+    """Kısa konuşmacı sıçramalarını komşu konuşmacıya kat.
+
+    `durs` verilirse kısa = toplam süresi `min_sec`'ten az; verilmezse kelime sayısı `min_run`'dan az."""
+    out = list(labels)
+    runs = _runs(out)
     if len(runs) < 2:
         return out
     for k, (a, b) in enumerate(runs):
-        if b - a >= min_run:
+        short = (sum(durs[a:b]) < min_sec) if durs is not None else (b - a < min_run)
+        if not short:
             continue
         left = out[runs[k - 1][0]] if k > 0 else None
         right = out[runs[k + 1][0]] if k + 1 < len(runs) else None
@@ -97,9 +111,80 @@ def _smooth(labels: list[str | None], min_run: int = 2) -> list[str | None]:
     return out
 
 
-def assign_speakers(segments: list[dict], turns: list[list]) -> list[dict]:
-    """Kelime düzeyinde konuşmacı ata; segment içinde konuşmacı değişirse segmenti böl."""
+SENT_END = ".?!…"
+SENT_GAP = 0.6       # bu kadar sessizlik de cümle sonu sayılır (sn)
+SPLIT_MIN_SEC = 1.5  # cümle ortasında konuşmacı değişimi için öbür konuşmacının en az süresi
+SPLIT_MIN_WORDS = 4  # ... ve en az kelime sayısı
+
+
+def _sentences(words: list[dict]) -> list[tuple[int, int]]:
+    """Kelimeleri cümlelere böl: noktalama (. ? ! …) ya da uzun sessizlik."""
+    out, a = [], 0
+    for i, w in enumerate(words):
+        end = w["word"].strip().rstrip("\"'”’»)]").endswith(tuple(SENT_END))
+        gap = i + 1 < len(words) and words[i + 1]["start"] - w["end"] > SENT_GAP
+        if end or gap or i + 1 == len(words):
+            out.append((a, i + 1))
+            a = i + 1
+    return out
+
+
+def _sentence_labels(labels: list, durs: list[float]) -> list:
+    """Cümleye süre ağırlıklı çoğunluk oyu; yalnızca iki konuşmacı da uzun (≥1.5 sn, ≥4 kelime) konuşmuşsa böl."""
+    vote: dict = defaultdict(float)
+    for lab, d in zip(labels, durs):
+        if lab is not None:
+            vote[lab] += d
+    if not vote:
+        return list(labels)
+    major = max(vote, key=vote.get)
+    runs = _runs(labels)
+    strong = [labels[a] is not None and b - a >= SPLIT_MIN_WORDS and sum(durs[a:b]) >= SPLIT_MIN_SEC
+              for a, b in runs]
+    if len({labels[a] for (a, _), st in zip(runs, strong) if st}) < 2:
+        return [major] * len(labels)
+    out = list(labels)
+    for k, (a, b) in enumerate(runs):
+        if strong[k]:
+            continue
+        left = next((labels[runs[j][0]] for j in range(k - 1, -1, -1) if strong[j]), None)
+        right = next((labels[runs[j][0]] for j in range(k + 1, len(runs)) if strong[j]), None)
+        repl = right if (labels[a] == right or left is None) else left
+        for i in range(a, b):
+            out[i] = repl
+    return out
+
+
+def exclusive_turns(turns: list[list]) -> list[list]:
+    """Örtüşen konuşmayı tek konuşmacıya indir (metinle hizalama için): örtüşen yerde uzun tur kazanır.
+
+    pyannote 4.x'in `exclusive_speaker_diarization` çıktısının 3.x için yaklaşığı."""
+    turns = [t for t in turns if t[1] > t[0]]
+    if len(turns) < 2:
+        return [list(t) for t in turns]
     turns = sorted(turns, key=lambda t: t[0])
+    pts = sorted({p for t in turns for p in (t[0], t[1])})
+    out: list[list] = []
+    act: list[list] = []
+    i = 0
+    for t0, t1 in zip(pts, pts[1:]):
+        while i < len(turns) and turns[i][0] <= t0:
+            act.append(turns[i])
+            i += 1
+        act = [t for t in act if t[1] >= t1]
+        if not act:
+            continue
+        spk = max(act, key=lambda t: t[1] - t[0])[2]
+        if out and out[-1][2] == spk and abs(out[-1][1] - t0) < 1e-9:
+            out[-1][1] = t1
+        else:
+            out.append([t0, t1, spk])
+    return out
+
+
+def assign_speakers(segments: list[dict], turns: list[list]) -> list[dict]:
+    """Konuşmacı ata: kelime → tur, sonra cümle düzeyinde çoğunluk oyu; konuşmacı değişirse segmenti böl."""
+    turns = exclusive_turns(sorted(turns, key=lambda t: t[0]))
     out: list[dict] = []
     hint = 0
     for seg in segments:
@@ -108,11 +193,14 @@ def assign_speakers(segments: list[dict], turns: list[list]) -> list[dict]:
             spk, hint = _speaker_at(seg["start"], seg["end"], turns, hint)
             out.append({**seg, "speaker_id": spk})
             continue
-        labels = []
+        raw = []
         for w in words:
             spk, hint = _speaker_at(w["start"], max(w["end"], w["start"] + 0.02), turns, hint)
-            labels.append(spk)
-        labels = _smooth(labels)
+            raw.append(spk)
+        durs = [_dur(w) for w in words]
+        labels: list = []
+        for a, b in _sentences(words):
+            labels += _sentence_labels(_smooth(raw[a:b], durs=durs[a:b]), durs[a:b])
         # ardışık aynı konuşmacılı kelime grupları -> alt segmentler
         groups: list[tuple[str | None, list[dict]]] = []
         for w, lab in zip(words, labels):
