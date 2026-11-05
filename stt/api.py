@@ -27,7 +27,7 @@ from . import __version__
 from .util import log
 
 ROUTES = {"durum": "status", "is": "jobs", "isler": "jobs", "sonuclar": "results", "metin": "text",
-          "kanal": "channel"}
+          "kanal": "channel", "canli/durdur": "live/stop"}
 
 
 def make_handler(app):
@@ -58,7 +58,7 @@ def make_handler(app):
             if not parts or parts[0] != "api":
                 return "", {}
             name = "/".join(parts[1:])
-            name = ROUTES.get(name, name).replace("canli/durdur", "live/stop")
+            name = ROUTES.get(name, name)
             return name, parse_qs(u.query)
 
         def do_GET(self):  # noqa: N802
@@ -95,7 +95,7 @@ def make_handler(app):
                 if name == "jobs":
                     inputs = body.get("inputs") or ([body["url"]] if body.get("url") else [])
                     opts = body.get("options") or {}
-                    r = app.start("\n".join(inputs), [], {**opts, "source": "api"})
+                    r = app.start("\n".join(inputs), [], opts)
                     return self._send(200, r)
                 if name == "live/stop":
                     return self._send(200, {"ok": app.stop_live(body.get("uid", ""))})

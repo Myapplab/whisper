@@ -73,9 +73,8 @@ def _digest(root: Path, names: list[str]) -> str:
 
 
 def _python_console() -> str:
-    exe = Path(sys.executable)
-    py = exe.with_name("python.exe") if exe.name.lower() == "pythonw.exe" else exe
-    return str(py if py.exists() else exe)
+    from .util import console_python
+    return console_python()
 
 
 def _extract(data: bytes, dest: Path) -> Path:

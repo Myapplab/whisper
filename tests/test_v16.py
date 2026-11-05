@@ -174,7 +174,8 @@ def test_explain_error_primary_first():
 
 
 def test_browser_rank_and_ads():
-    from stt.browser import is_ad, rank_media
+    from stt.browser import is_ad
+    from stt.fetch import rank_media
     assert rank_media("https://cdn/x/master.m3u8?t=1") < rank_media("https://cdn/x/video.mp4")
     assert is_ad("https://pubads.g.doubleclick.net/x.mp4")
 
@@ -235,7 +236,9 @@ def test_follows_and_collection(tmp_path):
                           {"txt": txt, "json": txt.with_suffix(".json")})
     folder = out / "Koleksiyonlar" / "Arsenal - basın"
     allt = (folder / "tum_metinler.txt").read_text(encoding="utf-8")
-    assert allt.index("2026-11-01") < allt.index("2026-11-02")  # tarih sırası
+    assert "metin 2026-11-01" in allt and "metin 2026-11-02" in allt
+    rows = (folder / "liste.jsonl").read_text(encoding="utf-8").splitlines()
+    assert "2026-11-01" in rows[0]  # liste tarih sırasında
     assert (folder / "liste.csv").exists()
 
 
@@ -420,3 +423,14 @@ def test_gemini_request_and_news(tmp_path, monkeypatch):
     assert calls[0][0].endswith("gemini-2.5-flash:generateContent")
     assert calls[0][1]["generationConfig"]["responseMimeType"] == "application/json"
     assert llm.status()["calls"] == 1 and llm.status()["month_usd"] > 0
+
+
+def test_state_done_keys(tmp_path):
+    from stt.state import State
+    st = State(tmp_path)
+    (tmp_path / "o").mkdir()
+    st.set("k1", source="s", status="done", out_dir=str(tmp_path / "o"))
+    st.set("k2", source="s", status="failed")
+    st.set("k3", source="s", status="done", out_dir=str(tmp_path / "silindi"))
+    st.add_alias("a1", "k1")
+    assert st.done_keys(["k1", "k2", "k3", "a1", "yok"]) == {"k1", "a1"}

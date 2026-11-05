@@ -20,11 +20,10 @@ from . import __version__
 from .config import TOOL_DIR, Config, load_config
 from .dataset import GENERAL_DIR
 from .sources import expand_inputs, is_url
-from .util import log
+from .util import console_python, log, read_jsonl
 
 HTML_PATH = Path(__file__).with_name("gui.html")
 URL_RE = re.compile(r"https?://[^\s<>\"']+")
-SETTING_KEYS = ("out_dir", "hf_token", "fpl_repo", "cookies_browser", "lang", "diarize", "fpl_auto", "gpus")
 UI_STATE = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "stt" / "pencere.json"
 
 
@@ -111,12 +110,24 @@ class App:
         self._gpus: dict = {}                  # nvidia-smi kart listesi (Ayarlar'daki kart seçimi)
         self._api = None
         self._llm = None
+        self._st = None
         self._pending: list[dict] = []
         try:  # uygulama kapanınca yarım kalan işler: açılışta "Devam et" önerilir
-            from .state import State
-            self._pending = State(Path(self._cfg.out_dir).resolve() / ".stt").queue_all()
+            self._pending = self._state().queue_all()
         except Exception:  # noqa: BLE001
             log.debug("bekleyen işler okunamadı", exc_info=True)
+
+    def _state_dir(self) -> Path:
+        return Path(self._cfg.out_dir).resolve() / ".stt"
+
+    def _state(self):
+        """Durum veritabanı: motor açıksa onunki, değilse tek bir bağlantı (her çağrıda yenisi açılmasın)."""
+        if self._pipe is not None:
+            return self._pipe.state
+        if self._st is None or self._st.path.parent != self._state_dir():
+            from .state import State
+            self._st = State(self._state_dir())
+        return self._st
 
     # ---------------------------------------------------------- JS'e olay
     MAX_OUTBOX = 3000
@@ -176,16 +187,7 @@ class App:
         return list(self._jobs.values())[-300:]
 
     def results(self, limit: int = 100) -> list[dict]:
-        jl = Path(self._cfg.out_dir).resolve() / "index.jsonl"
-        if not jl.exists():
-            return []
-        rows = []
-        for line in jl.read_text(encoding="utf-8").splitlines()[-limit:]:
-            try:
-                rows.append(json.loads(line))
-            except ValueError:
-                pass
-        return rows[::-1]
+        return read_jsonl(Path(self._cfg.out_dir).resolve() / "index.jsonl")[-limit:][::-1]
 
     def _take_batch(self) -> list[dict]:
         with self._lock:
@@ -343,9 +345,8 @@ class App:
                 "gpus": g if g in ("auto", "all") else str(c.gpus), "gpu_cards": cards,
                 "browser_capture": bool(c.browser_capture), "ui_gpu": bool(c.ui_gpu),
                 "llm_provider": c.llm_provider or "none", "llm_model": c.llm_model or "",
-                "gemini_key_set": bool(c.gemini_api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")),
-                "anthropic_key_set": bool(c.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")),
-                "openai_key_set": bool(os.environ.get("OPENAI_API_KEY")),
+                "gemini_key_set": bool(llm.key("gemini")), "anthropic_key_set": bool(llm.key("claude")),
+                "openai_key_set": bool(llm.key("openai")),
                 "llm_budget_usd": c.llm_budget_usd, "llm_news": bool(c.llm_news), "llm_qa": bool(c.llm_qa),
                 "llm": llm.status(), "api_port": c.api_port or 0, "api_token_set": bool(c.api_token),
                 "webhook_url": c.webhook_url or "", "follow_interval_h": c.follow_interval_h}
@@ -389,9 +390,8 @@ class App:
         self._cfg = load_config()
         self._llm = None
         if self._pipe is not None:
-            for k in ("llm_provider", "llm_model", "gemini_api_key", "anthropic_api_key", "llm_budget_usd", "llm_news",
-                      "llm_qa", "webhook_url", "cookies_browser", "cookies_file", "browser_capture"):
-                setattr(self._pipe.cfg, k, getattr(self._cfg, k))
+            # motorun açılışta kopyaladığı değerler (kart, model...) etkilenmez; onlar için aşağıda yeniden başlatılır
+            self._pipe.cfg = self._cfg
             self._pipe._llm = None
         if (str(self._cfg.out_dir), self._cfg.hf_token, self._cfg.gpus) != old:
             self._restart.set()  # işler bitince motor yeni ayarlarla açılır
@@ -401,9 +401,11 @@ class App:
 
     # ---------------------------------------------------------- yapay zekâ
     def llm(self):
+        if self._pipe is not None:
+            return self._pipe.llm()  # tek örnek: model listesi / istemci iki kez kurulmasın
         if self._llm is None:
             from .llm import LLM
-            self._llm = LLM(self._cfg, Path(self._cfg.out_dir).resolve() / ".stt")
+            self._llm = LLM(self._cfg, self._state_dir())
         return self._llm
 
     def llm_test(self) -> dict:
@@ -439,26 +441,22 @@ class App:
             self._api = start_api(self, self._cfg.api_port)
 
 
-    def pick_files(self) -> list[str]:
+    def _dialog(self, kind: str, **kw) -> list[str]:
         import webview
-        kind = getattr(getattr(webview, "FileDialog", None), "OPEN", None) or webview.OPEN_DIALOG
-        res = self._window.create_file_dialog(kind, allow_multiple=True, file_types=(
+        k = getattr(getattr(webview, "FileDialog", None), kind, None) or getattr(webview, f"{kind}_DIALOG")
+        res = self._window.create_file_dialog(k, **kw)
+        return list(res) if isinstance(res, (list, tuple)) else [res] if res else []
+
+    def pick_files(self) -> list[str]:
+        return self._dialog("OPEN", allow_multiple=True, file_types=(
             "Video / ses (*.mp4;*.mkv;*.mov;*.webm;*.avi;*.m4v;*.mp3;*.m4a;*.wav;*.flac;*.ogg;*.opus;*.aac)",
             "Link listesi (*.txt)", "Tüm dosyalar (*.*)"))
-        return list(res or [])
 
     def pick_cookie_file(self) -> str:
-        import webview
-        kind = getattr(getattr(webview, "FileDialog", None), "OPEN", None) or webview.OPEN_DIALOG
-        res = self._window.create_file_dialog(kind, allow_multiple=False,
-                                              file_types=("cookies.txt (*.txt)", "Tüm dosyalar (*.*)"))
-        return (res[0] if isinstance(res, (list, tuple)) and res else res) or ""
+        return next(iter(self._dialog("OPEN", file_types=("cookies.txt (*.txt)", "Tüm dosyalar (*.*)"))), "")
 
     def pick_folder(self) -> str:
-        import webview
-        kind = getattr(getattr(webview, "FileDialog", None), "FOLDER", None) or webview.FOLDER_DIALOG
-        res = self._window.create_file_dialog(kind)
-        return (res[0] if isinstance(res, (list, tuple)) else res) or ""
+        return next(iter(self._dialog("FOLDER")), "")
 
     def _item_opts(self, it, opts: dict) -> None:
         it.extra.update({"lang": opts.get("lang") or "auto", "diarize": bool(opts.get("diarize")),
@@ -478,12 +476,13 @@ class App:
         if 0 < n <= 20:
             it.extra["speakers"] = n
 
-    def _enqueue(self, it) -> None:
+    def _enqueue(self, it, retry: bool = False) -> None:
         import uuid
         it.extra.setdefault("uid", uuid.uuid4().hex[:10])
+        it.extra.pop("_gen", None)
         self._items[it.extra["uid"]] = it
         self._push({"type": "queued", "uid": it.extra["uid"], "source": it.source, "title": it.title,
-                    "live": bool(it.extra.get("live"))})
+                    "live": bool(it.extra.get("live")), "retry": retry})
         self._inbox.put(it)
 
     def start(self, text: str, paths: list[str], opts: dict) -> dict:
@@ -521,9 +520,7 @@ class App:
         it = self._items.get(uid)
         if it is None:
             return {"ok": False, "error": "İş bulunamadı (uygulama yeniden açıldıysa linki tekrar ekleyin)."}
-        it.extra.pop("_gen", None)
-        self._push({"type": "queued", "uid": uid, "source": it.source, "title": it.title, "retry": True})
-        self._inbox.put(it)
+        self._enqueue(it, retry=True)
         return {"ok": True}
 
     def retry_failed(self) -> dict:
@@ -549,10 +546,9 @@ class App:
 
     def clear_pending(self) -> dict:
         try:
-            from .state import State
-            State(Path(self._cfg.out_dir).resolve() / ".stt").queue_clear()
+            self._state().queue_clear()
         except Exception:  # noqa: BLE001
-            pass
+            log.debug("kuyruk temizlenemedi", exc_info=True)
         self._pending = []
         return {"ok": True}
 
@@ -561,7 +557,7 @@ class App:
 
     # ---------------------------------------------------------- kanal / oynatma listesi
     def list_channel(self, url: str, opts: dict) -> dict:
-        from .channel import list_videos, select
+        from .channel import TOPIC_LABELS, collection_name, list_videos, select
         url = (url or "").strip()
         if not url:
             return {"ok": False, "error": "Kanal ya da oynatma listesi linki girin."}
@@ -571,24 +567,18 @@ class App:
             from .fetch import explain_error
             return {"ok": False, "error": explain_error(str(e))}
         use_ai = bool(opts.get("ai")) and self.llm().available()
-        items = select(data["items"], opts.get("topic") or "basin", opts.get("custom"), opts.get("exclude"),
+        topic = opts.get("topic") or "basin"
+        items = select(data["items"], topic, opts.get("custom"), opts.get("exclude"),
                        llm=self.llm() if use_ai else None,
-                       llm_topic=opts.get("custom") or {"basin": "basın toplantıları (press conference)",
-                                                        "roportaj": "röportajlar"}.get(opts.get("topic") or "", ""))
-        name = data.get("channel") or data.get("title") or url
-        topic = {"basin": "basın toplantıları", "roportaj": "röportajlar", "hepsi": "tümü"}.get(opts.get("topic") or "",
-                                                                                              opts.get("custom") or "")
-        coll = f"{name} - {topic}".strip(" -") if topic else name
-        st = None
+                       llm_topic=opts.get("custom") or ("" if topic == "hepsi" else TOPIC_LABELS.get(topic, "")))
+        coll = collection_name(data.get("channel") or data.get("title") or url, topic, opts.get("custom"))
         try:
-            from .state import State
-            from .sources import normalize_url
-            from .util import text_hash
-            st = State(Path(self._cfg.out_dir).resolve() / ".stt")
+            from .sources import Item
+            done = self._state().done_keys([Item("url", e["url"]).compute_key() for e in items])
             for e in items:
-                e["done"] = st.is_done("u_" + text_hash(normalize_url(e["url"])))
+                e["done"] = Item("url", e["url"]).compute_key() in done
         except Exception:  # noqa: BLE001
-            pass
+            log.debug("işlenmiş videolar okunamadı", exc_info=True)
         return {"ok": True, "title": data.get("title"), "channel": data.get("channel"), "items": items,
                 "matched": sum(1 for e in items if e.get("match")), "collection": coll, "ai": use_ai}
 
@@ -605,7 +595,7 @@ class App:
     # ---------------------------------------------------------- kanal takibi
     def _follows(self):
         from .channel import Follows
-        return Follows(Path(self._cfg.out_dir).resolve() / ".stt")
+        return Follows(self._state_dir())
 
     def follow_list(self) -> list[dict]:
         try:
@@ -702,12 +692,8 @@ class App:
 
     def check(self) -> dict:
         """Kurulum kontrolü (stt kontrol) ayrı süreçte; çıktıyı pencerede göstermek için döndürür."""
-        exe = Path(sys.executable)
-        py = exe.with_name("python.exe") if exe.name.lower() == "pythonw.exe" else exe
-        if not py.exists():
-            py = exe
         try:
-            r = subprocess.run([str(py), "-m", "stt", "kontrol"], capture_output=True, text=True, encoding="utf-8",
+            r = subprocess.run([console_python(), "-m", "stt", "kontrol"], capture_output=True, text=True, encoding="utf-8",
                                errors="replace", timeout=900, cwd=str(TOOL_DIR))
         except subprocess.TimeoutExpired:
             return {"ok": False, "text": "Kontrol 15 dakikada bitmedi."}
@@ -725,14 +711,7 @@ class App:
 
     def dataset(self) -> dict:
         root = Path(self._cfg.out_dir).resolve()
-        rows = []
-        jl = root / "index.jsonl"
-        if jl.exists():
-            for line in jl.read_text(encoding="utf-8").splitlines():
-                try:
-                    rows.append(json.loads(line))
-                except Exception:  # noqa: BLE001
-                    pass
+        rows = read_jsonl(root / "index.jsonl")
         tree: dict = {}
         for r in rows:
             league = r.get("league") or "Diger"
@@ -805,20 +784,9 @@ def _shutdown(app: "App") -> None:
     """
     app._stop.set()
     app._restart.set()
-    pipe = app._pipe
     try:
-        if pipe is not None:
-            for job in list(pipe.jobs.values()):  # canlı kayıt: ffmpeg'i kapat
-                if getattr(job, "recorder", None) is not None:
-                    job.recorder.stop("uygulama kapandı")
-            for pool in pipe._pools():
-                if pool.threads:
-                    continue
-                for w in pool.workers.values():
-                    if w.is_alive():
-                        w.terminate()
-                for w in pool.workers.values():
-                    w.join(3)
+        if app._pipe is not None:
+            app._pipe.kill()
     except Exception:  # noqa: BLE001
         pass
     logging.shutdown()

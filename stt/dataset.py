@@ -18,7 +18,6 @@ Maç ve GW, FPL'nin herkese açık fikstür verisinden bulunur (fantasy.premierl
 """
 from __future__ import annotations
 
-import csv
 import json
 import re
 import threading
@@ -27,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .match import find_teams, safe_filename
-from .util import atomic_write_text, log
+from .util import atomic_write_text, log, read_jsonl, write_jsonl_csv
 
 FPL_BASE = "https://fantasy.premierleague.com/api"
 PL_DIR = "Premier League"
@@ -272,24 +271,8 @@ def update_index(root: Path, row: dict) -> None:
     root = Path(root)
     with _lock:
         jl = root / "index.jsonl"
-        rows: dict[str, dict] = {}
-        if jl.exists():
-            for line in jl.read_text(encoding="utf-8").splitlines():
-                try:
-                    r = json.loads(line)
-                    rows[r["key"]] = r
-                except Exception:  # noqa: BLE001
-                    continue
+        rows = {r["key"]: r for r in read_jsonl(jl) if r.get("key")}
         rows[row["key"]] = {k: row.get(k) for k in INDEX_FIELDS}
         ordered = sorted(rows.values(), key=lambda r: (r.get("league") or "", r.get("team") or "",
                                                        r.get("match_date") or "", r.get("presser_date") or ""))
-        atomic_write_text(jl, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in ordered))
-        tmp = root / "index.csv.tmp"
-        with open(tmp, "w", newline="", encoding="utf-8-sig") as f:  # Excel Türkçe karakterleri doğru açsın
-            w = csv.DictWriter(f, fieldnames=INDEX_FIELDS)
-            w.writeheader()
-            w.writerows(ordered)
-        try:
-            tmp.replace(root / "index.csv")
-        except PermissionError:  # Excel'de açıksa
-            log.warning("index.csv açık (Excel?); güncel tablo index.csv.tmp olarak kaldı.")
+        write_jsonl_csv(jl, root / "index.csv", ordered, INDEX_FIELDS)

@@ -15,7 +15,7 @@ import uuid
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from .util import log
+from .util import atomic_write_text, log, read_jsonl, write_jsonl_csv
 
 # Konu hazırları: başlıkta (aksan/büyük harf farketmez) bunlardan biri geçerse seçilir
 TOPICS = {
@@ -27,14 +27,24 @@ TOPICS = {
     "roportaj": ("interview", "röportaj", "reaction", "speaks", "reacts", "müsahibə", "entrevista", "intervista"),
     "hepsi": (),
 }
+TOPIC_LABELS = {"basin": "basın toplantıları", "roportaj": "röportajlar", "hepsi": "tümü"}
 
 
-_TR = str.maketrans("ıİşŞğĞçÇöÖüÜəƏ", "iIsSgGcCoOuUeE")
+def collection_name(channel: str, topic: str | None, custom: str | None = None) -> str:
+    """Koleksiyon klasörü adı (GUI ve komut satırı aynı adı kullansın): '<kanal> - <konu>'."""
+    label = TOPIC_LABELS.get((topic or "").lower()) or (custom or "").strip()
+    return f"{channel} - {label}".strip(" -") if label else channel
+
+
+def _words(s: str | None) -> list[str]:
+    return [w.strip() for w in re.split(r"[,;\n]", s or "") if w.strip()]
 
 
 def _norm(s: str) -> str:
     """Küçük harf, Türkçe/aksan sadeleştirme; Kiril/Arap harfleri KORUNUR; tire/çizgi = boşluk."""
     import unicodedata
+
+    from .match import _TR
     s = unicodedata.normalize("NFKD", (s or "").translate(_TR))
     s = "".join(c for c in s if not unicodedata.combining(c)).lower()
     return " ".join(re.sub(r"[\W_]+", " ", s).split())
@@ -103,15 +113,23 @@ def _entries(info: dict, depth: int = 0) -> list[dict]:
 
 def list_videos(url: str, cfg, limit: int | None = None) -> dict:
     """{'title', 'channel', 'items': [...]} (yeniden eskiye). limit: sekme başına en fazla video."""
+    from concurrent.futures import ThreadPoolExecutor
+
     from .fetch import ytdlp_info
-    limit = int(limit or getattr(cfg, "channel_max", 200) or 200)
-    title, channel, items, seen = "", "", [], set()
-    errors = []
-    for tab in _youtube_tabs(url):
+    limit = int(limit or cfg.channel_max)
+
+    def fetch(tab):
         try:
-            info = ytdlp_info(tab, cfg.cookies_browser, flat=True, extra={"playlistend": limit})
+            return ytdlp_info(tab, cfg.cookies_browser, flat=True, extra={"playlistend": limit}), None
         except Exception as e:  # noqa: BLE001
-            errors.append(str(e)[:200])
+            return None, str(e)[:200]
+    tabs = _youtube_tabs(url)
+    with ThreadPoolExecutor(max_workers=len(tabs)) as ex:  # /videos ve /streams aynı anda
+        results = list(ex.map(fetch, tabs))
+    title, channel, items, seen = "", "", [], set()
+    errors = [err for _, err in results if err]
+    for info, _ in results:
+        if info is None:
             continue
         title = title or info.get("title") or ""
         channel = channel or info.get("channel") or info.get("uploader") or ""
@@ -127,34 +145,39 @@ def list_videos(url: str, cfg, limit: int | None = None) -> dict:
 
 
 def keywords_for(topic: str | None, custom: str | None = None) -> list[str]:
-    words = list(TOPICS.get((topic or "").lower(), ()))
-    if custom:
-        words += [w.strip() for w in re.split(r"[,;\n]", custom) if w.strip()]
-    return words
+    return list(TOPICS.get((topic or "").lower(), ())) + _words(custom)
+
+
+def _prep(words: list[str]) -> list[str]:
+    return [f" {n}" for n in map(_norm, words) if n]
+
+
+def _hit(title_norm: str, prepped: list[str]) -> bool:
+    return any(k in title_norm for k in prepped)
 
 
 def match_title(title: str, keywords: list[str], exclude: list[str] | None = None) -> bool:
     t = f" {_norm(title)} "
-    if exclude and any(_norm(x) and f" {_norm(x)}" in t for x in exclude):
+    if exclude and _hit(t, _prep(exclude)):
         return False
-    if not keywords:
-        return True
-    return any(_norm(k) and f" {_norm(k)}" in t for k in keywords)
+    return not keywords or _hit(t, _prep(keywords))
 
 
 def select(items: list[dict], topic: str | None, custom: str | None = None, exclude: str | None = None,
            llm=None, llm_topic: str | None = None) -> list[dict]:
-    """Her öğeye 'match' alanı ekler ve döner. llm verilirse anahtar kelime yerine/yanında yapay zekâ seçer."""
-    kws = keywords_for(topic, custom)
-    exc = [w.strip() for w in re.split(r"[,;\n]", exclude or "") if w.strip()]
+    """Her öğeye 'match' alanı ekler ve döner. llm verilirse anahtar kelime yerine yapay zekâ seçer."""
+    kws = _prep(keywords_for(topic, custom))   # kelimeler bir kez sadeleştirilir (1000 başlıkta hızlı)
+    exc = _prep(_words(exclude))
     for e in items:
-        e["match"] = match_title(e["title"], kws, exc)
+        t = f" {_norm(e['title'])} "
+        e["excluded"] = _hit(t, exc)
+        e["match"] = not e["excluded"] and (not kws or _hit(t, kws))
     if llm is not None and llm_topic:
         try:
             from .llm import filter_titles
             flags = filter_titles(llm, [e["title"] for e in items], llm_topic)
             for e, f in zip(items, flags):
-                e["match"] = bool(f) and not (exc and not match_title(e["title"], [], exc))
+                e["match"] = bool(f) and not e["excluded"]
                 e["ai"] = True
         except Exception as e:  # noqa: BLE001
             log.warning("Yapay zekâ ile seçilemedi, anahtar kelimeler kullanıldı: %s", e)
@@ -178,10 +201,7 @@ class Follows:
             return []
 
     def _save(self, rows: list[dict]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
-        tmp.replace(self.path)
+        atomic_write_text(self.path, json.dumps(rows, ensure_ascii=False, indent=1))
 
     def add(self, url: str, name: str, topic: str, custom: str = "", exclude: str = "", opts: dict | None = None,
             seen: list[str] | None = None) -> dict:
@@ -223,39 +243,35 @@ def check_follow(row: dict, cfg, llm=None, limit: int = 30) -> list[dict]:
 # ------------------------------------------------------------------ koleksiyon çıktısı
 
 def add_to_collection(out_root: Path, name: str, doc: dict, paths: dict) -> Path:
-    """<out>/Koleksiyonlar/<ad>/: liste.csv + tum_metinler.txt (tarih sırasıyla bütün metinler tek dosyada)."""
-    import csv
+    """<out>/Koleksiyonlar/<ad>/: liste.csv (tarih sırası) + tum_metinler.txt (bütün metinler tek dosyada).
+
+    tum_metinler.txt'ye yeni metin sona eklenir (1000 videoluk kanalda her işte bütün metinleri baştan okumamak
+    için); aynı video yeniden işlendiyse dosya baştan kurulur."""
     from .match import safe_filename
-    from .outputs import to_txt
     folder = Path(out_root) / "Koleksiyonlar" / safe_filename(name, 80)
     folder.mkdir(parents=True, exist_ok=True)
-    jl = folder / "liste.jsonl"
-    rows = []
-    if jl.exists():
-        for line in jl.read_text(encoding="utf-8").splitlines():
-            try:
-                rows.append(json.loads(line))
-            except ValueError:
-                pass
     ds = doc.get("dataset") or {}
-    date = ds.get("presser_date") or (doc.get("match") or {}).get("date") or ""
-    row = {"date": date, "title": doc.get("title"), "url": doc.get("webpage_url") or doc.get("source"),
-           "language": doc.get("language"), "duration_s": doc.get("duration_s"), "txt": str(paths["txt"]),
-           "json": str(paths["json"]), "key": doc.get("key")}
-    rows = [r for r in rows if r.get("key") != row["key"]] + [row]
-    rows.sort(key=lambda r: (r.get("date") or "", r.get("title") or ""))
-    jl.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
-    with open(folder / "liste.csv", "w", encoding="utf-8-sig", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(row))
-        w.writeheader()
-        w.writerows(rows)
-    parts = []
-    for r in rows:
-        try:
-            body = Path(r["txt"]).read_text(encoding="utf-8")
-        except OSError:
-            jp = Path(r["json"])
-            body = to_txt(json.loads(jp.read_text(encoding="utf-8"))) if jp.exists() else ""
-        parts.append("=" * 80 + "\n" + body.strip() + "\n")
-    (folder / "tum_metinler.txt").write_text("\n".join(parts), encoding="utf-8")
+    row = {"date": ds.get("presser_date") or (doc.get("match") or {}).get("date") or "", "title": doc.get("title"),
+           "url": doc.get("webpage_url") or doc.get("source"), "language": doc.get("language"),
+           "duration_s": doc.get("duration_s"), "txt": str(paths["txt"]), "json": str(paths["json"]),
+           "key": doc.get("key")}
+    old = read_jsonl(folder / "liste.jsonl")
+    again = any(r.get("key") == row["key"] for r in old)
+    rows = sorted([r for r in old if r.get("key") != row["key"]] + [row],
+                  key=lambda r: (r.get("date") or "", r.get("title") or ""))
+    write_jsonl_csv(folder / "liste.jsonl", folder / "liste.csv", rows, list(row))
+    allf = folder / "tum_metinler.txt"
+    if again or not allf.exists():
+        atomic_write_text(allf, "\n".join(_block(r["txt"]) for r in rows))
+    else:
+        with open(allf, "a", encoding="utf-8") as f:
+            f.write("\n" + _block(row["txt"]))
     return folder
+
+
+def _block(txt: str) -> str:
+    try:
+        body = Path(txt).read_text(encoding="utf-8")
+    except OSError:
+        body = ""
+    return "=" * 80 + "\n" + body.strip() + "\n"

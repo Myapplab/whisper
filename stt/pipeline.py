@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .audio import plan_chunks
 from .config import Config
-from .fetch import DRMProtected, FetchError, LiveStream, SkipItem, prepare_audio
+from .fetch import DRMProtected, FetchError, LiveStream, SkipItem, is_transient, prepare_audio  # noqa: F401
 from .merge import apply_labels, assign_speakers, label_speakers, label_speakers_all, merge_chunks
 from .outputs import to_txt, write_all
 from .sources import Item
@@ -52,7 +52,9 @@ class Job:
     live_txt: Path | None = None
     live_next: int = 0
     live_votes: dict = field(default_factory=dict)   # dil -> toplam (süre x olasılık)
-    live_redo: bool = False
+    live_buf: dict = field(default_factory=dict)     # parça no -> segmentler (sırayla yazılmayı bekleyen)
+    chunk_lang: dict = field(default_factory=dict)   # parça no -> algılanan dil
+    lang_checked: bool = False
 
 
 def diar_hint(err: str) -> str:
@@ -103,21 +105,6 @@ def worker_hint(err: str) -> str:
     if "unable to open file 'model.bin'" in e or "no such file" in e or "localentrynotfound" in e:
         return "Whisper modeli bulunamadı/eksik: internet açıkken 'Yeniden başlat'a basın (model ~3 GB iner)."
     return err[:400]
-
-
-_TRANSIENT = ("timed out", "timeout", "connection reset", "connection aborted", "connectionerror",
-              "temporary failure", "remote end closed", "incompleteread", "incomplete read", "http error 500",
-              "http error 502", "http error 503", "http error 504", "http error 429", "too many requests",
-              "network is unreachable", "getaddrinfo", "ssl:", "eof occurred", "bad gateway", "service unavailable")
-
-
-def is_transient(msg: str) -> bool:
-    """Geçici (ağ) hatası mı? Öyleyse bir süre sonra tekrar denenir."""
-    m = (msg or "").lower()
-    if any(x in m for x in ("drm", "private video", "video unavailable", "has been removed", "http error 404",
-                            "unsupported url", "giriş istiyor")):
-        return False
-    return any(x in m for x in _TRANSIENT)
 
 
 def item_fpl(item: Item, cfg: Config) -> tuple[int, str] | None:
@@ -181,6 +168,7 @@ class Pipeline:
         self.worker_errors: dict[str, str] = {}
         self.failed_reason: str | None = None  # tüm işçiler başlatılamadıysa sebep (GUI motoru hata durumuna alır)
         self._respawn_due: dict[str, float] = {}  # işçi -> yeniden başlatma zamanı (geri çekilme)
+        self._llm = None
 
     # ---------------------------------------------------------- başlatma
     def start(self):
@@ -316,7 +304,7 @@ class Pipeline:
                     self._prepare(item)
                     break
                 except (MemoryError, FetchError) as e:
-                    transient = isinstance(e, MemoryError) or is_transient(str(e))
+                    transient = isinstance(e, MemoryError) or e.transient
                     with self.lock:
                         j = self.jobs.get(item.key)
                         if j is not None and j.status == "prep":
@@ -484,18 +472,12 @@ class Pipeline:
         lang = self._opt(item, "lang")
         job.match = parse_match({**job.info, "title": job.info.get("title") or item.title})
         prompt = self._prompt(item, job)
-        tasks = []
-        for i, c in enumerate(chunks):
-            tid = f"{item.key}:t:{i:04d}"
-            if (job.work / "parcalar" / f"{i:04d}.json").exists():
-                continue  # sürdürme: bu parça zaten bitmiş
-            tasks.append({"id": tid, "kind": "transcribe", "wav": str(job.wav), "start": c["start"],
-                          "end": c["end"], "speech_start": c["speech_start"], "speech_end": c["speech_end"],
-                          "lang": lang, "prompt": prompt, "idx": i, "n": len(chunks)})
+        tasks = [self._transcribe_task(item, i, job.wav, c["start"], c["end"], lang, prompt, n=len(chunks),
+                                       speech=(c["speech_start"], c["speech_end"]))
+                 for i, c in enumerate(chunks)
+                 if not (job.work / "parcalar" / f"{i:04d}.json").exists()]  # sürdürme: biten parçalar atlanır
         if self._opt(item, "diarize") and not (job.work / "konusmaci.json").exists():
-            tasks.insert(0, {"id": f"{item.key}:d", "kind": "diarize", "wav": str(job.wav),
-                             "min_speakers": self._speakers_wanted(item) or cfg.min_speakers or 2,
-                             "max_speakers": self._speakers_wanted(item) or cfg.max_speakers})
+            tasks.insert(0, self._diarize_task(item, job.wav))
         done_before = len(chunks) - sum(1 for t in tasks if t["kind"] == "transcribe")
         if done_before:
             log.info("Sürdürülüyor: %d/%d parça önceden bitmiş", done_before, len(chunks))
@@ -509,12 +491,25 @@ class Pipeline:
             job.pending = {t["id"] for t in tasks}
             job.status = "run"
             for t in tasks:
-                t["job"] = item.key
                 self.tasks[t["id"]] = t
             self.backlog.extend(t for t in tasks if t["kind"] != "diarize")
             self.dbacklog.extend(t for t in tasks if t["kind"] == "diarize")
         if not tasks:
-            self._finalize_async(job)
+            self._maybe_finalize(job)
+
+    @staticmethod
+    def _transcribe_task(item: Item, idx: int, wav: Path, start: float, end: float, lang: str | None,
+                         prompt: str | None, n: int | None = None, offset: float = 0.0,
+                         speech: tuple[float, float] | None = None) -> dict:
+        sp = speech or (start, end)
+        return {"id": f"{item.key}:t:{idx:04d}", "kind": "transcribe", "wav": str(wav), "start": start, "end": end,
+                "offset": offset, "speech_start": sp[0], "speech_end": sp[1], "lang": lang, "prompt": prompt,
+                "idx": idx, "n": n, "job": item.key}
+
+    def _diarize_task(self, item: Item, wav: Path) -> dict:
+        n = self._speakers_wanted(item)
+        return {"id": f"{item.key}:d", "kind": "diarize", "wav": str(wav), "job": item.key,
+                "min_speakers": n or self.cfg.min_speakers or 2, "max_speakers": n or self.cfg.max_speakers}
 
     def _prompt(self, item: Item, job: Job) -> str | None:
         cfg = self.cfg
@@ -569,9 +564,8 @@ class Pipeline:
 
     def _live_chunk(self, job: Job, idx: int, wav: Path, offset: float, dur: float) -> None:
         item = job.item
-        t = {"id": f"{item.key}:t:{idx:04d}", "kind": "transcribe", "wav": str(wav), "start": 0.0, "end": dur,
-             "offset": offset, "speech_start": 0.0, "speech_end": dur, "idx": idx, "n": None,
-             "lang": self._opt(item, "lang") or job.live_lang, "prompt": self._prompt(item, job), "job": item.key}
+        t = self._transcribe_task(item, idx, wav, 0.0, dur, self._opt(item, "lang") or job.live_lang,
+                                  self._prompt(item, job), offset=offset)
         with self.lock:
             if job.status != "run":
                 return
@@ -594,37 +588,33 @@ class Pipeline:
             job.live_lang = max(job.live_votes, key=job.live_votes.get)
             log.info("Canlı yayın dili: %s", job.live_lang)
 
-    def _live_requeue_wrong_lang(self, job: Job) -> int:
-        """Bitişte: çoğunluk dilinden farklı çıkan parçaları o dille yeniden çevir."""
-        langs: dict[str, float] = {}
-        per: dict[int, str | None] = {}
-        for i, c in enumerate(job.chunks):
-            pth = job.work / "parcalar" / f"{i:04d}.json"
-            try:
-                lg = json.loads(pth.read_text(encoding="utf-8")).get("language")
-            except Exception:  # noqa: BLE001
-                lg = None
-            per[i] = lg
-            if lg:
-                langs[lg] = langs.get(lg, 0.0) + (c["end"] - c["start"])
-        if not langs or self._opt(job.item, "lang"):
+    def _requeue_wrong_lang(self, job: Job) -> int:
+        """Çoğunluk dilinden farklı çıkan parçaları o dille yeniden çevir (bitişte, bir kez).
+
+        Yalnızca canlı yayında: 20 sn'lik parçada dil sık yanlış algılanıyor (İngilizce yayın Felemenkçe
+        yazılmıştı). Normal işlerde 5 dk'lık parçalar farklı dildeyse gerçekten o dilde konuşulmuştur
+        (ör. TD İspanyolca cevap veriyor); zorla çevirmek metni değiştirir."""
+        if not job.live or self._opt(job.item, "lang") or not job.chunk_lang:
             return 0
-        main = max(langs, key=langs.get)
-        n = 0
-        for i, lg in per.items():
-            if lg and lg != main:
+        weight: dict[str, float] = {}
+        for i, lg in job.chunk_lang.items():
+            if lg:
                 c = job.chunks[i]
-                tid = f"{job.item.key}:t:{i:04d}:r"
-                t = {"id": tid, "kind": "transcribe", "wav": str(job.work / "parca" / f"{i:04d}.wav"), "start": 0.0,
-                     "end": c["end"] - c["start"], "offset": c["start"], "speech_start": 0.0,
-                     "speech_end": c["end"] - c["start"], "idx": i, "n": None, "lang": main,
-                     "prompt": self._prompt(job.item, job), "job": job.item.key}
-                self.tasks[tid] = t
-                job.pending.add(tid)
+                weight[lg] = weight.get(lg, 0.0) + c["end"] - c["start"]
+        if not weight:
+            return 0
+        main = max(weight, key=weight.get)
+        n = 0
+        for i, lg in job.chunk_lang.items():
+            base = self.tasks.get(f"{job.item.key}:t:{i:04d}")
+            if lg and lg != main and base:
+                t = {**base, "id": base["id"] + "~", "lang": main, "redo": True}
+                self.tasks[t["id"]] = t
+                job.pending.add(t["id"])
                 self.backlog.append(t)
                 n += 1
         if n:
-            log.info("Canlı kayıt: %d parça '%s' diliyle yeniden çevriliyor", n, main)
+            log.info("%s: %d parça '%s' diliyle yeniden çevriliyor", job.item.title[:60], n, main)
         return n
 
     def _live_end(self, job: Job, wav: Path, why: str) -> None:
@@ -634,11 +624,8 @@ class Pipeline:
             job.live_active = False
             job.wav = wav
             job.info["duration_s"] = sum(c["end"] - c["start"] for c in job.chunks)
-            job.live_redo = True  # son parçalar bitince yanlış dildekiler yeniden çevrilir
             if job.status == "run" and self._opt(item, "diarize") and wav.exists() and job.info["duration_s"] > 5:
-                d = {"id": f"{item.key}:d", "kind": "diarize", "wav": str(wav), "job": item.key,
-                     "min_speakers": self._speakers_wanted(item) or self.cfg.min_speakers or 2,
-                     "max_speakers": self._speakers_wanted(item) or self.cfg.max_speakers}
+                d = self._diarize_task(item, wav)
                 self.tasks[d["id"]] = d
                 job.pending.add(d["id"])
                 self.dbacklog.append(d)
@@ -646,18 +633,10 @@ class Pipeline:
         self._maybe_finalize(job)
 
     def _live_flush(self, job: Job) -> None:
-        """Biten parçaları SIRAYLA canlı metin dosyasına ekle ve arayüze gönder."""
-        from .util import fmt_clock
+        """Biten parçaları SIRAYLA canlı metin dosyasına ekle ve arayüze gönder (parçalar sırasız bitebilir)."""
         lines = []
-        while True:
-            p = job.work / "parcalar" / f"{job.live_next:04d}.json"
-            if not p.exists():
-                break
-            try:
-                segs = json.loads(p.read_text(encoding="utf-8")).get("segments", [])
-            except Exception:  # noqa: BLE001
-                segs = []
-            for sg in segs:
+        while job.live_next in job.live_buf:
+            for sg in job.live_buf.pop(job.live_next):
                 if sg.get("text"):
                     lines.append(f"[{fmt_clock(sg['start'])}] {sg['text'].strip()}")
             job.live_next += 1
@@ -677,9 +656,9 @@ class Pipeline:
         with self.lock:
             if job.status != "run" or job.pending or job.live_active:
                 return
-            if job.live and job.live_redo:
-                job.live_redo = False
-                if self._live_requeue_wrong_lang(job):
+            if not job.lang_checked:
+                job.lang_checked = True
+                if self._requeue_wrong_lang(job):
                     return
             job.status = "finalize"
         self.fin.submit(self._finalize_safe, job)
@@ -724,11 +703,7 @@ class Pipeline:
             return
         if typ == "fatal":
             hint = worker_hint(m["error"])
-            e = m["error"].lower()
-            transient = any(x in e for x in ("mkl_malloc", "memoryerror", "bad_alloc", "out of memory",
-                                             "winerror 1455", "paging file", "cuda failed", "device-side",
-                                             "unspecified launch failure", "illegal memory"))
-            if transient and self.restarts.get(wid, 0) < self.cfg.worker_restarts:
+            if m.get("retryable") and self.restarts.get(wid, 0) < self.cfg.worker_restarts:
                 # RAM/GPU bir anlığına yetmedi ya da sürücü sıfırlandı: süreç biter, _health biraz sonra açar
                 log.warning("[%s] işçi açılamadı (%s); biraz sonra tekrar denenecek", wid, m["error"][:160])
                 self.idle.discard(wid)
@@ -783,13 +758,15 @@ class Pipeline:
                 with self.lock:
                     self.backlog.appendleft(task)
                 return
-            if task["kind"] == "transcribe" and job.live:
-                # canlı yayında tek parça yüzünden kayıt durmasın: boş geç
-                log.warning("Canlı parça %d yazılamadı, atlanıyor: %s", task["idx"], m["error"][:160])
-                (job.work / "parcalar" / f"{task['idx']:04d}.json").write_text(
-                    json.dumps({"segments": [], "language": None}), encoding="utf-8")
+            if task["kind"] == "transcribe" and (job.live or task.get("redo")):
+                # canlı yayında tek parça yüzünden kayıt durmasın: boş geç (dil düzeltmesi olmazsa eskisi kalır)
+                log.warning("Parça %d yazılamadı, atlanıyor: %s", task["idx"], m["error"][:160])
+                if not task.get("redo"):
+                    (job.work / "parcalar" / f"{task['idx']:04d}.json").write_text(
+                        json.dumps({"segments": [], "language": None}), encoding="utf-8")
+                    job.live_buf[task["idx"]] = []
+                    self._live_flush(job)
                 job.pending.discard(tid)
-                self._live_flush(job)
                 self._maybe_finalize(job)
                 return
             if task["kind"] == "diarize":
@@ -812,13 +789,15 @@ class Pipeline:
                 p = job.work / "parcalar" / f"{task['idx']:04d}.json"
                 p.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
                 dur = task["end"] - task["start"]
-                if not tid.endswith(":r"):  # canlıda dil düzeltmesi için yeniden çeviri sayılmaz
+                job.chunk_lang[task["idx"]] = payload.get("language")
+                if not task.get("redo"):  # dil düzeltmesi için yeniden çeviri ilerlemeye sayılmaz
                     job.done_chunks += 1
                 total = task["n"] or len(job.chunks)
                 self.emit("progress", job.item, done=job.done_chunks, total=total, speed=dur / max(0.01, m["elapsed"]),
                           live=job.live_active or None)
-                if job.live:
+                if job.live and not task.get("redo"):
                     self._live_vote(job, payload, dur)
+                    job.live_buf[task["idx"]] = payload.get("segments", [])
                     self._live_flush(job)
                 else:
                     log.info("[%s] %s parça %d/%d bitti (%s ses, %.1fx hız)", wid, job.item.title[:50],
@@ -910,9 +889,6 @@ class Pipeline:
             raise RuntimeError(self.failed_reason)
 
     # ---------------------------------------------------------- çıktı
-    def _finalize_async(self, job: Job):
-        self._maybe_finalize(job)
-
     def _finalize_safe(self, job: Job):
         try:
             self._finalize(job)
@@ -1121,7 +1097,7 @@ class Pipeline:
 
     # ---------------------------------------------------------- yapay zekâ / dış programlar
     def llm(self):
-        if getattr(self, "_llm", None) is None:
+        if self._llm is None:
             from .llm import LLM
             self._llm = LLM(self.cfg, self.out_root / ".stt")
         return self._llm
@@ -1180,6 +1156,20 @@ class Pipeline:
     def wait_all(self):
         while self.active():
             self.pump(0.5)
+
+    def kill(self) -> None:
+        """Uygulama kapanıyor: canlı kayıtları ve işçi süreçlerini HEMEN durdur (beklemeden)."""
+        for job in list(self.jobs.values()):
+            if job.recorder is not None:
+                job.recorder.stop("uygulama kapandı")
+        for pool in self._pools():
+            if pool.threads:
+                continue
+            for w in pool.workers.values():
+                if w.is_alive():
+                    w.terminate()
+            for w in pool.workers.values():
+                w.join(3)
 
     def close(self):
         self.prep.shutdown(wait=False, cancel_futures=True)

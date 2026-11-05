@@ -18,7 +18,7 @@ import threading
 import time
 from pathlib import Path
 
-from .util import log
+from .util import atomic_write_text, log
 
 CLAUDE_DEFAULT = "claude-haiku-5-5"
 OPENAI_DEFAULT = "gpt-5-mini"
@@ -76,8 +76,7 @@ class Usage:
             m["calls"] += 1
             m["in"] += tin
             m["out"] += tout
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(json.dumps(d, indent=1), encoding="utf-8")
+            atomic_write_text(self.path, json.dumps(d, indent=1))  # yarım yazılırsa sınır sıfırlanmasın
         return usd
 
 
@@ -91,14 +90,11 @@ class LLM:
         self._lock = threading.Lock()
 
     # ---------------------------------------------------------- durum
-    def key(self) -> str | None:
-        if self.provider == "gemini":
-            return self.cfg.gemini_api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-        if self.provider == "claude":
-            return self.cfg.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")
-        if self.provider == "openai":
-            return os.environ.get("OPENAI_API_KEY")
-        return None
+    def key(self, provider: str | None = None) -> str | None:
+        """Sağlayıcının anahtarı. GEMINI_API_KEY / ANTHROPIC_API_KEY ortam değişkenleri config'e zaten okunur."""
+        provider = provider or self.provider
+        return {"gemini": self.cfg.gemini_api_key, "claude": self.cfg.anthropic_api_key,
+                "openai": os.environ.get("OPENAI_API_KEY")}.get(provider or "")
 
     def available(self) -> bool:
         return bool(self.provider and self.key())
@@ -316,34 +312,31 @@ QA_SYSTEM = (
     "'Thank you', 'Next question' gibi moderatör cümleleri muhabir sayılır.")
 
 
-def label_qa(llm: LLM, sentences: list[str]) -> list[bool]:
-    """Her cümle için True = muhabir/soru. Konuşmacı ayırma başarısız olunca kullanılır."""
+def _pick(llm: LLM, system: str, items: list[str], ask: str, key: str, step: int, max_tokens: int) -> list[bool]:
+    """Numaralı listeyi parça parça yapay zekâya sor; dönen numaralar True olur."""
     out: list[bool] = []
-    step = 400
-    for a in range(0, len(sentences), step):
-        part = sentences[a:a + step]
-        numbered = "\n".join(f"{i}: {s}" for i, s in enumerate(part))
-        res = llm.complete_json(QA_SYSTEM, numbered + '\n\nJSON: {"muhabir": [muhabire ait cümle numaraları]}',
-                                max_tokens=3000)
-        idx = {int(x) for x in (res.get("muhabir") if isinstance(res, dict) else res) or [] if str(x).isdigit()}
+    for a in range(0, len(items), step):
+        part = items[a:a + step]
+        numbered = "\n".join(f"{i}: {t}" for i, t in enumerate(part))
+        res = llm.complete_json(system, ask.replace("{items}", numbered), max_tokens=max_tokens)
+        picked = res.get(key) if isinstance(res, dict) else res
+        idx = {int(x) for x in picked or [] if str(x).isdigit()}
         out += [i in idx for i in range(len(part))]
     return out
+
+
+def label_qa(llm: LLM, sentences: list[str]) -> list[bool]:
+    """Her cümle için True = muhabir/soru. Konuşmacı ayırma başarısız olunca kullanılır."""
+    return _pick(llm, QA_SYSTEM, sentences, '{items}\n\nJSON: {"muhabir": [muhabire ait cümle numaraları]}',
+                 "muhabir", 400, 3000)
 
 
 TOPIC_SYSTEM = "Video başlıklarını bir konuya göre süzüyorsun. Emin değilsen dahil etme."
 
 
 def filter_titles(llm: LLM, titles: list[str], topic: str) -> list[bool]:
-    out: list[bool] = []
-    step = 300
-    for a in range(0, len(titles), step):
-        part = titles[a:a + step]
-        numbered = "\n".join(f"{i}: {t}" for i, t in enumerate(part))
-        res = llm.complete_json(TOPIC_SYSTEM, f"Konu: {topic}\n\nBaşlıklar:\n{numbered}\n\n"
-                                '{"uygun": [konuya uyan başlık numaraları]} JSON ver.', max_tokens=2000)
-        idx = {int(x) for x in (res.get("uygun") if isinstance(res, dict) else res) or [] if str(x).isdigit()}
-        out += [i in idx for i in range(len(part))]
-    return out
+    ask = f"Konu: {topic}\n\nBaşlıklar:\n{{items}}\n\n" + '{"uygun": [konuya uyan başlık numaraları]} JSON ver.'
+    return _pick(llm, TOPIC_SYSTEM, titles, ask, "uygun", 300, 2000)
 
 
 def write_news(llm: LLM, json_path, doc: dict | None = None) -> dict:

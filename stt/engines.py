@@ -9,7 +9,7 @@ import wave
 import numpy as np
 
 from .audio import SR, load_wav
-from .util import log, setup_cuda_dlls
+from .util import log, popen_kw, setup_cuda_dlls
 
 
 def parse_device(dev: str) -> tuple[str, int]:
@@ -41,10 +41,9 @@ def _smi(query: str) -> list[list[str]]:
     exe = shutil.which("nvidia-smi")
     if not exe:
         return []
-    kw = {"creationflags": 0x08000000} if os.name == "nt" else {}  # CREATE_NO_WINDOW
     try:
         r = subprocess.run([exe, f"--query-gpu={query}", "--format=csv,noheader,nounits"],
-                           capture_output=True, text=True, timeout=20, **kw)
+                           capture_output=True, text=True, timeout=20, **popen_kw())
     except Exception:  # noqa: BLE001
         return []
     if r.returncode != 0:
@@ -100,7 +99,7 @@ def mark_display(out: dict[int, dict], adapters: list[str] | None) -> None:
     att = [_norm_gpu(a) for a in adapters]
     for g in out.values():
         n = _norm_gpu(g["name"])
-        hit = any(n == a or n in a or a in n for a in att if a)
+        hit = n in att  # tam ad eşleşmesi ("rtx 3080" ile "rtx 3080 ti" karışmasın)
         if hit:
             g["display"] = True  # nvidia-smi 'Disabled' dese bile: Windows bu kartla çiziyor
         elif g.get("display") is None and att:
@@ -134,14 +133,19 @@ def _gpu_info() -> dict[int, dict]:
             out[int(i)] = {"name": name.replace("NVIDIA GeForce ", ""), "gb": float(mem) / 1024, "display": None}
         except (ValueError, IndexError):
             continue
-    # her alan ayrı sorgu: biri desteklenmezse (sürücüye göre değişiyor) ötekiler bozulmasın
-    for field in ("display_attached", "display_mode", "display_active"):
-        for row in _smi(f"index,{field}"):
-            try:
-                v = row[1].strip().lower()
-                i = int(row[0])
-            except (ValueError, IndexError):
-                continue
+    # önce tek sorgu; bir alan desteklenmiyorsa (sürücüye göre değişiyor) alan alan
+    fields = ("display_mode", "display_active", "display_attached")
+    rows = _smi("index," + ",".join(fields[:2])) or []
+    if not rows:
+        rows = [r for f in fields for r in _smi(f"index,{f}")]
+    else:
+        rows += _smi("index,display_attached")
+    for row in rows:
+        try:
+            i = int(row[0])
+        except (ValueError, IndexError):
+            continue
+        for v in (x.strip().lower() for x in row[1:]):
             if i not in out:
                 continue
             if v in ("enabled", "yes", "true", "1"):
@@ -374,8 +378,8 @@ class OpenAIEngine:
 
 
 class Diarizer:
-    agc = True
-    def __init__(self, model: str, token: str | None, device: str, agc: bool = True, label: str | None = None):
+    agc = True  # testler __new__ ile kurar
+    def __init__(self, model: str, token: str | None, device: str, agc: bool = True):
         os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")  # pyannote 3.x + torch>=2.6
         setup_cuda_dlls()
         import torch

@@ -12,7 +12,7 @@ import wave
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 
-from .util import log, which
+from .util import console_python, log, popen_kw, which
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
@@ -27,7 +27,26 @@ class DRMProtected(SkipItem):
 
 
 class FetchError(Exception):
-    pass
+    """İndirilemedi. transient=True: geçici (ağ / sunucu) hata, bir süre sonra tekrar denenir."""
+
+    def __init__(self, msg: str = "", transient: bool = False):
+        super().__init__(msg)
+        self.transient = transient
+
+
+_TRANSIENT = ("timed out", "timeout", "connection reset", "connection aborted", "connectionerror",
+              "temporary failure", "remote end closed", "incompleteread", "incomplete read", "http error 500",
+              "http error 502", "http error 503", "http error 504", "http error 429", "too many requests",
+              "network is unreachable", "getaddrinfo", "ssl:", "eof occurred", "bad gateway", "service unavailable")
+
+
+def is_transient(msg: str) -> bool:
+    """Tek bir denemenin hata metni geçici (ağ) hatası mı?"""
+    m = (msg or "").lower()
+    if any(x in m for x in ("drm", "private video", "video unavailable", "has been removed", "http error 404",
+                            "unsupported url")):
+        return False
+    return any(x in m for x in _TRANSIENT)
 
 
 # ---------------------------------------------------------------- ffmpeg
@@ -39,19 +58,30 @@ def ffmpeg_bin() -> str:
     return exe
 
 
+def header_arg(headers: dict) -> str:
+    return "".join(f"{k}: {v}\r\n" for k, v in headers.items())
+
+
+def http_input_args(src: str, headers: dict | None, live: bool = False) -> list[str]:
+    """ffmpeg'in http girdisi için başlık + yeniden bağlanma seçenekleri (dosya için boş)."""
+    if not src.startswith("http"):
+        return []
+    out = ["-headers", header_arg(headers)] if headers else []
+    if headers or live:
+        out += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10", "-rw_timeout", "30000000"]
+    return out
+
+
 def to_wav16k(src: str, dst: Path, headers: dict | None = None) -> Path:
     """Herhangi bir medya dosyası/URL -> 16 kHz mono PCM WAV (atomik)."""
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_name(dst.stem + ".part.wav")
-    cmd = [ffmpeg_bin(), "-hide_banner", "-nostdin", "-y", "-loglevel", "error"]
-    if headers and src.startswith("http"):
-        cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
-        cmd += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10"]
-    cmd += ["-i", src, "-vn", "-sn", "-dn", "-map", "0:a:0?", "-ac", "1", "-ar", "16000",
-            "-c:a", "pcm_s16le", "-f", "wav", str(tmp)]
+    cmd = [ffmpeg_bin(), "-hide_banner", "-nostdin", "-y", "-loglevel", "error", *http_input_args(src, headers),
+           "-i", src, "-vn", "-sn", "-dn", "-map", "0:a:0?", "-ac", "1", "-ar", "16000",
+           "-c:a", "pcm_s16le", "-f", "wav", str(tmp)]
     # düşük öncelik: dönüştürme sırasında bilgisayar akıcı kalsın
-    kw = {"creationflags": 0x00004000 | 0x08000000} if os.name == "nt" else {}  # BELOW_NORMAL | NO_WINDOW
-    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", **kw)
+    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       **popen_kw(low_priority=True))
     if r.returncode != 0 or not tmp.exists() or tmp.stat().st_size <= 44:
         tmp.unlink(missing_ok=True)
         err = (r.stderr or "").strip()[-800:]
@@ -286,14 +316,6 @@ def browser_cookie_file(browser: str) -> tuple[str | None, str]:
         return path, err
 
 
-def _copy_cookies(src: str, workdir: Path) -> str:
-    """yt-dlp çerez dosyasına geri yazar: her indirme kendi kopyasını kullansın."""
-    import shutil
-    dst = workdir / "cerez.txt"
-    shutil.copyfile(src, dst)
-    return str(dst)
-
-
 def impersonate_target():
     """curl_cffi kuruluysa tarayıcı taklidi hedefi (Dailymotion, Cloudflare'li siteler...)."""
     try:
@@ -304,30 +326,54 @@ def impersonate_target():
         return None
 
 
+def _attempts(url: str, cookies_browser: str | None, cookies_file: str | None, workdir: Path):
+    """yt-dlp denemeleri (etiket, ek seçenekler): düz -> tarayıcı taklidi -> tarayıcı çerezleri -> cookies.txt.
+
+    Çerezler ancak sırası gelince okunur (düz deneme çoğu zaman yeter) ve her deneme kendi kopyasını kullanır
+    (yt-dlp çerez dosyasına geri yazar; ortak önbellek dosyası bozulmasın). Giriş isteyen sitelerde çerez önce."""
+    imp = impersonate_target()
+    plain = [("çerezsiz", lambda: {})]
+    if imp is not None:
+        plain.append(("tarayıcı taklidi", lambda: {"impersonate": imp}))
+
+    def browser(b):
+        def make():
+            cf, err = browser_cookie_file(b)
+            if not cf:
+                raise FetchError(err or "çerez okunamadı")
+            return {"cookiefile": _private_copy(cf, workdir), **({"impersonate": imp} if imp is not None else {})}
+        return make
+    cookies = [(f"{b} çerezleri", browser(b)) for b in cookie_browsers(cookies_browser)]
+    if cookies_file and Path(cookies_file).is_file():
+        cookies.append(("cookies.txt", lambda: {"cookiefile": _private_copy(cookies_file, workdir)}))
+    host = (urlsplit(url).hostname or "").lower()
+    login_first = any(host == d or host.endswith("." + d) for d in LOGIN_FIRST)
+    yield from (cookies + plain) if login_first else (plain + cookies)
+
+
+def _private_copy(src: str, workdir: Path) -> str:
+    import shutil
+    workdir.mkdir(parents=True, exist_ok=True)
+    dst = workdir / f"cerez-{threading.get_ident()}.txt"
+    shutil.copyfile(src, dst)
+    return str(dst)
+
+
+def _import_ytdlp():
+    """yt-dlp'yi içe aktar; günlük güncelleme sürüyorsa önce bitmesini bekle (yarım yazılmış paket yüklenmesin)."""
+    import sys
+    if "yt_dlp" not in sys.modules:
+        wait_ytdlp_update()
+    import yt_dlp
+    return yt_dlp
+
+
 def ytdlp_download(url: str, workdir: Path, cookies_browser: str | None, cookies_file: str | None,
                    headers: dict | None = None, detect_live: bool = True):
-    """(dosya, info) döner. DRM ise DRMProtected; canlı yayınsa LiveStream; hiçbiri olmazsa FetchError.
-
-    Deneme sırası: düz -> tarayıcı taklidi -> tarayıcı çerezleri (kurulu tarayıcılar sırayla) -> cookies.txt
-    """
-    import yt_dlp
+    """(dosya, info) döner. DRM ise DRMProtected; canlı yayınsa LiveStream; hiçbiri olmazsa FetchError."""
+    yt_dlp = _import_ytdlp()
     from yt_dlp.utils import DownloadError
 
-    wait_ytdlp_update()
-    attempts: list[tuple[str, dict]] = [("çerezsiz", {})]
-    imp = impersonate_target()
-    if imp is not None:
-        attempts.append(("tarayıcı taklidi", {"impersonate": imp}))
-    browsers = cookie_browsers(cookies_browser)
-    for b in browsers:
-        attempts.append((f"{b} çerezleri", {"_browser": b}))
-    if cookies_file and Path(cookies_file).is_file():
-        attempts.append(("cookies.txt", {"cookiefile": cookies_file}))
-
-    host = (urlsplit(url).hostname or "").lower()
-    if any(host == d or host.endswith("." + d) for d in LOGIN_FIRST):
-        cookie_tries = [a for a in attempts if "_browser" in a[1] or "cookiefile" in a[1]]
-        attempts = cookie_tries + [a for a in attempts if a not in cookie_tries]  # giriş isteyen sitelerde önce çerez
     live: dict = {}
 
     def live_filter(info, *, incomplete=False):
@@ -336,87 +382,67 @@ def ytdlp_download(url: str, workdir: Path, cookies_browser: str | None, cookies
             return "canlı yayın: canlı çeviriye geçiliyor"
         return None
 
-    last = ""
     errors: list[tuple[str, str]] = []   # (deneme, hata): ilk denemenin hatası çoğu zaman asıl sebeptir
-    for label, extra in attempts:
-        extra = dict(extra)
-        browser = extra.pop("_browser", None)
-        if browser:
-            cf, cerr = browser_cookie_file(browser)
-            if not cf:
-                errors.append((label, cerr or "çerez okunamadı"))
-                continue
-            extra["cookiefile"] = _copy_cookies(cf, workdir)
-            if imp is not None:
-                extra["impersonate"] = imp
-        elif "cookiefile" in extra:
-            extra["cookiefile"] = _copy_cookies(extra["cookiefile"], workdir)
-        if headers:
-            extra["http_headers"] = {"User-Agent": UA, **headers}
+    for label, make in _attempts(url, cookies_browser, cookies_file, workdir):
         try:
+            extra = make()
+            if headers:
+                extra["http_headers"] = {"User-Agent": UA, **headers}
             with yt_dlp.YoutubeDL(_ytdlp_opts(workdir, {**extra, "match_filter": live_filter})) as ydl:
                 info = ydl.extract_info(url, download=True)
-                if live:
-                    raise LiveStream(dict(live))
-                if info and info.get("entries"):
-                    entries = [e for e in info["entries"] if e]
-                    if not entries:
-                        raise FetchError("Oynatma listesi boş")
-                    info = entries[0]
-                    log.warning("Link bir oynatma listesi; yalnızca ilk video alındı. Hepsi için 'Kanal / liste' "
-                                "sekmesini kullanın.")
+            if live:
+                raise LiveStream(dict(live))
+            if info and info.get("entries"):
+                info = next((e for e in info["entries"] if e), None)
+                if not info:
+                    raise FetchError("Oynatma listesi boş")
+                log.warning("Link bir oynatma listesi; yalnızca ilk video alındı. Hepsi için 'Kanal / liste' "
+                            "sekmesini kullanın.")
             f = _find_download(workdir)
             if not f:
                 raise FetchError("yt-dlp dosya üretmedi")
             log.info("İndirildi (%s): %s", label, f.name)
             return f, info
         except DownloadError as e:
-            last = str(e)
-            errors.append((label, last))
-            if is_drm_error(last):
+            msg = str(e)
+            errors.append((label, msg))
+            if is_drm_error(msg):
                 raise DRMProtected(f"DRM korumalı: {url}") from None
-            low = last.lower()
+            low = msg.lower()
             if "unsupported url" in low:
                 break  # çerez işe yaramaz; doğrudan yedek yollara geç
-            log.info("yt-dlp başarısız (%s): %s", label, last.splitlines()[-1][:200])
-            if label == "çerezsiz" and "http error 404" in low and not needs_cookies(last):
+            log.info("yt-dlp başarısız (%s): %s", label, _last_line(msg)[:200])
+            if label == "çerezsiz" and "http error 404" in low and not needs_cookies(msg):
                 break
-        except (FetchError, LiveStream):
+        except LiveStream:
             raise
         except Exception as e:  # noqa: BLE001  (çerez okuma hataları vb.)
-            last = f"{type(e).__name__}: {e}"
-            errors.append((label, last))
-            log.info("yt-dlp hata (%s): %s", label, last[:300])
-    raise FetchError(ytdlp_error_summary(errors) or last or "yt-dlp başarısız")
+            errors.append((label, f"{type(e).__name__}: {e}"))
+            log.info("yt-dlp hata (%s): %s", label, str(e)[:300])
+    first = errors[0][1] if errors else ""
+    raise FetchError(ytdlp_error_summary(errors) or "yt-dlp başarısız", transient=is_transient(first))
 
 
-def ytdlp_info(url: str, cookies_browser: str | None = None, flat: bool = False, extra: dict | None = None) -> dict:
-    """İndirmeden bilgi al (canlı yayın adresi, kanal/liste içeriği)."""
-    import yt_dlp
-    wait_ytdlp_update()
-    opts = {"quiet": True, "no_warnings": True, "logger": _QuietLogger(), "skip_download": True,
-            "socket_timeout": 30, "http_headers": {"User-Agent": UA}, "js_runtimes": _js_runtimes()}
+def ytdlp_info(url: str, cookies_browser: str | None = None, flat: bool = False, extra: dict | None = None,
+               workdir: Path | None = None) -> dict:
+    """İndirmeden bilgi al (canlı yayın adresi, kanal/liste içeriği). Aynı deneme sırası, indirme yok."""
+    import tempfile
+    yt_dlp = _import_ytdlp()
+    workdir = workdir or Path(tempfile.gettempdir()) / f"stt-bilgi-{os.getpid()}"
+    opts = {**_ytdlp_opts(workdir, {}), "skip_download": True, **(extra or {})}
     if flat:
         opts["extract_flat"] = "in_playlist"
-    opts.update(extra or {})
-    tries: list[dict] = [{}]
-    imp = impersonate_target()
-    if imp is not None:
-        tries.append({"impersonate": imp})
-    for b in cookie_browsers(cookies_browser)[:2]:
-        cf, _ = browser_cookie_file(b)
-        if cf:
-            tries.append({"cookiefile": cf})
-    last: Exception | None = None
-    for t in tries:
+    last = ""
+    for _label, make in _attempts(url, cookies_browser, None, workdir):
         try:
-            with yt_dlp.YoutubeDL({**opts, **t}) as ydl:
+            with yt_dlp.YoutubeDL({**opts, **make()}) as ydl:
                 return ydl.extract_info(url, download=False) or {}
         except Exception as e:  # noqa: BLE001
-            last = e
-            if "unsupported url" in str(e).lower():
-                break
-    raise FetchError(_last_line(str(last)) if last else "bilgi alınamadı")
+            last = str(e)
+            low = last.lower()
+            if "unsupported url" in low or "does not have a" in low or "http error 404" in low:
+                break  # çerezle de değişmez (ör. kanalın 'streams' sekmesi yok)
+    raise FetchError(_last_line(last) if last else "bilgi alınamadı", transient=is_transient(last))
 
 
 # ---------------------------------------------------------------- yt-dlp güncel tutma
@@ -428,7 +454,7 @@ _upd_done.set()
 def start_ytdlp_update(state_dir: Path, max_age_h: float = 20) -> bool:
     """yt-dlp'yi günde bir kez güncelle (arka planda). Siteler sık değiştiği için eski yt-dlp
     YouTube dışındaki sitelerde 'Unable to extract' gibi hatalar veriyor. yt_dlp içe aktarılmadan önce
-    başlatılır; indirmeler bitmesini en fazla 3 dk bekler. Döner: güncelleme başlatıldı mı."""
+    başlatılır; ilk içe aktarma bitmesini en fazla 3 dk bekler. Döner: güncelleme başlatıldı mı."""
     import sys
     stamp = Path(state_dir) / "ytdlp_guncelleme.txt"
     if stamp.exists() and time.time() - stamp.stat().st_mtime < max_age_h * 3600:
@@ -439,12 +465,10 @@ def start_ytdlp_update(state_dir: Path, max_age_h: float = 20) -> bool:
 
     def run():
         try:
-            exe = Path(sys.executable)
-            py = exe.with_name("python.exe") if exe.name.lower() == "pythonw.exe" else exe
-            kw = {"creationflags": 0x08000000} if os.name == "nt" else {}
-            r = subprocess.run([str(py if py.exists() else exe), "-m", "pip", "install", "-q", "--upgrade",
+            r = subprocess.run([console_python(), "-m", "pip", "install", "-q", "--upgrade",
                                 "--disable-pip-version-check", "yt-dlp[default,curl-cffi]"],
-                               capture_output=True, text=True, timeout=600, encoding="utf-8", errors="replace", **kw)
+                               capture_output=True, text=True, timeout=600, encoding="utf-8", errors="replace",
+                               **popen_kw())
             if r.returncode == 0:
                 stamp.parent.mkdir(parents=True, exist_ok=True)
                 stamp.write_text(time.strftime("%Y-%m-%d %H:%M"), encoding="utf-8")
@@ -522,16 +546,19 @@ def find_media_urls(page_html: str, base_url: str) -> list[str]:
             seen.add(u)
             out.append(u)
 
-    def rank(u: str) -> int:
-        lu = u.lower()
-        if ".m3u8" in lu:
-            return 0 if "master" in lu or "index" in lu or "playlist" in lu else 1
-        if ".mp4" in lu or ".m4a" in lu:
-            return 2
-        if ".mpd" in lu:
-            return 4
+    return sorted(out, key=rank_media)
+
+
+def rank_media(url: str) -> int:
+    """Medya adayının önceliği (küçük = önce): ana m3u8, m3u8, mp4/m4a, mpd, diğer."""
+    u = url.lower().split("?")[0]
+    if u.endswith(".m3u8"):
+        return 0 if any(x in u for x in ("master", "index", "playlist", "manifest")) else 1
+    if u.endswith((".mp4", ".m4v", ".m4a", ".webm", ".mp3", ".aac")):
+        return 2
+    if u.endswith(".mpd"):
         return 3
-    return sorted(out, key=rank)
+    return 5
 
 
 def _check_manifest_drm(session, url: str, headers: dict) -> None:
@@ -619,11 +646,10 @@ def probe_duration(url: str, headers: dict | None = None, timeout: float = 40) -
         return -1.0
     cmd = [exe, "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1"]
     if headers and url.startswith("http"):
-        cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
+        cmd += ["-headers", header_arg(headers)]
     cmd += [url]
-    kw = {"creationflags": 0x08000000} if os.name == "nt" else {}
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **kw)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **popen_kw())
         return float((r.stdout or "0").strip().splitlines()[0])
     except Exception:  # noqa: BLE001
         return 0.0
@@ -642,22 +668,18 @@ def _media_headers(req_headers: dict, page_url: str, cookies: str = "") -> dict:
     return keep
 
 
-def scrape_and_convert(page_url: str, dst: Path, page_html: str | None = None) -> tuple[Path, dict]:
+def page_title(page_html: str) -> str:
+    m = re.search(r"<title[^>]*>(.*?)</title>", page_html or "", re.I | re.S)
+    return html.unescape(m.group(1)).strip() if m else ""
+
+
+def scrape_and_convert(page_url: str, dst: Path, page_html: str) -> tuple[Path, dict]:
+    """Sayfa HTML'inde doğrudan geçen m3u8/mp4 adreslerini ffmpeg ile çek."""
     headers = {"User-Agent": UA, "Referer": page_url, "Accept-Language": "en-US,en;q=0.9,tr;q=0.8"}
-    if page_html is None:
-        r = _http_get(page_url, headers)
-        if r.status_code >= 400:
-            raise FetchError(f"Sayfa açılamadı: HTTP {r.status_code}")
-        ctype = r.headers.get("content-type", "")
-        if ctype.startswith(("video/", "audio/")) or "mpegurl" in ctype:
-            to_wav16k(str(r.url), dst, headers={"User-Agent": UA, "Referer": page_url})
-            return dst, {"title": "", "webpage_url": page_url, "media_url": str(r.url), "extractor": "stt-direct"}
-        page_html = r.text
     cands = find_media_urls(page_html, page_url)
     if not cands:
         raise FetchError("Sayfada m3u8/mp4 linki bulunamadı")
-    title_m = re.search(r"<title[^>]*>(.*?)</title>", page_html, re.I | re.S)
-    title = html.unescape(title_m.group(1)).strip() if title_m else ""
+    title = page_title(page_html)
     errors = []
     drm_seen = False
     import requests
@@ -695,16 +717,17 @@ def browser_and_convert(page_url: str, dst: Path) -> tuple[Path, dict]:
     if not cands:
         raise FetchError("Tarayıcıda da video adresi görünmedi (giriş/abonelik isteyen ya da DRM'li olabilir).")
     import requests
-    s = requests.Session()
-    scored = []
-    for c in cands:
+    from concurrent.futures import ThreadPoolExecutor
+
+    def score(c):
         hdr = _media_headers(c["headers"], page_url, cap.get("cookies", ""))
         try:
-            _check_manifest_drm(s, c["url"], hdr)
+            _check_manifest_drm(requests.Session(), c["url"], hdr)
         except DRMProtected:
-            continue
-        d = probe_duration(c["url"], hdr)
-        scored.append((d, c, hdr))
+            return None
+        return (probe_duration(c["url"], hdr) if len(cands) > 1 else 0.0), c, hdr
+    with ThreadPoolExecutor(max_workers=len(cands)) as ex:  # adaylar paralel denenir (reklam adresi yavaş olabilir)
+        scored = [x for x in ex.map(score, cands) if x]
     if not scored:
         raise DRMProtected(f"DRM korumalı: {page_url}")
     scored.sort(key=lambda x: -x[0])  # en uzun = asıl video (reklamlar kısa)
@@ -735,72 +758,63 @@ def _from_ytdlp(raw: dict) -> dict:
     return info
 
 
+def _ytdlp_to_wav(url: str, workdir: Path, wav: Path, cfg, **kw) -> dict:
+    src, raw = ytdlp_download(url, workdir, cfg.cookies_browser, cfg.cookies_file, **kw)
+    to_wav16k(str(src), wav)
+    src.unlink(missing_ok=True)
+    return _from_ytdlp(raw)
+
+
 def download_url(url: str, workdir: Path, wav: Path, cfg) -> dict:
     """Link -> workdir/ses.wav. Sırayla: yt-dlp (düz, taklit, çerezler) -> sayfadaki gömülü oynatıcılar
     (yt-dlp ile) -> sayfadaki m3u8/mp4 -> gizli tarayıcıyla yakalama. Hepsinin hatası özetlenir."""
     steps: list[str] = []
-    try:
-        src, raw = ytdlp_download(url, workdir, cfg.cookies_browser, cfg.cookies_file)
-        to_wav16k(str(src), wav)
-        try:
-            src.unlink()
-        except OSError:
-            pass
-        return _from_ytdlp(raw)
-    except (DRMProtected, LiveStream, SkipItem):
-        raise
-    except Exception as e:  # noqa: BLE001
-        first = str(e)
-        steps.append("yt-dlp: " + _last_line(first)[:220])
-        log.info("yt-dlp olmadı (%s) -> sayfada gömülü video aranıyor", _last_line(first)[:160])
-    page_html = None
-    try:
+    transient = False
+
+    def fetch_page() -> list:
+        """Sayfayı bir kez indir; gömülü oynatıcı ve m3u8/mp4 adımlarını üret."""
         r = _http_get(url, {"User-Agent": UA, "Accept-Language": "en-US,en;q=0.9,tr;q=0.8"})
-        ctype = r.headers.get("content-type", "") or ""
-        if r.status_code < 400 and "html" in ctype.lower():
-            page_html = r.text
-        elif r.status_code >= 400:
-            steps.append(f"sayfa: HTTP {r.status_code}")
-    except Exception as e:  # noqa: BLE001
-        steps.append(f"sayfa: {type(e).__name__}")
-    if page_html:
-        for emb in find_embeds(page_html, url):
-            try:
-                log.info("Gömülü oynatıcı deneniyor: %s", emb[:150])
-                src, raw = ytdlp_download(emb, workdir, cfg.cookies_browser, cfg.cookies_file,
-                                          headers={"Referer": url}, detect_live=False)
-                to_wav16k(str(src), wav)
-                try:
-                    src.unlink()
-                except OSError:
-                    pass
-                info = _from_ytdlp(raw)
-                info["webpage_url"] = url
-                if not info.get("title"):
-                    m = re.search(r"<title[^>]*>(.*?)</title>", page_html, re.I | re.S)
-                    info["title"] = html.unescape(m.group(1)).strip() if m else ""
-                return info
-            except (DRMProtected, SkipItem):
-                raise
-            except Exception as e:  # noqa: BLE001
-                steps.append("gömülü: " + _last_line(str(e))[:120])
+        ctype = (r.headers.get("content-type") or "").lower()
+        if r.status_code >= 400:
+            raise FetchError(f"HTTP {r.status_code}", transient=r.status_code in (429, 500, 502, 503, 504))
+        if ctype.startswith(("video/", "audio/")) or "mpegurl" in ctype:  # link doğrudan medya dosyası
+            def direct():
+                to_wav16k(str(r.url), wav, headers={"User-Agent": UA})
+                return {"title": "", "webpage_url": url, "media_url": str(r.url), "extractor": "stt-direct"}
+            return [("doğrudan", direct)]
+        if "html" not in ctype:
+            return []
+
+        def embed(u):
+            def run():
+                log.info("Gömülü oynatıcı deneniyor: %s", u[:150])
+                info = _ytdlp_to_wav(u, workdir, wav, cfg, headers={"Referer": url}, detect_live=False)
+                return {**info, "webpage_url": url, "title": info.get("title") or page_title(r.text)}
+            return run
+        return ([("gömülü", embed(u)) for u in find_embeds(r.text, url)]
+                + [("sayfa", lambda: scrape_and_convert(url, wav, r.text)[1])])
+
+    queue: list = [("yt-dlp", lambda: _ytdlp_to_wav(url, workdir, wav, cfg)), ("sayfa", fetch_page)]
+    if cfg.browser_capture:
+        queue.append(("tarayıcı", lambda: browser_and_convert(url, wav)[1]))
+    while queue:
+        label, step = queue.pop(0)
         try:
-            _, info = scrape_and_convert(url, wav, page_html)
-            return info
-        except (DRMProtected, SkipItem):
+            res = step()
+        except (DRMProtected, LiveStream, SkipItem):
             raise
         except Exception as e:  # noqa: BLE001
-            steps.append("sayfa: " + str(e)[:120])
-    if getattr(cfg, "browser_capture", True):
-        try:
-            log.info("Gizli tarayıcıyla deneniyor (Edge): %s", url[:120])
-            _, info = browser_and_convert(url, wav)
-            return info
-        except (DRMProtected, SkipItem):
-            raise
-        except Exception as e:  # noqa: BLE001
-            steps.append("tarayıcı: " + str(e)[:160])
-    raise FetchError("İndirilemedi. " + "  ||  ".join(steps))
+            steps.append(f"{label}: " + _last_line(str(e))[:220])
+            if len(steps) == 1:  # asıl hata ilk adımınki (yedek yolların hataları tekrar denemeyi belirlemez)
+                transient = getattr(e, "transient", False)
+            if label == "yt-dlp":
+                log.info("yt-dlp olmadı (%s) -> sayfa ve gömülü oynatıcılar deneniyor", _last_line(str(e))[:160])
+            continue
+        if isinstance(res, list):  # sayfa indirildi: yeni adımlar tarayıcıdan önce denenir
+            queue[0:0] = res
+            continue
+        return res
+    raise FetchError("İndirilemedi. " + "  ||  ".join(steps), transient=transient)
 
 
 def prepare_audio(item, workdir: Path, cfg) -> tuple[Path, dict]:

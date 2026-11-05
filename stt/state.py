@@ -15,6 +15,7 @@ class State:
         self._lock = threading.Lock()
         self._db = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
         self._db.execute("PRAGMA journal_mode=WAL")
+        self._db.execute("PRAGMA synchronous=NORMAL")  # WAL'da güvenli; yüzlerce iş eklerken her kayıt fsync etmesin
         self._db.execute(
             """CREATE TABLE IF NOT EXISTS items(
                 key TEXT PRIMARY KEY, source TEXT, status TEXT, title TEXT,
@@ -75,6 +76,25 @@ class State:
             self._db.execute("INSERT OR REPLACE INTO hashes VALUES(?,?,?,?)", (path, st.st_size, st.st_mtime_ns, key))
             self._db.commit()
         return key
+
+    def done_keys(self, keys: list[str]) -> set[str]:
+        """Verilen anahtarlardan bitmiş olanlar (takma adlar dahil) — tek sorgu grubu, klasörü duran."""
+        keys = list(dict.fromkeys(keys))
+        if not keys:
+            return set()
+        out: set[str] = set()
+        with self._lock:
+            for a in range(0, len(keys), 500):
+                part = keys[a:a + 500]
+                q = ",".join("?" * len(part))
+                alias = dict(self._db.execute(f"SELECT alias, key FROM alias WHERE alias IN ({q})", part).fetchall())
+                real = {k: alias.get(k, k) for k in part}
+                rq = ",".join("?" * len(set(real.values())))
+                rows = self._db.execute(f"SELECT key, out_dir FROM items WHERE status='done' AND key IN ({rq})",
+                                        list(set(real.values()))).fetchall()
+                ok = {k for k, d in rows if d and Path(d).exists()}
+                out |= {k for k, r in real.items() if r in ok}
+        return out
 
     # ---------------------------------------------------------- kalıcı kuyruk
     def queue_add(self, uid: str, kind: str, source: str, title: str, extra: dict) -> None:

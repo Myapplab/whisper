@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 
 from .audio import SR
-from .util import log
+from .util import log, popen_kw
 
 BYTES_PER_S = SR * 2
 
@@ -50,29 +50,26 @@ def cut_point(buf: np.ndarray, lo: int, hi: int, win: int = SR // 5) -> int:
     return lo + int(np.argmin(e)) * win + win // 2
 
 
-def write_wav(path: Path, pcm: np.ndarray) -> None:
-    tmp = path.with_suffix(".part")
+def _write_pcm(dst: Path, blocks) -> None:
+    """16 kHz mono 16-bit WAV'ı atomik yaz (blocks: bytes parçaları)."""
+    tmp = dst.with_suffix(".part")
     with wave.open(str(tmp), "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
         w.setframerate(SR)
-        w.writeframes(pcm.astype(np.int16).tobytes())
-    os.replace(tmp, path)
+        for b in blocks:
+            w.writeframes(b[: len(b) - len(b) % 2])
+    os.replace(tmp, dst)
+
+
+def write_wav(path: Path, pcm: np.ndarray) -> None:
+    _write_pcm(path, [pcm.astype(np.int16).tobytes()])
 
 
 def raw_to_wav(raw: Path, dst: Path) -> None:
     """Ham PCM'i parça parça WAV'a kopyala (6 saatlik kayıt da belleğe sığsın diye)."""
-    tmp = dst.with_suffix(".part")
-    with wave.open(str(tmp), "wb") as w, open(raw, "rb") as f:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(SR)
-        while True:
-            b = f.read(1 << 22)
-            if not b:
-                break
-            w.writeframes(b[: len(b) - len(b) % 2])
-    os.replace(tmp, dst)
+    with open(raw, "rb") as f:
+        _write_pcm(dst, iter(lambda: f.read(1 << 22), b""))
 
 
 class LiveRecorder(threading.Thread):
@@ -84,8 +81,8 @@ class LiveRecorder(threading.Thread):
         self.source, self.work, self.cfg = source, Path(workdir), cfg
         self.on_chunk, self.on_end, self.on_info = on_chunk, on_end, on_info
         self.readrate = readrate
-        self.chunk_s = max(5.0, float(getattr(cfg, "live_chunk_s", 20.0)))
-        self.max_s = float(getattr(cfg, "live_max_h", 6.0)) * 3600
+        self.chunk_s = max(5.0, float(cfg.live_chunk_s))
+        self.max_s = float(cfg.live_max_h) * 3600
         self._stop = threading.Event()
         self.proc: subprocess.Popen | None = None
         self.offset = 0.0          # gönderilen parçaların toplam süresi
@@ -104,18 +101,13 @@ class LiveRecorder(threading.Thread):
                 pass
 
     def _ffmpeg(self, url: str, headers: dict) -> subprocess.Popen:
-        from .fetch import ffmpeg_bin
+        from .fetch import ffmpeg_bin, http_input_args
         cmd = [ffmpeg_bin(), "-hide_banner", "-nostdin", "-loglevel", "error"]
         if os.path.exists(url):
             cmd += ["-readrate", str(self.readrate or 1.0)]
-        elif url.startswith("http"):
-            if headers:
-                cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
-            cmd += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10",
-                    "-rw_timeout", "30000000"]
-        cmd += ["-i", url, "-vn", "-sn", "-dn", "-map", "0:a:0?", "-ac", "1", "-ar", str(SR), "-f", "s16le", "pipe:1"]
-        kw = {"creationflags": 0x00004000 | 0x08000000} if os.name == "nt" else {}
-        return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kw)
+        cmd += [*http_input_args(url, headers, live=True), "-i", url, "-vn", "-sn", "-dn", "-map", "0:a:0?",
+                "-ac", "1", "-ar", str(SR), "-f", "s16le", "pipe:1"]
+        return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **popen_kw(low_priority=True))
 
     def _emit(self, pcm: np.ndarray) -> None:
         if len(pcm) < SR // 2:

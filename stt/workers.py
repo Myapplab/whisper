@@ -102,7 +102,8 @@ def lower_priority() -> None:
         if os.name == "nt":
             import ctypes
             k32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-            k32.SetPriorityClass(k32.GetCurrentProcess(), 0x00004000)  # BELOW_NORMAL_PRIORITY_CLASS
+            from .util import BELOW_NORMAL
+            k32.SetPriorityClass(k32.GetCurrentProcess(), BELOW_NORMAL)
         else:
             os.nice(5)
     except Exception:  # noqa: BLE001
@@ -155,7 +156,17 @@ def worker_main(wid: str, device: str, engine_cfg: dict, task_q, result_q, share
         return
     except Exception as e:  # noqa: BLE001  (model yükleme vb.)
         result_q.put({"type": "fatal", "wid": wid, "error": f"{type(e).__name__}: {e}",
-                      "trace": traceback.format_exc()})
+                      "trace": traceback.format_exc(), "retryable": retryable(e)})
+
+
+_RETRYABLE = ("mkl_malloc", "bad_alloc", "out of memory", "winerror 1455", "paging file", "cuda failed",
+              "device-side", "unspecified launch failure", "illegal memory")
+
+
+def retryable(e: BaseException) -> bool:
+    """Model yüklenemedi ama geçici mi (RAM/GPU bir anlığına yetmedi, sürücü sıfırlandı)? Öyleyse işçi
+    biraz sonra yeniden açılır; eksik model / kütüphane gibi kalıcı hatalarda açılmaz."""
+    return isinstance(e, MemoryError) or any(x in str(e).lower() for x in _RETRYABLE)
 
 
 class WorkerPool:

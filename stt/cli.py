@@ -216,7 +216,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{len(hit)}/{len(items)} video konuya uyuyor ({data.get('channel') or data.get('title')})")
         if a.only_list or not hit:
             return 0
-        name = f"{data.get('channel') or data.get('title') or 'kanal'} - {a.konu}"
+        from .channel import collection_name
+        name = collection_name(data.get("channel") or data.get("title") or "kanal", a.konu, a.kelime)
         its = []
         for e in hit:
             it = Item("url", e["url"], title=e["title"])

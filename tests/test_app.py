@@ -100,13 +100,20 @@ def test_all_workers_fatal_sets_reason(tmp_path):
         pipe.close()
 
 
+def test_worker_retryable_classification():
+    from stt.workers import retryable
+    assert retryable(MemoryError()) and retryable(RuntimeError("mkl_malloc: failed to allocate memory"))
+    assert not retryable(RuntimeError("Unable to open file 'model.bin'"))
+
+
 def test_transient_fatal_is_retried(tmp_path):
     pipe = _pipe(tmp_path)
     events = []
     pipe.events = events.append
     pipe.pool = _FakePool()
     try:
-        pipe._on_msg({"type": "fatal", "wid": "cuda:0", "error": "RuntimeError: mkl_malloc: failed to allocate memory"})
+        pipe._on_msg({"type": "fatal", "wid": "cuda:0", "error": "RuntimeError: mkl_malloc: failed to allocate memory",
+                      "retryable": True})
         assert pipe.failed_reason is None and "cuda:0" not in pipe.fatal
         assert events[-1]["state"] == "loading"
     finally:

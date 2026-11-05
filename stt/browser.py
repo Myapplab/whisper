@@ -11,6 +11,7 @@ import re
 import time
 from urllib.parse import urlsplit
 
+from .fetch import rank_media
 from .util import log
 
 MEDIA_RE = re.compile(r"\.(m3u8|mpd|mp4|m4a|m4v|webm|mp3|aac|ogg|opus|flv)(\?|$|#)", re.I)
@@ -26,17 +27,6 @@ PLAY_SELECTORS = (".vjs-big-play-button", ".jw-icon-display", ".jw-display-icon-
 def is_ad(url: str) -> bool:
     u = url.lower()
     return any(a in u for a in AD_HOSTS)
-
-
-def rank_media(url: str) -> int:
-    u = url.lower().split("?")[0]
-    if u.endswith(".m3u8"):
-        return 0 if any(x in u for x in ("master", "index", "playlist", "manifest")) else 1
-    if u.endswith(".mpd"):
-        return 2
-    if u.endswith((".mp4", ".m4v", ".webm", ".m4a", ".mp3")):
-        return 3
-    return 5
 
 
 def _launch(p):
@@ -141,12 +131,13 @@ def _try_play(page) -> None:
                 try { v.muted = true; const p = v.play(); if (p) p.catch(() => {}); } catch (e) {} }); }""")
         except Exception:  # noqa: BLE001
             pass
-    for sel in ("button:has-text('Accept')", "button:has-text('Kabul')", "button:has-text('Agree')",
-                "button:has-text('Принять')", "#onetrust-accept-btn-handler"):
-        try:
-            page.locator(sel).first.click(timeout=500)
-        except Exception:  # noqa: BLE001
-            pass
+    consent = page.locator("#onetrust-accept-btn-handler, button:has-text('Accept'), button:has-text('Kabul'), "
+                           "button:has-text('Agree'), button:has-text('Принять')").first
+    try:
+        if consent.count():  # yoksa beklemeden geç (her tıklama denemesi 0.5 sn bekliyordu)
+            consent.click(timeout=500)
+    except Exception:  # noqa: BLE001
+        pass
     for frame in page.frames:
         for sel in PLAY_SELECTORS:
             try:

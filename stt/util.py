@@ -221,3 +221,56 @@ def atomic_write_text(path: Path, text: str) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, path)
+
+
+# Windows süreç bayrakları: konsol penceresi açılmasın / düşük öncelik (bilgisayar akıcı kalsın)
+NO_WINDOW = 0x08000000
+BELOW_NORMAL = 0x00004000
+
+
+def popen_kw(low_priority: bool = False) -> dict:
+    """subprocess için Windows bayrakları (diğer sistemlerde boş)."""
+    if os.name != "nt":
+        return {}
+    return {"creationflags": NO_WINDOW | (BELOW_NORMAL if low_priority else 0)}
+
+
+def console_python() -> str:
+    """pythonw.exe altında çalışıyorsak yanındaki python.exe (pip / alt komutlar çıktı verebilsin)."""
+    exe = Path(sys.executable)
+    py = exe.with_name("python.exe") if exe.name.lower() == "pythonw.exe" else exe
+    return str(py if py.exists() else exe)
+
+
+def read_jsonl(path: Path) -> list[dict]:
+    """JSON satırları; bozuk satırlar atlanır, dosya yoksa boş liste."""
+    import json
+    out = []
+    try:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    for line in lines:
+        try:
+            r = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(r, dict):
+            out.append(r)
+    return out
+
+
+def write_jsonl_csv(jl: Path, csv_path: Path, rows: list[dict], fields: list[str]) -> None:
+    """rows -> jsonl (atomik) + csv (Excel için utf-8-sig; Excel'de açıksa .tmp olarak kalır)."""
+    import csv
+    import json
+    atomic_write_text(jl, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
+    tmp = csv_path.with_name(csv_path.name + ".tmp")
+    with open(tmp, "w", newline="", encoding="utf-8-sig") as f:
+        w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+        w.writeheader()
+        w.writerows(rows)
+    try:
+        tmp.replace(csv_path)
+    except PermissionError:
+        log.warning("%s açık (Excel?); güncel tablo %s olarak kaldı.", csv_path.name, tmp.name)
