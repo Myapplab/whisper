@@ -223,8 +223,49 @@ class App:
             self._outbox = [e for e in self._outbox if e.get("type") != "log" and e.get("type") != "engine"] + logs
         self._start_sender()
         self._wake.set()
+        if not getattr(self, "_upd_checked", False):  # açılışta bir kez, arka planda
+            self._upd_checked = True
+            threading.Thread(target=self._auto_update_check, name="guncelleme", daemon=True).start()
         return {"version": __version__, "settings": self.get_settings(), "engine": self._engine_state,
                 "dataset": self.dataset()}
+
+    # ---------------------------------------------------------- güncelleme
+    def _auto_update_check(self) -> None:
+        time.sleep(3)
+        info = self.update_check()
+        if info.get("available"):
+            log.info("Yeni sürüm var: %s (şu an %s)", info["latest"], info["current"])
+
+    def update_check(self) -> dict:
+        from . import updater
+        info = updater.check()
+        self._push({"type": "update", "stage": "available" if info.get("available") else "none", **info})
+        return info
+
+    def update_apply(self) -> dict:
+        from . import updater
+        if self._pipe is not None and self._pipe.active():
+            return {"ok": False, "error": "Önce kuyruktaki işlerin bitmesini bekleyin (ya da Durdur'a basın), sonra güncelleyin."}
+        if getattr(self, "_updating", False):
+            return {"ok": False, "error": "Güncelleme zaten sürüyor."}
+        self._updating = True
+        try:
+            res = updater.apply(lambda stage, text: self._push({"type": "update", "stage": stage, "text": text}))
+        finally:
+            self._updating = False
+        if res.get("ok"):
+            self._push({"type": "update", "stage": "restart", "text": f"STT {res['version']} açılıyor…"})
+
+            def later():
+                time.sleep(1.5)
+                try:
+                    updater.relaunch()
+                finally:
+                    _shutdown(self)
+            threading.Thread(target=later, daemon=True).start()
+        else:
+            self._push({"type": "update", "stage": "error", "text": res.get("error")})
+        return res
 
     def get_settings(self) -> dict:
         c = self._cfg
@@ -406,7 +447,15 @@ def _single_instance() -> bool:
     try:
         import ctypes
         k32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-        _single_instance.handle = k32.CreateMutexW(None, False, "Local\\STT-Basin-Odasi")  # type: ignore[attr-defined]
+        # güncelleme sonrası yeniden açılış: eski pencere kapanana kadar (en çok 30 sn) bekle
+        tries = 60 if os.environ.pop("STT_RESTART", None) else 1
+        for _ in range(tries):
+            _single_instance.handle = k32.CreateMutexW(None, False, "Local\\STT-Basin-Odasi")  # type: ignore[attr-defined]
+            if k32.GetLastError() != 183:
+                break
+            if tries > 1:
+                k32.CloseHandle(_single_instance.handle)
+                time.sleep(0.5)
         if k32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
             ctypes.windll.user32.MessageBoxW(  # type: ignore[attr-defined]
                 None, "STT zaten açık. Görev çubuğundaki STT penceresini kullanın.\n\n"

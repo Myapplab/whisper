@@ -29,6 +29,19 @@ Masaüstündeki **STT** simgesine çift tıklayın (terminal açılmaz).
 - Uygulama açılmazsa günlük: `%LOCALAPPDATA%\stt\stt_app.log`, ya da konsolda
   `C:\stt\.venv\Scripts\python.exe -m stt.gui`.
 
+## Güncelleme
+
+STT her açılışta GitHub'daki (herkese açık) `Myapplab/whisper` deposunda yeni sürüm olup olmadığına bakar.
+Varsa üstte yeşil şerit çıkar: **Güncelle**'ye basın; uygulama yeni dosyaları indirir, önce dener, sonra
+kendini yeniden açar (≈1 dakika). Veri seti, ayarlar ve HF token korunur; hata olursa eski sürüm yerinde kalır.
+Ayarlar › *Güncellemeleri denetle* ile elle de bakılır. Yeni `.exe` inmez, bu yüzden Smart App Control engellemez.
+
+Uygulama açılmıyorsa ya da çok eski bir sürümse, PowerShell'e şunu yapıştırın (kurulu değilse kurar):
+
+```powershell
+irm https://raw.githubusercontent.com/Myapplab/whisper/main/installer/guncelle.ps1 | iex
+```
+
 ## Veri seti düzeni
 
 ```

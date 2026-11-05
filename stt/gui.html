@@ -49,6 +49,10 @@ header{display:flex;align-items:center;gap:18px;padding:10px 18px;background:var
 .btn:disabled{opacity:.55;cursor:default}
 .engine-banner{display:none;padding:8px 18px;background:var(--err-soft);color:var(--err);border-bottom:1px solid var(--line)}
 .engine-banner.show{display:flex;gap:12px;align-items:center}
+.update-banner{display:none;padding:8px 18px;background:var(--ok-soft);color:var(--ok);border-bottom:1px solid var(--line);gap:12px;align-items:center}
+.update-banner.show{display:flex}
+.update-banner.err{background:var(--err-soft);color:var(--err)}
+.update-banner b{font-weight:600}
 
 /* ana ızgara */
 main{display:grid;grid-template-columns:340px minmax(0,1fr) 380px;gap:14px;padding:14px;min-height:0}
@@ -169,6 +173,7 @@ pre.check .bad{color:var(--err);font-weight:600} pre.check .warn{color:var(--war
   <button class="btn" id="btnOut" type="button">Veri seti klasörü</button>
   <button class="btn" id="btnSettings" type="button">Ayarlar</button>
 </header>
+<div class="update-banner" id="upd" role="status"><span id="updText"></span><span class="spacer"></span><button class="btn small" id="btnUpd" type="button">Güncelle</button><button class="linkbtn" id="btnUpdHide" type="button" aria-label="Kapat">✕</button></div>
 <div class="engine-banner" id="banner"><span id="bannerText"></span><span class="spacer"></span><button class="btn small" id="btnBannerCheck" type="button">Kontrol</button><button class="btn small" id="btnRetry" type="button">Yeniden başlat</button></div>
 </div>
 
@@ -252,6 +257,9 @@ pre.check .bad{color:var(--err);font-weight:600} pre.check .warn{color:var(--war
       <div class="field"><label for="sGpu">Ekran kartı kullanımı</label>
         <select id="sGpu"><option value="auto">Önerilen: monitörün bağlı olmadığı kart (bilgisayar akıcı kalır)</option><option value="all">Hepsi: en hızlı (YouTube, oyun ve masaüstü takılabilir)</option></select>
         <span class="hint">Tek ekran kartı varsa düşük yükle çalışır. Değişiklik, sıradaki işler bitince uygulanır.</span></div>
+      <div class="field"><span class="lbl">Sürüm</span>
+        <div class="inline" style="align-items:center"><span id="sVer" class="mono"></span><span class="spacer"></span><button class="btn small" id="sUpd" type="button">Güncellemeleri denetle</button></div>
+        <span class="hint" id="sUpdState">STT her açılışta yeni sürüm olup olmadığına bakar; varsa üstte yeşil şerit çıkar.</span></div>
     </div>
     <div class="startbar"><button class="btn primary" id="sSave" type="button">Kaydet</button>
       <span class="hint">Klasör, token ya da ekran kartı ayarı değişirse motor, sıradaki işler bitince yeni ayarlarla yeniden açılır.</span></div>
@@ -516,6 +524,7 @@ pre.check .bad{color:var(--err);font-weight:600} pre.check .warn{color:var(--war
         renderGpus({ state: "ready" }); return;
       }
       case "fatal": $("#bannerText").textContent = ev.error; $("#banner").classList.add("show"); return;
+      case "update": onUpdate(ev); return;
       case "dropped": state.files.push(...ev.paths); renderChips(); toast(ev.paths.length + " dosya eklendi"); return;
     }
     if (!ev.uid) return;
@@ -543,6 +552,26 @@ pre.check .bad{color:var(--err);font-weight:600} pre.check .warn{color:var(--war
   // olaylar toplu gelir; kuyruk listesi kare başına en fazla bir kez çizilir (arayüz takılmasın)
   let qTimer = 0;
   function scheduleQueue() { if (!qTimer) qTimer = requestAnimationFrame(() => { qTimer = 0; renderQueue(); }); }
+  // ---------- güncelleme
+  const upd = { busy: false };
+  function showUpd(text, { button = true, err = false } = {}) {
+    $("#updText").textContent = text; $("#btnUpd").hidden = !button;
+    $("#upd").classList.toggle("err", err); $("#upd").classList.add("show");
+  }
+  function onUpdate(ev) {
+    if (ev.stage === "available") { showUpd("Yeni sürüm hazır: STT " + ev.latest + " (şu an " + ev.current + "). Güncelleme 1 dakika sürer; işleriniz ve ayarlarınız korunur."); $("#sUpdState").textContent = "Yeni sürüm: " + ev.latest; }
+    else if (ev.stage === "none") { $("#sUpdState").textContent = ev.error ? "Denetlenemedi: " + ev.error : "Güncel: en son sürümü kullanıyorsunuz."; }
+    else if (ev.stage === "error") { upd.busy = false; $("#btnUpd").disabled = false; showUpd("Güncellenemedi: " + ev.text, { err: true, button: true }); $("#btnUpd").textContent = "Tekrar dene"; }
+    else { showUpd(ev.text || "Güncelleniyor…", { button: false }); }
+  }
+  $("#btnUpd").onclick = async () => {
+    if (upd.busy) return; upd.busy = true; $("#btnUpd").disabled = true; showUpd("Güncelleniyor…", { button: false });
+    const r = await call("update_apply");
+    if (r && !r.ok) { upd.busy = false; $("#btnUpd").disabled = false; showUpd("Güncellenemedi: " + r.error, { err: true }); }
+  };
+  $("#btnUpdHide").onclick = () => $("#upd").classList.remove("show");
+  $("#sUpd").onclick = async () => { $("#sUpdState").textContent = "Denetleniyor…"; await call("update_check"); };
+
   function onEvents(list) { for (const ev of list) { try { onEvent(ev); } catch (e) { console.error(e); } } }
   window.__stt = { onEvent, onEvents };
 
@@ -550,6 +579,7 @@ pre.check .bad{color:var(--err);font-weight:600} pre.check .warn{color:var(--war
     const h = await call("hello");
     if (!h) return;
     fillSettings(h.settings);
+    $("#sVer").textContent = "STT " + h.version;
     for (const b of $("#lang").children) b.setAttribute("aria-pressed", String(b.dataset.v === (h.settings.lang || "auto")));
     state.lang = h.settings.lang || "auto";
     $("#optDiar").checked = !!h.settings.diarize || !!h.settings.hf_token_set;

@@ -8,7 +8,7 @@ ManifestSupportedOS all
 !include "WinMessages.nsh"
 
 !define APPNAME "STT - Basın Odası"
-!define VERSION "1.3.0"
+!define VERSION "1.4.0"
 !define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\STT"
 !define STEPS 8
 
@@ -23,7 +23,7 @@ SetCompressor /SOLID lzma
 BrandingText "STT ${VERSION}"
 SetFont "Segoe UI" 9
 
-VIProductVersion "1.3.0.0"
+VIProductVersion "1.4.0.0"
 VIAddVersionKey /LANG=1055 "ProductName" "${APPNAME}"
 VIAddVersionKey /LANG=1055 "FileDescription" "${APPNAME} kurulumu"
 VIAddVersionKey /LANG=1055 "FileVersion" "${VERSION}"

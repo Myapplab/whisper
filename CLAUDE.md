@@ -56,6 +56,14 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   Tam günlük `<kurulum>\kurulum.log`. ffmpeg/deno `tools\` klasörüne doğrudan iner (winget yok).
   Görseller: `installer/make_images.py` (Pillow) → welcome.bmp / header.bmp. `ManifestDPIAware true`.
   Eski bat dosyaları (stt.bat/install.bat) kur.ps1 tarafından silinir.
+- **Güncelleme (1.4.0):** `stt/updater.py` — açılışta `raw.githubusercontent.com/Myapplab/whisper/main/stt/__init__.py`
+  sürümünü okur; yeniyse GUI'de yeşil şerit. `apply()`: codeload zip → geçici klasörde içe aktarma testi →
+  yedek (`<kurulum>\guncelleme-yedek`) → `stt/` + kök dosyaları yaz → `pyproject/constraints` değiştiyse pip →
+  hata olursa geri yükle → `relaunch()` (yeni süreç tek kopya kilidini 30 sn bekler, `STT_RESTART=1`).
+  `.git` olan klasörü güncellemez. **Depo herkese açık olmalı** (kullanıcı onayladı). Kurtarma / sıfırdan kurulum:
+  `irm https://raw.githubusercontent.com/Myapplab/whisper/main/installer/guncelle.ps1 | iex` (yalnız ASCII,
+  bellekte çalışır → SAC/MOTW yok). **Yeni sürüm yayınlamak = `stt/__init__.py` sürümünü artırıp `main`'e
+  push**; kullanıcıya artık zip/exe/PowerShell gönderme, "uygulamada Güncelle'ye basın" de.
 - **GUI'de Kontrol düğmesi** `stt kontrol`'ü ayrı süreçte çalıştırıp sonucu gösterir; kullanıcıdan bunun ekran görüntüsünü iste.
   Günlük: `%LOCALAPPDATA%\stt\stt_app.log`.
 
@@ -73,6 +81,8 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
 ## Sürüm geçmişi (kısa)
 - 1.2.0 (dal optimistic-edison) ve 1.2.1 (dal inspiring-ritchie) ayrı oturumlarda paralel geliştirildi; 1.3.0'da
   `main`'de birleştirildi. **Yeni işi her zaman güncel `main`'den başlat** ki dallar yine ayrışmasın.
+- 1.4.0: uygulama içi güncelleme + `installer/guncelle.ps1` (kullanıcı zip indirip PowerShell'le uğraşırken
+  takılıyordu; "kökten çöz, bir daha olmasın" dedi).
 - 1.3.0: birleştirme + konuşmacı ayırma cuDNN/CPU geri çekilmesi + bellek teşhisi. Kullanıcı 1.2.0'da
   "Soru-cevap ayrılamadı: cuDNN error: CUDNN_STATUS_EXECUTION_FAILED" ve "MemoryError" görmüştü; 1.3.0 Windows'ta
   henüz denenmedi.
@@ -88,7 +98,7 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
 - Kullanıcı ileride uygulamayı paylaşmak istiyor (tek kurulum dosyası).
 
 ## Geliştirme (bulut/Linux)
-- Testler: `python -m pytest -q tests` (51 test; `test_stability.py` = GPU seçimi, işçi yeniden başlatma, iptal,
+- Testler: `python -m pytest -q tests` (58 test; `test_updater.py` = güncelleme/geri alma; `test_stability.py` = GPU seçimi, işçi yeniden başlatma, iptal,
   bloklamayan arayüz, cuDNN geri çekilmesi; `test_app.py` = ortam hazırlığı, ayarlar, hata mesajları).
 - GPU yok ve HuggingFace engelliyse test modeli: GitHub `rhasspy/models` `asr_faster-whisper-small-int8`
   + `dev/make_tokenizer.py` (openai-whisper tiktoken → tokenizer.json) + `dev/add_alignment_heads.py`.
