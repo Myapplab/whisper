@@ -29,6 +29,12 @@ class Config:
     condition_on_previous_text: bool = True
     agc: bool = True                     # otomatik kazanç: uzaktaki muhabir sesini yükselt (tanıma + ayırma)
     vad_threshold: float = 0.4           # Whisper VAD eşiği (düşük = sessiz konuşmayı da yakalar)
+    # bellek sınırları (yüzde). Ekran kartı: konuşmacı ayırma (torch) bu oranı aşmaz.
+    gpu_limit_pct: int = 90              # monitörsüz kart (ör. RTX 3090)
+    display_gpu_limit_pct: int = 70      # monitörlü kart (ör. RTX 3080)
+    ram_limit_pct: int = 70              # boş RAM'in en çok bu kadarı; yetmezse bekler, sonra tekrar dener
+    diar_batch: int = 8                  # konuşmacı ayırma toplu boyutu (küçük = daha az bellek, biraz yavaş)
+    fill_gaps: bool = True               # metinde uzun boşluk kalırsa (müzik altında konuşma) o kısım VAD'siz tekrar
     worker_restarts: int = 6             # art arda en fazla bu kadar yeniden başlatma (başarılı görev sayacı sıfırlar)
     # bölme
     split_min: float = 8.0               # bundan uzun dosyalar VAD ile parçalanır (dakika)

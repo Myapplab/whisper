@@ -82,6 +82,15 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   ortam değişkeninde; **repoya yazma**.
 - **Dış programlar:** `stt/api.py` yerel HTTP API (127.0.0.1, `api_port`, `api_token`), `webhook_url`, `stt serve`.
 
+- **1.6.1:** kartta tek iş "Durdur" (`Pipeline.cancel(uid)`, `App.cancel`; indirme `fetch.CANCELLED` +
+  yt-dlp `progress_hooks` → `Cancelled`; çalışan ayırma görevi diar süreci yeniden başlatılarak kesilir).
+  Bellek sınırları `gpu_limit_pct`=90 / `display_gpu_limit_pct`=70 (yalnız torch/ayırma:
+  `set_per_process_memory_fraction`; CTranslate2'de sınır API'si yok, orada toplu boyut), `ram_limit_pct`=70
+  (`Diarizer.wait_memory`: boş RAM'in %70'i yetene kadar bekler), `diar_batch`=8 (pyannote toplu boyutu; RAM
+  hatasında /4). Ayırmada RAM hatası → diar süreci kapatılır, `ddelayed` ile o işin metin çevirisi bitince en çok
+  2 kez tekrar. Film/müzik altında VAD konuşmayı kaçırıyordu (metnin ~%30'u yok): `fill_gaps` — 12 sn'den uzun
+  metinsiz aralık VAD'siz tekrar çevrilir, `keep_gap_segment` uydurmaları eler.
+
 ## Arayüzler
 - **Uygulama:** `pythonw -m stt.gui` (pywebview + Edge WebView2; `stt/gui.py` + `stt/gui.html`). Pencere
   `window_geometry` (ekranın ~%60'ı, en çok 1100×720, boyut `%LOCALAPPDATA%\stt\pencere.json`'da), dar pencerede
@@ -148,7 +157,7 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
 - Kullanıcı ileride uygulamayı paylaşmak istiyor (tek kurulum dosyası).
 
 ## Geliştirme (bulut/Linux)
-- Testler: `python -m pytest -q tests` (94 test; `test_v16.py` = 1.6.0 özellikleri; `test_speakers.py` = podcast/film modu; `test_updater.py` = güncelleme/geri alma; `test_stability.py` = GPU seçimi, işçi yeniden başlatma, iptal,
+- Testler: `python -m pytest -q tests` (102 test; `test_v161.py` = tek iş durdurma/bellek/boşluk; `test_v16.py` = 1.6.0 özellikleri; `test_speakers.py` = podcast/film modu; `test_updater.py` = güncelleme/geri alma; `test_stability.py` = GPU seçimi, işçi yeniden başlatma, iptal,
   bloklamayan arayüz, cuDNN geri çekilmesi; `test_app.py` = ortam hazırlığı, ayarlar, hata mesajları).
 - GPU yok ve HuggingFace engelliyse test modeli: GitHub `rhasspy/models` `asr_faster-whisper-small-int8`
   + `dev/make_tokenizer.py` (openai-whisper tiktoken → tokenizer.json) + `dev/add_alignment_heads.py`.

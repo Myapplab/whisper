@@ -213,11 +213,51 @@ def pick_language(probs: list[dict[str, float]], allowed: set[str]) -> tuple[str
     return best, cands[best] / max(1, len(probs))
 
 
+GAP_S = 12.0  # metinde bundan uzun boşluk = VAD konuşmayı kaçırmış olabilir
+_JUNK = ("altyazı", "subtitle", "abone ol", "izlediğiniz için", "thanks for watching", "♪", "[müzik]", "[music]",
+         "müzik]", "music]")
+
+
+def seg_dict(s, off: float) -> dict:
+    words = [{"start": round(w.start + off, 3), "end": round(w.end + off, 3), "word": w.word,
+              "prob": round(w.probability, 3)} for w in (s.words or [])]
+    return {"start": round(s.start + off, 3), "end": round(s.end + off, 3), "text": s.text.strip(),
+            "avg_logprob": round(s.avg_logprob, 3), "no_speech_prob": round(s.no_speech_prob, 3), "words": words}
+
+
+def find_gaps(spans: list[tuple[float, float]], dur: float, min_gap: float) -> list[tuple[float, float]]:
+    """Metin olmayan, ``min_gap`` sn'den uzun aralıklar (parça içi saniye)."""
+    gaps, prev = [], 0.0
+    for a, b in sorted(spans):
+        if a - prev >= min_gap:
+            gaps.append((prev, a))
+        prev = max(prev, b)
+    if dur - prev >= min_gap:
+        gaps.append((prev, dur))
+    return gaps
+
+
+def rms_db(x) -> float:
+    if not len(x):
+        return -120.0
+    return float(20 * np.log10(np.sqrt(np.mean(np.square(x, dtype=np.float64))) + 1e-9))
+
+
+def keep_gap_segment(text: str, avg_logprob: float, no_speech_prob: float, compression_ratio: float) -> bool:
+    """VAD'siz çeviride müzik/gürültüden uydurulan satırları ele."""
+    t = (text or "").strip().lower()
+    if len(t) < 2 or any(j in t for j in _JUNK):
+        return False
+    if avg_logprob < -1.0 or compression_ratio > 2.4:
+        return False
+    return not (no_speech_prob > 0.6 and avg_logprob < -0.5)
+
+
 class WhisperEngine:
     def __init__(self, model_path: str, device: str, compute_type: str, beam_size: int,
                  condition_on_previous_text: bool = True, batch_size: int = -1, vram_gb: float | None = None,
                  languages: str | None = None, label: str | None = None, agc: bool = True,
-                 vad_threshold: float = 0.4):
+                 vad_threshold: float = 0.4, fill_gaps: bool = True):
         setup_cuda_dlls()
         kind, idx = parse_device(device)
         from faster_whisper import WhisperModel
@@ -227,6 +267,7 @@ class WhisperEngine:
         self.device = label or device  # günlükte gerçek kart adı (işçi yalnızca kendi kartını görür: cuda:0)
         self.agc = agc
         self.vad = {"min_silence_duration_ms": 500, "threshold": vad_threshold}
+        self.fill_gaps = fill_gaps
         self.beam_size = beam_size
         self.cond = condition_on_previous_text
         self.allowed = {x.strip() for x in (languages or DEFAULT_LANGS).split(",") if x.strip()}
@@ -283,7 +324,8 @@ class WhisperEngine:
             lang = self.detect_language(audio)
         while True:
             try:
-                return self._run(audio, start, lang, prompt)
+                res = self._run(audio, start, lang, prompt)
+                break
             except RuntimeError as e:  # bellek yetmezse toplu boyutu yarıya indir
                 if "out of memory" not in str(e).lower() or self.batched is None:
                     raise
@@ -291,6 +333,33 @@ class WhisperEngine:
                 if self.batch_size <= 1:
                     self.batched = None
                 log.warning("[%s] GPU belleği yetmedi; toplu boyut -> %s", self.device, self.batch_size)
+        if self.fill_gaps:
+            try:
+                self._fill_gaps(audio, start, lang or res.get("language"), res)
+            except Exception:  # noqa: BLE001  (boşluk doldurma ek iş; hata asıl metni bozmasın)
+                log.warning("[%s] boşluk doldurma yapılamadı", self.device, exc_info=True)
+        return res
+
+    def _fill_gaps(self, audio, start: float, lang: str | None, res: dict, min_gap: float = GAP_S) -> None:
+        """VAD'in müzik/gürültü altında kaçırdığı konuşmayı geri al (filmlerde metnin %30'u eksik kalıyordu).
+
+        Metinde ``min_gap`` sn'den uzun boşluk varsa ve orada ses varsa, o kısım VAD'siz tekrar çevrilir;
+        düşük güvenli / 'konuşma yok' / tekrarlı satırlar (müzikte uydurma) atılır."""
+        segs = res["segments"]
+        gaps = find_gaps([(x["start"] - start, x["end"] - start) for x in segs], len(audio) / SR, min_gap)
+        added = []
+        for a, b in gaps:
+            piece = audio[int(a * SR):int(b * SR)]
+            if rms_db(piece) < -50:  # gerçekten sessiz
+                continue
+            out, _ = self.model.transcribe(piece, language=lang, beam_size=self.beam_size, vad_filter=False,
+                                           word_timestamps=True, condition_on_previous_text=False)
+            for s in out:
+                if keep_gap_segment(s.text, s.avg_logprob, s.no_speech_prob, s.compression_ratio):
+                    added.append(seg_dict(s, start + a))
+        if added:
+            log.info("[%s] metindeki %d boşluktan %d satır geri alındı", self.device, len(gaps), len(added))
+            res["segments"] = sorted(segs + added, key=lambda x: x["start"])
 
     def _run(self, audio, start: float, lang: str | None, prompt: str | None) -> dict:
         if self.batched is not None:
@@ -303,13 +372,7 @@ class WhisperEngine:
                 audio, language=lang, beam_size=self.beam_size, vad_filter=True, word_timestamps=True,
                 initial_prompt=prompt, condition_on_previous_text=self.cond, vad_parameters=self.vad,
             )
-        out = []
-        for s in segs:
-            words = [{"start": round(w.start + start, 3), "end": round(w.end + start, 3), "word": w.word,
-                      "prob": round(w.probability, 3)} for w in (s.words or [])]
-            out.append({"start": round(s.start + start, 3), "end": round(s.end + start, 3), "text": s.text.strip(),
-                        "avg_logprob": round(s.avg_logprob, 3), "no_speech_prob": round(s.no_speech_prob, 3),
-                        "words": words})
+        out = [seg_dict(s, start) for s in segs]
         return {"segments": out, "language": info.language, "language_probability": round(info.language_probability, 3)}
 
 
@@ -379,7 +442,10 @@ class OpenAIEngine:
 
 class Diarizer:
     agc = True  # testler __new__ ile kurar
-    def __init__(self, model: str, token: str | None, device: str, agc: bool = True):
+    batch = 8
+    ram_pct = 70
+    def __init__(self, model: str, token: str | None, device: str, agc: bool = True, batch: int = 8,
+                 gpu_frac: float | None = None, ram_pct: int = 70):
         os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")  # pyannote 3.x + torch>=2.6
         setup_cuda_dlls()
         import torch
@@ -389,11 +455,18 @@ class Diarizer:
         self.torch = torch
         self.model, self.token = model, token
         self.agc = agc
+        self.batch, self.ram_pct = max(1, int(batch or 8)), ram_pct
         torch.backends.cudnn.benchmark = False
         self.pipe = self._load()
         self.device = "cpu"
         kind, idx = parse_device(device)
         if kind == "cuda" and torch.cuda.is_available():
+            if gpu_frac:  # ekran kartı belleğinin en çok bu oranı (ör. 3090 %90, monitörlü 3080 %70)
+                try:
+                    torch.cuda.set_per_process_memory_fraction(min(0.95, max(0.2, gpu_frac)), idx)
+                    log.info("[%s] konuşmacı ayırma ekran kartı belleği sınırı: %%%d", device, round(gpu_frac * 100))
+                except Exception:  # noqa: BLE001
+                    log.debug("bellek sınırı konamadı", exc_info=True)
             self.pipe.to(torch.device(f"cuda:{idx}"))
             self.device = device
 
@@ -409,15 +482,68 @@ class Diarizer:
         if pipe is None:
             raise RuntimeError(f"{self.model} yüklenemedi: HF'de model sayfasındaki koşulları kabul ettiniz mi? "
                                "(pyannote/speaker-diarization-3.1 ve pyannote/segmentation-3.0)")
+        self._set_batch(pipe, self.batch)
         return pipe
+
+    @staticmethod
+    def _set_batch(pipe, n: int) -> None:
+        """Küçük toplu boyut: tepe bellek (RAM + ekran kartı) düşer; uzun filmde de sığar."""
+        for name in ("segmentation_batch_size", "embedding_batch_size"):
+            if hasattr(pipe, name):
+                try:
+                    setattr(pipe, name, n)
+                except Exception:  # noqa: BLE001
+                    pass
+
+    def wait_memory(self, dur_s: float, max_wait: float = 1200.0) -> None:
+        """Boş RAM'in ``ram_pct``'si işe yetene kadar bekle (en çok ``max_wait`` sn): Whisper o sırada
+        model yüklüyor / tarayıcı RAM'i doldurmuşsa ayırma hata vermesin, biraz geç başlasın."""
+        from .util import memory_status
+        need = 2.5 + 1.5 * dur_s / 3600  # GB (pyannote + ses + gömmeler; küçük toplu boyutla)
+        t0 = time.time()
+        while time.time() - t0 < max_wait:
+            m = memory_status()
+            if not m:
+                return
+            usable = min(m["ram_free"] * self.ram_pct / 100, m["commit_free"])
+            if usable >= need:
+                return
+            if time.time() - t0 < 1:
+                log.warning("Konuşmacı ayırma için bellek bekleniyor: ~%.1f GB gerekli, kullanılabilir %.1f GB "
+                            "(boş RAM %.1f GB, sanal bellek %.1f GB)", need, usable, m["ram_free"], m["commit_free"])
+            time.sleep(10)
+        log.warning("Bellek beklemesi bitti; konuşmacı ayırma yine de deneniyor")
 
     def _run(self, audio, kw) -> list[list]:
         out = self.pipe({"waveform": self.torch.from_numpy(audio)[None], "sample_rate": SR}, **kw)
         ann = getattr(out, "speaker_diarization", out)  # pyannote 4.x DiarizeOutput
         return [[round(seg.start, 3), round(seg.end, 3), str(spk)] for seg, _, spk in ann.itertracks(yield_label=True)]
 
+    def _run_lowmem(self, audio, kw) -> list[list]:
+        """RAM / ekran kartı belleği yetmezse toplu boyutu küçültüp, belleği boşaltıp tekrar dene."""
+        while True:
+            try:
+                return self._run(audio, kw)
+            except (MemoryError, RuntimeError) as e:
+                msg = str(e).lower()
+                ram = isinstance(e, MemoryError) or "not enough memory" in msg or "bad_alloc" in msg \
+                    or "defaultcpuallocator" in msg
+                if not (ram or "out of memory" in msg) or self.batch <= 1:
+                    raise
+                self.batch = max(1, self.batch // 4)
+                self._set_batch(self.pipe, self.batch)
+                import gc
+                gc.collect()
+                if self.device != "cpu":
+                    self.torch.cuda.empty_cache()
+                log.warning("[%s] konuşmacı ayırmada bellek yetmedi; toplu boyut %d ile, 30 sn sonra tekrar",
+                            self.device, self.batch)
+                time.sleep(30)
+                self.wait_memory(len(audio) / SR, max_wait=600)
+
     def run(self, wav: str, min_speakers=None, max_speakers=None) -> list[list]:
         audio = load_wav(wav)
+        self.wait_memory(len(audio) / SR)
         if self.agc:  # uzaktan konuşan muhabirler de ayrı konuşmacı olarak bulunsun
             from .audio import agc
             agc(audio)
@@ -428,7 +554,7 @@ class Diarizer:
         if max_speakers:
             kw["max_speakers"] = max_speakers
         try:
-            turns = self._run(audio, kw)
+            turns = self._run_lowmem(audio, kw)
         except RuntimeError as e:
             msg = str(e).lower()
             if self.device == "cpu" or not any(x in msg for x in ("cudnn", "cuda", "out of memory", "cublas")):

@@ -46,7 +46,8 @@ def _handle(task: dict, wid: str, device: str, engine_cfg: dict, cache: dict):
                 ddev = device if device.startswith("cuda") else "cpu"
                 from .engines import Diarizer
                 cache["diar"] = Diarizer(engine_cfg["diar_model"], engine_cfg["hf_token"], ddev,
-                                         agc=engine_cfg.get("agc", True))
+                                         agc=engine_cfg.get("agc", True), batch=engine_cfg.get("diar_batch", 8),
+                                         gpu_frac=engine_cfg.get("diar_gpu_frac"), ram_pct=engine_cfg.get("ram_limit_pct", 70))
             return {"turns": cache["diar"].run(task["wav"], task.get("min_speakers"), task.get("max_speakers"))}
     raise ValueError(f"bilinmeyen görev: {kind}")
 
@@ -90,7 +91,8 @@ def _init(device: str, engine_cfg: dict, cache: dict, load_lock=None, run_device
                                             engine_cfg["beam_size"], engine_cfg["condition_on_previous_text"],
                                             batch, vram, engine_cfg.get("languages"), label=device,
                                             agc=engine_cfg.get("agc", True),
-                                            vad_threshold=engine_cfg.get("vad_threshold", 0.4))
+                                            vad_threshold=engine_cfg.get("vad_threshold", 0.4),
+                                            fill_gaps=engine_cfg.get("fill_gaps", True))
         finally:
             if load_lock is not None:
                 load_lock.release()

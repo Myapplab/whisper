@@ -690,6 +690,26 @@ class App:
             n += self._pipe.cancel_all()
         return {"count": n}
 
+    def cancel(self, uid: str) -> dict:
+        """Tek bir işi durdur (indiriliyor / çevriliyor / sırada)."""
+        kept, hit = [], False
+        while True:  # henüz motora geçmemişse kutudan çıkar
+            try:
+                it = self._inbox.get_nowait()
+            except queue.Empty:
+                break
+            if it.extra.get("uid") == uid:
+                hit = True
+                self._push({"type": "failed", "uid": uid, "source": it.source, "title": it.title,
+                            "error": "Durduruldu.", "cancelled": True})
+            else:
+                kept.append(it)
+        for it in kept:
+            self._inbox.put(it)
+        if not hit and self._pipe is not None:
+            hit = self._pipe.cancel(uid)
+        return {"ok": hit}
+
     def check(self) -> dict:
         """Kurulum kontrolü (stt kontrol) ayrı süreçte; çıktıyı pencerede göstermek için döndürür."""
         try:

@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .audio import plan_chunks
 from .config import Config
-from .fetch import DRMProtected, FetchError, LiveStream, SkipItem, is_transient, prepare_audio  # noqa: F401
+from .fetch import Cancelled, DRMProtected, FetchError, LiveStream, SkipItem, is_transient, prepare_audio  # noqa: F401
 from .merge import apply_labels, assign_speakers, label_speakers, label_speakers_all, merge_chunks
 from .outputs import to_txt, write_all
 from .sources import Item
@@ -57,9 +57,15 @@ class Job:
     lang_checked: bool = False
 
 
+def is_ram_error(err: str) -> bool:
+    e = err.lower()
+    return any(x in e for x in ("memoryerror", "bad_alloc", "not enough memory", "winerror 1455", "mkl_malloc",
+                                "paging file", "defaultcpuallocator"))
+
+
 def diar_hint(err: str) -> str:
     e = err.lower()
-    if "memoryerror" in e or "bad_alloc" in e or "not enough memory" in e or "winerror 1455" in e:
+    if is_ram_error(err):
         return ram_hint(err)
     if "cudnn" in e or "cuda error" in e:
         return ("Ekran kartında ve işlemcide konuşmacı ayırma başarısız oldu. NVIDIA sürücüsünü güncelleyin; "
@@ -156,6 +162,8 @@ class Pipeline:
         self._pending_futs = 0
         self.backlog: deque = deque()        # ortak kuyruk; boşta işçi oldukça dağıtılır
         self.dbacklog: deque = deque()       # konuşmacı ayırma görevleri (ayrı süreç: "diar")
+        self.ddelayed: list = []             # (zaman, görev): bellek yetmeyen ayırma, sonra tekrar denenir
+        self.items: dict = {}                # uid -> Item (tek tek "Durdur" için)
         self.dpool: WorkerPool | None = None
         self.dqueued_n = 0
         self._ecfg: dict = {}
@@ -177,7 +185,9 @@ class Pipeline:
                 "batch_size": cfg.batch_size,
                 "condition_on_previous_text": cfg.condition_on_previous_text, "openai_model": cfg.openai_model,
                 "diar_model": cfg.diar_model, "hf_token": cfg.hf_token, "languages": cfg.languages,
-                "agc": cfg.agc, "vad_threshold": cfg.vad_threshold, "isolate_gpu": cfg.isolate_gpu}
+                "agc": cfg.agc, "vad_threshold": cfg.vad_threshold, "isolate_gpu": cfg.isolate_gpu,
+                "gpu_limit_pct": cfg.gpu_limit_pct, "display_gpu_limit_pct": cfg.display_gpu_limit_pct,
+                "ram_limit_pct": cfg.ram_limit_pct, "diar_batch": cfg.diar_batch, "fill_gaps": cfg.fill_gaps}
         if cfg.engine == "openai":
             devices = ["api"] * max(1, cfg.openai_workers)
             self.pool = WorkerPool(devices, ecfg, threads=True)
@@ -219,7 +229,12 @@ class Pipeline:
         """
         dev = self._diar_device()
         log.info("Konuşmacı ayırma: %s", dev if dev != "cpu" else "işlemci (CPU)")
-        self.dpool = WorkerPool([dev], {**self._ecfg, "role": "diar"}, names=["diar"])
+        frac = None
+        if dev.startswith("cuda"):  # kart belleği sınırı: monitörlü kart %70, diğeri %90 (Ayarlar: stt.toml)
+            on_display = int(dev.split(":")[1]) in (self._ecfg.get("display_gpus") or [])
+            pct = self.cfg.display_gpu_limit_pct if on_display else self.cfg.gpu_limit_pct
+            frac = pct / 100 if pct and 0 < pct < 100 else None
+        self.dpool = WorkerPool([dev], {**self._ecfg, "role": "diar", "diar_gpu_frac": frac}, names=["diar"])
         self.dpool.start()
         self.emit("worker", wid="diar", state="loading", name="Konuşmacı ayırma")
 
@@ -288,6 +303,8 @@ class Pipeline:
         import uuid
         item.extra.setdefault("uid", uuid.uuid4().hex[:10])
         item.extra["_gen"] = self.cancel_gen
+        item.extra.pop("_cancel", None)
+        self.items[item.extra["uid"]] = item
         try:
             self.state.queue_add(item.extra["uid"], item.kind, item.source, item.title, item.extra)
         except Exception:  # noqa: BLE001
@@ -322,6 +339,12 @@ class Pipeline:
                                     attempt + 1, tries - 1, item.title[:60], str(e).splitlines()[-1][:160])
                     self.emit("retrying", item, wait=wait, error=str(e)[:200])
                     time.sleep(wait)
+        except Cancelled:
+            with self.lock:
+                j = self.jobs.get(item.key)
+                if j is not None and j.status in ("prep", "cancelled"):
+                    j.status = "cancelled"
+            log.info("İndirme durduruldu: %s", item.source)
         except MemoryError:
             log.exception("Hazırlık hatası: %s", item.source)
             self._fail_item(item, ram_hint())
@@ -373,7 +396,7 @@ class Pipeline:
         return ""
 
     def _cancelled(self, item: Item) -> bool:
-        return item.extra.get("_gen", 0) < self.cancel_gen
+        return bool(item.extra.get("_cancel")) or item.extra.get("_gen", 0) < self.cancel_gen
 
     def _prepare(self, item: Item):
         cfg = self.cfg
@@ -405,6 +428,8 @@ class Pipeline:
                 self.emit("skipped", item, status="duplicate", error="Bu video zaten sırada / işleniyor.")
                 return
         job = Job(item, self.out_root / ".stt" / "is" / item.key[:18], status="prep")
+        from . import fetch as _fetch
+        _fetch.CANCELLED.discard(str(job.work))  # daha önce durdurulduysa yeni deneme indirebilsin
         with self.lock:
             self.jobs[item.key] = job
         self.state.set(item.key, source=item.source, status="running", title=item.title)
@@ -683,6 +708,13 @@ class Pipeline:
                     continue  # iş iptal/başarısız: görevi at
                 self.queued_n += 1
                 self.pool.put(t)
+            if self.ddelayed:
+                now = time.time()
+                for due, t in list(self.ddelayed):
+                    busy = any(b["job"] == t["job"] for b in self.backlog)  # önce metin çevirisi bitsin
+                    if now >= due and (not busy or now >= due + 900):
+                        self.ddelayed.remove((due, t))
+                        self.dbacklog.append(t)
             if self.dbacklog and self.dpool is None:
                 self._start_diar_pool()
             didle = 1 if "diar" in self.idle else 0
@@ -768,6 +800,19 @@ class Pipeline:
                     self._live_flush(job)
                 job.pending.discard(tid)
                 self._maybe_finalize(job)
+                return
+            if task["kind"] == "diarize" and n < 3 and is_ram_error(m["error"]):
+                # RAM yetmedi: ayırma sürecini kapat (belleği tamamen boşalsın), metin çevirisi bitince tekrar dene
+                wait = 60 * n
+                log.warning("Konuşmacı ayırmada bellek yetmedi; metin çevirisi bitince (en erken %d sn sonra) "
+                            "tekrar denenecek (%d/2): %s", wait, n, job.item.title[:60])
+                with self.lock:
+                    self.ddelayed.append((time.time() + wait, task))
+                if self.dpool is not None and "diar" in self.dpool.workers:
+                    self.dpool.respawn("diar")
+                    self.idle.discard("diar")
+                    self.dqueued_n = 0
+                    self.emit("worker", wid="diar", state="loading")
                 return
             if task["kind"] == "diarize":
                 job.diar_error = diar_hint(m["error"])
@@ -1133,6 +1178,7 @@ class Pipeline:
             self.cancel_gen += 1
             self.backlog.clear()
             self.dbacklog.clear()
+            self.ddelayed.clear()
             for job in self.jobs.values():
                 if job.recorder is not None and job.live_active:
                     job.recorder.stop("durduruldu")
@@ -1145,6 +1191,41 @@ class Pipeline:
                     self.emit("failed", job.item, error="Durduruldu.", cancelled=True)
         log.warning("Durduruldu: %d iş. Çalışan parça bitince işçiler boşa çıkar.", n)
         return n
+
+    def cancel(self, uid: str) -> bool:
+        """Tek bir işi durdur (indiriliyor / çevriliyor / sırada). Biten parçalar saklanır."""
+        from . import fetch as _fetch
+        item = self.items.get(uid)
+        if item is None:
+            return False
+        item.extra["_cancel"] = True
+        kill_diar = False
+        with self.lock:
+            job = self.jobs.get(item.key) if item.key else None
+            if job is not None and job.item.extra.get("uid") not in (None, uid):
+                job = None  # aynı videonun başka kopyası: ona dokunma
+            if job is not None:
+                _fetch.CANCELLED.add(str(job.work))  # indirme bir sonraki ilerleme adımında durur
+                if job.recorder is not None and job.live_active:
+                    job.recorder.stop("durduruldu")
+                if job.status in ("queued", "prep", "run"):
+                    job.status, job.error = "cancelled", "Durduruldu."
+                    if job.item.key:
+                        self.state.set(job.item.key, source=job.item.source, status="cancelled", title=job.item.title)
+                self.backlog = deque(t for t in self.backlog if t["job"] != item.key)
+                self.dbacklog = deque(t for t in self.dbacklog if t["job"] != item.key)
+                self.ddelayed = [x for x in self.ddelayed if x[1]["job"] != item.key]
+                tid = (self.inflight.get("diar") or (None,))[0]
+                kill_diar = bool(tid and (self.tasks.get(tid) or {}).get("job") == item.key)
+        if kill_diar and self.dpool is not None:  # uzun ayırma görevini beklemeden kes
+            self.dpool.respawn("diar")
+            self.inflight.pop("diar", None)
+            self.idle.discard("diar")
+            self.dqueued_n = 0
+            self.emit("worker", wid="diar", state="loading")
+        log.warning("Durduruldu: %s", item.title[:70] or item.source)
+        self.emit("failed", item, error="Durduruldu.", cancelled=True)
+        return True
 
     # ---------------------------------------------------------- bekleme
     def active(self) -> bool:

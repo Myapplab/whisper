@@ -605,6 +605,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
       if (j.duration) tags.push(el("span", { class: "mono" }, fmtDur(j.duration)));
       if (j.speakers) tags.push(el("span", {}, j.speakers + " konuşmacı"));
       const liveOn = j.live && j.liveOn;
+      const canStop = !liveOn && j.uid && (j.kind === "busy" || j.status === "Sırada");
       const card = el("div", { class: "job" + (j.kind === "ok" ? " done" : "") },
         el("div", { class: "top" }, el("div", { class: "t" }, j.title), el("span", { class: "pill " + (liveOn ? "live" : (j.kind || "")) }, liveOn ? "● CANLI" : j.status)),
         j.source && j.source !== j.title ? el("div", { class: "src", title: j.source }, j.source) : null,
@@ -614,7 +615,8 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
         j.diar_error ? el("div", { class: "err" }, "Konuşmacılar ayrılamadı: " + j.diar_error) : null,
         j.error ? el("div", { class: "err" }, j.error) : null,
         j.fpl ? el("div", { class: "meta" }, "FPL GW" + String(j.fpl.gw).padStart(2, "0") + " " + j.fpl.team + " — presser.py " + (j.fpl_rc === 0 ? "çalıştı" : "hata verdi (günlüğe bakın)")) : null,
-        (j.txt || j.out_dir || j.kind === "err" || liveOn || j.live_txt) ? el("div", { class: "row" },
+        (j.txt || j.out_dir || j.kind === "err" || liveOn || j.live_txt || canStop) ? el("div", { class: "row" },
+          canStop ? el("button", { class: "btn small", type: "button", title: "Bu işi durdurur; biten parçalar saklanır, linki tekrar eklerseniz kaldığı yerden devam eder", onclick: async () => { const r = await call("cancel", j.uid); toast(r && r.ok ? "Durduruldu." : "Bu iş artık çalışmıyor."); } }, "Durdur") : null,
           liveOn ? el("button", { class: "btn small", type: "button", onclick: async () => { await call("stop_live", j.uid); toast("Canlı kayıt bitiriliyor; tam metin birazdan yazılır."); } }, "Canlıyı bitir") : null,
           j.kind === "err" ? el("button", { class: "btn small", type: "button", onclick: async () => { const r = await call("retry", j.uid); if (r && !r.ok) toast(r.error); } }, "Tekrar dene") : null,
           j.txt ? el("button", { class: "btn small", type: "button", onclick: () => openReader(j.txt) }, "Metni göster") : null,

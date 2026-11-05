@@ -26,6 +26,18 @@ class DRMProtected(SkipItem):
     pass
 
 
+class Cancelled(Exception):
+    """Kullanıcı bu işi durdurdu."""
+
+
+CANCELLED: set[str] = set()  # durdurulan işlerin çalışma klasörleri (indirme ilerledikçe kontrol edilir)
+
+
+def check_cancel(workdir) -> None:
+    if CANCELLED and str(workdir) in CANCELLED:
+        raise Cancelled("Durduruldu.")
+
+
 class FetchError(Exception):
     """İndirilemedi. transient=True: geçici (ağ / sunucu) hata, bir süre sonra tekrar denenir."""
 
@@ -214,6 +226,7 @@ def _ytdlp_opts(workdir: Path, extra: dict) -> dict:
         "allow_unplayable_formats": False,
     }
     opts["js_runtimes"] = _js_runtimes(warn=True)
+    opts["progress_hooks"] = [lambda d: check_cancel(workdir)]  # "Durdur": indirme hemen kesilsin
     opts.update(extra)
     return opts
 
@@ -384,6 +397,7 @@ def ytdlp_download(url: str, workdir: Path, cookies_browser: str | None, cookies
 
     errors: list[tuple[str, str]] = []   # (deneme, hata): ilk denemenin hatası çoğu zaman asıl sebeptir
     for label, make in _attempts(url, cookies_browser, cookies_file, workdir):
+        check_cancel(workdir)
         try:
             extra = make()
             if headers:
@@ -414,7 +428,7 @@ def ytdlp_download(url: str, workdir: Path, cookies_browser: str | None, cookies
             log.info("yt-dlp başarısız (%s): %s", label, _last_line(msg)[:200])
             if label == "çerezsiz" and "http error 404" in low and not needs_cookies(msg):
                 break
-        except LiveStream:
+        except (LiveStream, Cancelled):
             raise
         except Exception as e:  # noqa: BLE001  (çerez okuma hataları vb.)
             errors.append((label, f"{type(e).__name__}: {e}"))
@@ -798,12 +812,14 @@ def download_url(url: str, workdir: Path, wav: Path, cfg) -> dict:
     if cfg.browser_capture:
         queue.append(("tarayıcı", lambda: browser_and_convert(url, wav)[1]))
     while queue:
+        check_cancel(workdir)
         label, step = queue.pop(0)
         try:
             res = step()
-        except (DRMProtected, LiveStream, SkipItem):
+        except (DRMProtected, LiveStream, SkipItem, Cancelled):
             raise
         except Exception as e:  # noqa: BLE001
+            check_cancel(workdir)  # durdurulduysa yedek yolları deneme
             steps.append(f"{label}: " + _last_line(str(e))[:220])
             if len(steps) == 1:  # asıl hata ilk adımınki (yedek yolların hataları tekrar denemeyi belirlemez)
                 transient = getattr(e, "transient", False)
