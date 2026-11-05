@@ -229,3 +229,75 @@ def test_diarize_runs_in_separate_pool(tmp_path):
     p._health()
     assert p.dpool.respawned == ["diar"] and p.pool.respawned == []
     assert p.dbacklog and p.dbacklog[0]["id"] == d["id"]
+
+
+# ------------------------------------------------------------ konuşmacı ayırma: cuDNN geri çekilmesi
+class _Seg:
+    def __init__(self, a, b):
+        self.start, self.end = a, b
+
+
+class _Ann:
+    def itertracks(self, yield_label=True):
+        yield _Seg(0.0, 1.0), None, "SPEAKER_00"
+        yield _Seg(1.0, 2.0), None, "SPEAKER_01"
+
+
+class _Pipe:
+    def __init__(self, fails):
+        self.fails, self.calls = list(fails), 0
+
+    def __call__(self, inp, **kw):
+        self.calls += 1
+        if self.fails:
+            raise RuntimeError(self.fails.pop(0))
+        return _Ann()
+
+
+def _fake_diarizer(pipe, cpu_pipe):
+    import types
+
+    import numpy as np
+
+    from stt.engines import Diarizer
+    d = Diarizer.__new__(Diarizer)
+    torch = types.SimpleNamespace(backends=types.SimpleNamespace(cudnn=types.SimpleNamespace(enabled=True)),
+                                  cuda=types.SimpleNamespace(empty_cache=lambda: None),
+                                  from_numpy=lambda a: np.asarray(a))
+    d.torch, d.pipe, d.device, d.model, d.token = torch, pipe, "cuda:1", "m", "t"
+    d._load = lambda: cpu_pipe
+    return d
+
+
+def _wav(tmp_path):
+    import wave
+
+    import numpy as np
+    p = tmp_path / "a.wav"
+    with wave.open(str(p), "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+        w.writeframes(np.zeros(32000, dtype=np.int16).tobytes())
+    return str(p)
+
+
+def test_diarizer_retries_without_cudnn(tmp_path):
+    pipe = _Pipe(["cuDNN error: CUDNN_STATUS_EXECUTION_FAILED"])
+    d = _fake_diarizer(pipe, cpu_pipe=None)
+    turns = d.run(_wav(tmp_path))
+    assert [t[2] for t in turns] == ["SPEAKER_00", "SPEAKER_01"]
+    assert d.torch.backends.cudnn.enabled is False and d.device == "cuda:1" and pipe.calls == 2
+
+
+def test_diarizer_falls_back_to_cpu(tmp_path):
+    pipe = _Pipe(["cuDNN error: CUDNN_STATUS_EXECUTION_FAILED", "CUDA error: an illegal memory access"])
+    cpu = _Pipe([])
+    d = _fake_diarizer(pipe, cpu_pipe=cpu)
+    turns = d.run(_wav(tmp_path))
+    assert len(turns) == 2 and d.device == "cpu" and cpu.calls == 1
+
+
+def test_diarizer_other_errors_raise(tmp_path):
+    import pytest
+    d = _fake_diarizer(_Pipe(["shape mismatch"]), cpu_pipe=None)
+    with pytest.raises(RuntimeError):
+        d.run(_wav(tmp_path))

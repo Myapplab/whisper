@@ -13,8 +13,11 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   hepsi monitörlüyse / tek kartsa en büyük tek kart, toplu boyut `display_batch` (4) ile sınırlı. `gpus="all"` =
   hepsi. İşçiler ve ffmpeg BELOW_NORMAL öncelikte. Sebep: kullanıcıda ekran kartı tam yükte kalınca bilgisayar
   donuyor, YouTube/tarayıcı çöküyordu. Takılan görev (`_task_timeout`) ya da çöken işçi yeniden başlatılır.
-- **Konuşmacı ayırma ayrı süreçte** (`Pipeline.dpool`, wid `diar`, ilk ayırma görevinde açılır): aynı süreçte
-  torch + CTranslate2 → `cudaErrorInvalidDevice: invalid device ordinal` görüldü.
+- **Konuşmacı ayırma ayrı süreçte** (`Pipeline.dpool`, wid `diar`, ilk ayırma görevinde açılır, belleği en büyük
+  kartta): aynı süreçte torch + CTranslate2 → `invalid device ordinal` ve 1.2.0'da `CUDNN_STATUS_EXECUTION_FAILED`
+  + `MemoryError` görüldü. `Diarizer.run`: cuDNN hatasında cuDNN kapalı tekrar dener, olmazsa CPU'da baştan yükler.
+- **Bellek:** `util.memory_status()` (Windows GlobalMemoryStatusEx: RAM + sanal bellek/commit). Kontrol'de "Bellek"
+  satırı; RAM hatalarında `pipeline.ram_hint()` anlık durumu ve sanal bellek (pagefile) çözümünü yazar.
 - **Dil (1.2.1):** otomatik algılamada `WhisperEngine.detect_language` 3 pencerenin olasılıklarını toplar ve
   izinli diller (`DEFAULT_LANGS` / `languages`) arasından seçer: large-v3 İngiliz aksanını Galce (cy) sanıp
   bütün metni Galce yazıyordu. Dili yanlış ya da konuşmacısız eski çıktılar link tekrar eklenince yeniden işlenir
@@ -43,8 +46,8 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   motor kilitleniyordu. "Durdur" = `cancel_all` (biten parçalar saklanır). Tek kopya kilidi (mutex),
   pencere kapanınca `_shutdown` → `os._exit`.
 - **CLI (gelişmiş):** `C:\stt\.venv\Scripts\stt.exe <link|dosya|klasör|liste.txt> [--lang en] [--diarize] [--fpl 11 ARS]`,
-  alt komutlar: `kontrol [--derin]`, `olc`, `izle KLASOR`, `durum`. (`stt.bat` / `install.bat` / `BENI_OKU.txt` 1.2.0'da
-  kaldırıldı: kullanıcı yalnızca setup.exe + masaüstü simgesi kullanır.)
+  alt komutlar: `kontrol [--derin]`, `olc`, `izle KLASOR`, `durum`. (`stt.bat` / `install.bat` 1.2.0'da kaldırıldı:
+  kullanıcı yalnızca setup.exe + masaüstü simgesi kullanır. `BENI_OKU.txt` kurulumun bitiş sayfasında açılır.)
 - **Ortam hazırlığı** `stt/util.py: prepare_env()` (GUI + CLI açılışında): `tools\ffmpeg*\bin`, `tools\deno`,
   kayıt defterindeki güncel PATH, winget yolları, `CUDA_VISIBLE_DEVICES` kaldırma, `CUDA_DEVICE_ORDER`, UTF-8.
 - **Kurulum:** `installer/stt.nsi` (NSIS) + `installer/kur.ps1`; `installer/build.sh` → `dist/STT-Kurulum.exe`.
@@ -67,6 +70,13 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   yükleniyor (`WorkerPool.load_lock`), işçiler torch import etmiyor.
 - HF token kullanıcının ortam değişkeninde (`HF_TOKEN`) — **repoya asla yazma** (`stt.toml` .gitignore'da).
 
+## Sürüm geçmişi (kısa)
+- 1.2.0 (dal optimistic-edison) ve 1.2.1 (dal inspiring-ritchie) ayrı oturumlarda paralel geliştirildi; 1.3.0'da
+  `main`'de birleştirildi. **Yeni işi her zaman güncel `main`'den başlat** ki dallar yine ayrışmasın.
+- 1.3.0: birleştirme + konuşmacı ayırma cuDNN/CPU geri çekilmesi + bellek teşhisi. Kullanıcı 1.2.0'da
+  "Soru-cevap ayrılamadı: cuDNN error: CUDNN_STATUS_EXECUTION_FAILED" ve "MemoryError" görmüştü; 1.3.0 Windows'ta
+  henüz denenmedi.
+
 ## Bilinen sınırlar / yapılacaklar
 - Windows'ta henüz doğrulanmadı: GUI (pywebview) ilk açılış, setup.exe + SAC davranışı, pyannote ile
   gerçek konuşmacı ayırma (kullanıcıda "ayırmıyor" şikâyeti vardı; `stt kontrol` artık modeli
@@ -78,8 +88,8 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
 - Kullanıcı ileride uygulamayı paylaşmak istiyor (tek kurulum dosyası).
 
 ## Geliştirme (bulut/Linux)
-- Testler: `python -m pytest -q tests` (40 test; `tests/test_stability.py` = GPU seçimi, işçi yeniden başlatma, iptal,
-  bloklamayan arayüz).
+- Testler: `python -m pytest -q tests` (51 test; `test_stability.py` = GPU seçimi, işçi yeniden başlatma, iptal,
+  bloklamayan arayüz, cuDNN geri çekilmesi; `test_app.py` = ortam hazırlığı, ayarlar, hata mesajları).
 - GPU yok ve HuggingFace engelliyse test modeli: GitHub `rhasspy/models` `asr_faster-whisper-small-int8`
   + `dev/make_tokenizer.py` (openai-whisper tiktoken → tokenizer.json) + `dev/add_alignment_heads.py`.
   `--model <klasör> --gpus cpu,cpu` ile uçtan uca çalışır.

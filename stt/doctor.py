@@ -54,6 +54,13 @@ def run_doctor(cfg, deep: bool = False) -> int:
     else:
         add(WARN, "JS çalışma zamanı", "yok -> YouTube indirmeleri çalışmaz; STT-Kurulum.exe'yi tekrar çalıştırın")
 
+    # bellek: iki Whisper işçisi + konuşmacı ayırma birlikte ~12-16 GB sanal bellek ister
+    from .util import PAGEFILE_HINT, memory_status, memory_text
+    m = memory_status()
+    if m:
+        st = OK if m["commit_free"] >= 12 else WARN
+        add(st, "Bellek", memory_text() + ("" if st == OK else "  -> AZ. " + PAGEFILE_HINT))
+
     # CUDA
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     setup_cuda_dlls()

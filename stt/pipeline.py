@@ -48,6 +48,11 @@ class Job:
 
 def diar_hint(err: str) -> str:
     e = err.lower()
+    if "memoryerror" in e or "bad_alloc" in e or "not enough memory" in e or "winerror 1455" in e:
+        return ram_hint(err)
+    if "cudnn" in e or "cuda error" in e:
+        return ("Ekran kartında ve işlemcide konuşmacı ayırma başarısız oldu. NVIDIA sürücüsünü güncelleyin; "
+                "'Kontrol'ün ekran görüntüsünü paylaşın. (" + err[:160] + ")")
     if "proxyerror" in e or "max retries" in e or "connectionerror" in e or "timed out" in e:
         return "huggingface.co'ya bağlanılamadı (internet/güvenlik duvarı). Model bir kez inince internet gerekmez."
     if "gated" in e or "403" in e or "accept" in e or "koşulları" in e or "nonetype" in e:
@@ -60,12 +65,25 @@ def diar_hint(err: str) -> str:
     return err[:300]
 
 
+def ram_hint(err: str = "") -> str:
+    """RAM / sanal bellek yetmediğinde: anlık durum + kalıcı çözüm."""
+    from .util import PAGEFILE_HINT, memory_status, memory_text
+    m = memory_status()
+    msg = "Bilgisayarın belleği (RAM + sanal bellek) yetmedi."
+    if m:
+        msg += " Şu an: " + memory_text() + "."
+    msg += " Tarayıcı sekmelerini / oyunları kapatıp linki tekrar ekleyin (kaldığı yerden devam eder)."
+    if not m or m["commit_total"] < 48:
+        msg += " Kalıcı çözüm: " + PAGEFILE_HINT
+    return msg + (f" ({err[:120]})" if err else "")
+
+
 def worker_hint(err: str) -> str:
     """Model yükleme / GPU hatalarını anlaşılır Türkçeye çevir."""
     e = err.lower()
-    if "mkl_malloc" in e or "memoryerror" in e or "bad_alloc" in e or "not enough memory" in e:
-        return ("Bilgisayarın belleği (RAM) yetmedi. Açık programları (tarayıcı, oyun) kapatıp "
-                "'Yeniden başlat'a basın. (" + err[:160] + ")")
+    if "mkl_malloc" in e or "memoryerror" in e or "bad_alloc" in e or "not enough memory" in e \
+            or "paging file" in e or "winerror 1455" in e:
+        return ram_hint(err)
     if "out of memory" in e:
         return ("Ekran kartı belleği yetmedi: GPU'yu kullanan başka bir program (oyun, başka bir STT penceresi) "
                 "olabilir. Kapatıp 'Yeniden başlat'a basın. (" + err[:160] + ")")
@@ -188,6 +206,11 @@ class Pipeline:
         görüldü; ayrıca pyannote çökerse Whisper işçisi etkilenmesin. İlk ayırma görevinde açılır.
         """
         cuda = [d for d in self.devices if d.startswith("cuda")]
+        mem = self._ecfg.get("gpu_mem") or {}
+        if not cuda and mem:  # Whisper CPU'da ama ekran kartı var
+            cuda = [f"cuda:{i}" for i in mem]
+        # belleği en büyük kart (3090): Whisper ile aynı kartı paylaşsa bile pyannote'a yer kalsın
+        cuda.sort(key=lambda d: -(mem.get(int(d.split(":")[1])) or 0))
         dev = cuda[0] if cuda else "auto"
         self.dpool = WorkerPool([dev], {**self._ecfg, "role": "diar"}, names=["diar"])
         self.dpool.start()
@@ -250,8 +273,7 @@ class Pipeline:
                     time.sleep(30)
         except MemoryError:
             log.exception("Hazırlık hatası: %s", item.source)
-            self._fail_item(item, "Bilgisayarın belleği (RAM) yetmedi. Açık programları (tarayıcı sekmeleri, "
-                                  "oyunlar) kapatıp linki tekrar ekleyin; kaldığı yerden devam eder.")
+            self._fail_item(item, ram_hint())
         except Exception as e:  # noqa: BLE001
             log.exception("Hazırlık hatası: %s", item.source)
             from .fetch import explain_error
@@ -508,7 +530,7 @@ class Pipeline:
                 (job.work / "konusmaci.json").write_text(json.dumps({"error": m["error"], "turns": []}), "utf-8")
             else:
                 job.status = "failed"
-                job.error = m["error"]
+                job.error = worker_hint(m["error"])
                 self.emit("failed", job.item, error=m["error"])
                 self.state.set(job.item.key, source=job.item.source, status="failed", title=job.item.title,
                                error=m["error"])

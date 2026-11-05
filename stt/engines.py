@@ -282,26 +282,37 @@ class Diarizer:
         os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")  # pyannote 3.x + torch>=2.6
         setup_cuda_dlls()
         import torch
-        from pyannote.audio import Pipeline
 
         if not token:
             raise RuntimeError("Konuşmacı ayırma için HF token gerekli (--hf-token ya da HF_TOKEN)")
+        self.torch = torch
+        self.model, self.token = model, token
+        torch.backends.cudnn.benchmark = False
+        self.pipe = self._load()
+        self.device = "cpu"
+        kind, idx = parse_device(device)
+        if kind == "cuda" and torch.cuda.is_available():
+            self.pipe.to(torch.device(f"cuda:{idx}"))
+            self.device = device
+
+    def _load(self):
+        from pyannote.audio import Pipeline
         try:
-            pipe = Pipeline.from_pretrained(model, use_auth_token=token)       # pyannote 3.x
+            pipe = Pipeline.from_pretrained(self.model, use_auth_token=self.token)       # pyannote 3.x
         except TypeError as e:
             if "hf_hub_download" in str(e):
                 raise RuntimeError("pyannote 3.x için huggingface_hub<1.0 gerekli: "
                                    'pip install "huggingface_hub<1.0"') from None
-            pipe = Pipeline.from_pretrained(model, token=token)                # pyannote 4.x
+            pipe = Pipeline.from_pretrained(self.model, token=self.token)                # pyannote 4.x
         if pipe is None:
-            raise RuntimeError(f"{model} yüklenemedi: HF'de model sayfasındaki koşulları kabul ettiniz mi? "
+            raise RuntimeError(f"{self.model} yüklenemedi: HF'de model sayfasındaki koşulları kabul ettiniz mi? "
                                "(pyannote/speaker-diarization-3.1 ve pyannote/segmentation-3.0)")
-        kind, idx = parse_device(device)
-        if kind == "cuda" and torch.cuda.is_available():
-            pipe.to(torch.device(f"cuda:{idx}"))
-        self.pipe = pipe
-        self.torch = torch
-        self.device = device
+        return pipe
+
+    def _run(self, audio, kw) -> list[list]:
+        out = self.pipe({"waveform": self.torch.from_numpy(audio)[None], "sample_rate": SR}, **kw)
+        ann = getattr(out, "speaker_diarization", out)  # pyannote 4.x DiarizeOutput
+        return [[round(seg.start, 3), round(seg.end, 3), str(spk)] for seg, _, spk in ann.itertracks(yield_label=True)]
 
     def run(self, wav: str, min_speakers=None, max_speakers=None) -> list[list]:
         audio = load_wav(wav)
@@ -311,8 +322,27 @@ class Diarizer:
             kw["min_speakers"] = min_speakers
         if max_speakers:
             kw["max_speakers"] = max_speakers
-        out = self.pipe({"waveform": self.torch.from_numpy(audio)[None], "sample_rate": SR}, **kw)
-        ann = getattr(out, "speaker_diarization", out)  # pyannote 4.x DiarizeOutput
-        turns = [[round(seg.start, 3), round(seg.end, 3), str(spk)] for seg, _, spk in ann.itertracks(yield_label=True)]
+        try:
+            turns = self._run(audio, kw)
+        except RuntimeError as e:
+            msg = str(e).lower()
+            if self.device == "cpu" or not any(x in msg for x in ("cudnn", "cuda", "out of memory", "cublas")):
+                raise
+            turns = None
+            if "cudnn" in msg and self.torch.backends.cudnn.enabled:
+                # cuDNN_STATUS_EXECUTION_FAILED vb.: cuDNN olmadan ekran kartında tekrar dene
+                log.warning("[%s] cuDNN hatası (%s); cuDNN kapalı tekrar deneniyor", self.device, str(e)[:120])
+                self.torch.backends.cudnn.enabled = False
+                try:
+                    self.torch.cuda.empty_cache()
+                    turns = self._run(audio, kw)
+                except RuntimeError as e2:
+                    log.warning("[%s] yine olmadı (%s)", self.device, str(e2)[:120])
+            if turns is None:
+                # ekran kartında olmuyor: işlemcide (CPU) baştan yükle; yavaş ama metin soru-cevap olarak çıkar
+                log.warning("[%s] konuşmacı ayırma işlemciye (CPU) alındı; bu kayıt biraz daha uzun sürer", self.device)
+                self.pipe = self._load()
+                self.device = "cpu"
+                turns = self._run(audio, kw)
         log.info("[%s] konuşmacı ayırma %.1fs, %d konuşmacı", self.device, time.time() - t, len({x[2] for x in turns}))
         return turns

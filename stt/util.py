@@ -106,6 +106,50 @@ def prepare_env() -> None:
     add_tool_paths()
 
 
+def memory_status() -> dict | None:
+    """RAM ve sanal bellek (commit) durumu, GB. Windows: GlobalMemoryStatusEx; Linux: /proc/meminfo."""
+    gb = 1024 ** 3
+    if os.name == "nt":
+        import ctypes
+
+        class MS(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+        m = MS()
+        m.dwLength = ctypes.sizeof(MS)
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)):  # type: ignore[attr-defined]
+            return None
+        return {"ram_total": m.ullTotalPhys / gb, "ram_free": m.ullAvailPhys / gb,
+                "commit_total": m.ullTotalPageFile / gb, "commit_free": m.ullAvailPageFile / gb}
+    try:
+        info = {}
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            k, v = line.split(":", 1)
+            info[k] = int(v.split()[0]) * 1024
+        swap = info.get("SwapTotal", 0)
+        return {"ram_total": info["MemTotal"] / gb, "ram_free": info["MemAvailable"] / gb,
+                "commit_total": (info["MemTotal"] + swap) / gb,
+                "commit_free": (info["MemAvailable"] + info.get("SwapFree", 0)) / gb}
+    except Exception:  # noqa: BLE001
+        return None
+
+
+PAGEFILE_HINT = ("Sanal belleği büyütün: Başlat'a 'Gelişmiş sistem ayarlarını görüntüle' yazın → Performans: Ayarlar → "
+                 "Gelişmiş → Sanal bellek: Değiştir → 'Tüm sürücüler için disk belleği dosyası boyutunu otomatik "
+                 "yönet' işaretli olsun (ya da C: için Sistem tarafından yönetilen boyut) → Tamam → yeniden başlatın.")
+
+
+def memory_text() -> str:
+    m = memory_status()
+    if not m:
+        return ""
+    return (f"RAM {m['ram_total']:.0f} GB (boş {m['ram_free']:.1f} GB), sanal bellek sınırı {m['commit_total']:.0f} GB "
+            f"(boş {m['commit_free']:.1f} GB)")
+
+
 _DLL_DONE = False
 
 
