@@ -114,6 +114,9 @@ def explain_error(msg: str) -> str:
         (("video unavailable", "this content isn't available", "has been removed", "http error 404"),
          "Video bulunamadı ya da kaldırılmış."),
         (("live event will begin", "premieres in", "is_upcoming"), "Yayın henüz başlamadı."),
+        (("impersonat",),
+         "Bu site (ör. Dailymotion) tarayıcı taklidi istiyor ama gerekli kütüphane (curl_cffi) kurulu değil. "
+         "Uygulamada Güncelle'ye basın; güncel sürüm bu kütüphaneyi kendisi kurar."),
         (("dpapi", "could not copy chrome cookie", "failed to decrypt", "cookie"),
          "Tarayıcı çerezleri okunamadı. Chrome'u tamamen kapatıp tekrar deneyin ya da Ayarlar'dan Firefox/Edge seçin."),
         (("n challenge", "signature", "js runtime", "jsc", "deno"),
@@ -220,7 +223,7 @@ def ytdlp_download(url: str, workdir: Path, cookies_browser: str | None, cookies
             errors.append((label, last))
             if is_drm_error(last):
                 raise DRMProtected(f"DRM korumalı: {url}") from None
-            if "unsupported url" in last.lower():
+            if "unsupported url" in last.lower() or "impersonat" in last.lower():
                 break  # çerez işe yaramaz; doğrudan yedek yola geç
             log.info("yt-dlp başarısız (%s): %s", label, last.splitlines()[-1][:200])
             if not needs_cookies(last) and label == "çerezsiz" and "http error 404" in last.lower():
@@ -245,6 +248,8 @@ def _last_line(msg: str) -> str:
 
 def ytdlp_hint(msg: str) -> str:
     m = msg.lower()
+    if "impersonat" in m:
+        return "Site tarayıcı taklidi istiyor: curl_cffi kurulu değil. Uygulamada Güncelle'ye basın (otomatik kurulur)."
     if "not a bot" in m or "sign in to confirm" in m:
         return "YouTube giriş/robot kontrolü istiyor: Ayarlar'da çerez tarayıcısı olarak Firefox ya da Edge seçin."
     if "js runtime" in m or "javascript" in m or "n challenge" in m or "deno" in m:

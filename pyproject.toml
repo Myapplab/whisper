@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stt"
-version = "1.4.0"
+version = "1.4.1"
 description = "Link/video/ses -> metin: yt-dlp + ffmpeg + faster-whisper (çoklu GPU) + pyannote"
 requires-python = ">=3.11"
 dependencies = [
     "faster-whisper>=1.1,<2",
     "ctranslate2>=4.5,<5",
-    "yt-dlp[default]",
+    "yt-dlp[default,curl-cffi]",
     "requests",
     "numpy",
     "jiwer>=3",

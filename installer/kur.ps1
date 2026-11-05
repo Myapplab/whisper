@@ -160,7 +160,7 @@ function Step-Libs {
   Run $venv @("-m", "pip", "install", "--progress-bar", "off", "-c", "constraints.txt", "-e", ".[diarize]") "Kütüphane kurulumu" -Pip
   # YouTube sık değişir: yt-dlp her kurulumda en yeni sürüme güncellenir
   Say "yt-dlp güncelleniyor (YouTube değişikliklerine karşı)"
-  Run $venv @("-m", "pip", "install", "-q", "--upgrade", "yt-dlp[default]") "yt-dlp güncelleme"
+  Run $venv @("-m", "pip", "install", "-q", "--upgrade", "yt-dlp[default,curl-cffi]") "yt-dlp güncelleme"
   Say "   tamam."
 }
 

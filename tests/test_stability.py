@@ -301,3 +301,13 @@ def test_diarizer_other_errors_raise(tmp_path):
     d = _fake_diarizer(_Pipe(["shape mismatch"]), cpu_pipe=None)
     with pytest.raises(RuntimeError):
         d.run(_wav(tmp_path))
+
+
+def test_impersonation_error_not_reported_as_cookie_problem():
+    from stt.fetch import ytdlp_error_summary
+    raw = ("ERROR: [dailymotion] x9jtlji: The extractor is attempting impersonation, but none of these "
+           "impersonate targets are available: firefox. See https://github.com/yt-dlp/yt-dlp#impersonation")
+    summary = ytdlp_error_summary([("çerezsiz", raw), ("--cookies-from-browser chrome", raw)])
+    assert "curl_cffi" in summary
+    msg = explain_error("İndirilemedi. " + summary)
+    assert "curl_cffi" in msg and "çerezleri okunamadı" not in msg

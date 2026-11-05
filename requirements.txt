@@ -2,7 +2,7 @@
 #   pip install torch==2.8.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
 faster-whisper>=1.1,<2
 ctranslate2>=4.5,<5
-yt-dlp[default]
+yt-dlp[default,curl-cffi]
 requests
 numpy
 jiwer>=3

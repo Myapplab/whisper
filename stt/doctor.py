@@ -45,10 +45,15 @@ def run_doctor(cfg, deep: bool = False) -> int:
 
     try:
         import yt_dlp
-        add(OK, "yt-dlp", f"{yt_dlp.version.__version__}  (güncelleme: pip install -U \"yt-dlp[default]\")")
+        add(OK, "yt-dlp", f"{yt_dlp.version.__version__}  (güncelleme: pip install -U \"yt-dlp[default,curl-cffi]\")")
     except Exception as e:  # noqa: BLE001
         add(BAD, "yt-dlp", f"yok: {e}")
-    js = next((n for n in ("deno", "node", "bun", "qjs") if which(n)), None)
+    try:
+        import curl_cffi
+        add(OK, "curl_cffi", f"{getattr(curl_cffi, '__version__', '?')} (Dailymotion vb. tarayıcı taklidi)")
+    except Exception:  # noqa: BLE001
+        add(WARN, "curl_cffi", "yok -> Dailymotion gibi siteler inmez; uygulamada Güncelle'ye basın")
+    js =next((n for n in ("deno", "node", "bun", "qjs") if which(n)), None)
     if js:
         add(OK, "JS çalışma zamanı", f"{js}: {(_ver([which(js), '--version']) or '?')[:50]} (YouTube için)")
     else:
