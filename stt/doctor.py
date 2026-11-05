@@ -52,7 +52,7 @@ def run_doctor(cfg, deep: bool = False) -> int:
     if js:
         add(OK, "JS çalışma zamanı", f"{js}: {(_ver([which(js), '--version']) or '?')[:50]} (YouTube için)")
     else:
-        add(WARN, "JS çalışma zamanı", "yok -> YouTube için gerekli: STT-Kurulum.exe'yi tekrar çalıştırın")
+        add(WARN, "JS çalışma zamanı", "yok -> YouTube indirmeleri çalışmaz; STT-Kurulum.exe'yi tekrar çalıştırın")
 
     # CUDA
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
@@ -66,7 +66,7 @@ def run_doctor(cfg, deep: bool = False) -> int:
                 pr = torch.cuda.get_device_properties(i)
                 add(OK, f"cuda:{i}", f"{pr.name}, {pr.total_memory / 2**30:.1f} GB")
         else:
-            add(WARN, "torch", f"{torch.__version__} - CUDA görünmüyor (CPU sürümü kurulmuş olabilir; install.bat)")
+            add(WARN, "torch", f"{torch.__version__} - CUDA görünmüyor (CPU sürümü kurulmuş olabilir; STT-Kurulum.exe'yi tekrar çalıştırın)")
     except Exception as e:  # noqa: BLE001
         add(WARN, "torch", f"yok/yüklenemedi ({e}) - konuşmacı ayırma çalışmaz")
     try:
@@ -92,7 +92,7 @@ def run_doctor(cfg, deep: bool = False) -> int:
             add(OK, "nvidia-smi", ln)
         cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
         add(OK if not cvd else WARN, "CUDA_VISIBLE_DEVICES",
-            "(boş - tüm kartlar görünür)" if not cvd else f"'{cvd}' -> yalnızca bu kart(lar) görünür; stt.bat bunu temizler")
+            "(boş - tüm kartlar görünür)" if not cvd else f"'{cvd}' -> yalnızca bu kart(lar) görünür; uygulama açılışta bunu kaldırır")
         try:
             import ctranslate2
             ncuda = ctranslate2.get_cuda_device_count()
@@ -120,7 +120,8 @@ def run_doctor(cfg, deep: bool = False) -> int:
         add(OK, "faster-whisper", faster_whisper.__version__)
         model = cfg.model
         if os.path.isdir(model):
-            add(OK, "Model", f"yerel: {model}")
+            ok = (Path(model) / "model.bin").is_file()
+            add(OK if ok else BAD, "Model", f"yerel: {model}" + ("" if ok else "  -> model.bin YOK (klasör eksik/bozuk)"))
         else:
             try:
                 from faster_whisper.utils import download_model
@@ -150,7 +151,7 @@ def run_doctor(cfg, deep: bool = False) -> int:
         import pyannote.audio
         tok = cfg.hf_token
         add(OK if tok else WARN, "pyannote.audio", f"{pyannote.audio.__version__}; HF token: "
-            + (f"var ({tok[:5]}…)" if tok else "YOK -> konuşmacı ayırma çalışmaz (setx HF_TOKEN hf_..., sonra yeni pencere)"))
+            + (f"var ({tok[:5]}…)" if tok else "YOK -> soru-cevap ayrımı çalışmaz (uygulamada Ayarlar > HuggingFace token)"))
         if tok:
             print("       konuşmacı ayırma modeli deneniyor (ilk seferde ~30 MB iner)...", flush=True)
             try:
@@ -180,7 +181,7 @@ def run_doctor(cfg, deep: bool = False) -> int:
         rp = Path(cfg.fpl_repo)
         add(OK if (rp / "presser.py").is_file() else WARN, "FPL repo", f"{rp} " +
             ("(presser.py var)" if (rp / "presser.py").is_file() else
-             "(presser.py YOK - yalnızca --fpl için gerekli; stt.bat bir sonraki FPL'de tekrar sorar)"))
+             "(presser.py YOK - yalnızca --fpl için gerekli; Ayarlar'dan düzeltin)"))
     else:
         add(WARN, "FPL repo", "ayarlı değil (--fpl için FPL_REPO ya da stt.toml fpl_repo)")
 

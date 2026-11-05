@@ -3,13 +3,12 @@
 Linki ya da dosyayı verirsiniz; `stt` sesi indirir, iki ekran kartında paralel olarak
 **faster-whisper large-v3** ile metne çevirir, isterseniz konuşmacıları ayırır
 (teknik direktör / muhabir) ve `.txt`, `.srt`, `.json`, `ozet.md` dosyalarını yazar.
-`--fpl` verirseniz metni FPL reposuna koyar ve `presser.py`'yi çalıştırır.
+FPL seçeneği açıksa metni FPL reposuna koyar ve `presser.py`'yi çalıştırır.
 
-```bat
-stt.bat "https://www.youtube.com/watch?v=XXXX" --fpl 11 ARS
-```
+**Kurulum:** `STT-Kurulum.exe`'yi çalıştırın, bitince masaüstündeki **STT** simgesiyle açın.
+Başka bir şey (bat dosyası, terminal, winget) gerekmez.
 
-## Uygulama (önerilen)
+## Uygulama
 
 Masaüstündeki **STT** simgesine çift tıklayın (terminal açılmaz).
 
@@ -25,6 +24,8 @@ Masaüstündeki **STT** simgesine çift tıklayın (terminal açılmaz).
 - **Veri seti:** Premier League › takım › maç ağacı, basın toplantısı/takım/maç sayıları, `index.csv`.
 - **Ayarlar:** veri seti klasörü, HuggingFace token, FPL repo klasörü, çerez tarayıcısı, ekran kartı kullanımı
   (*Önerilen*: monitörün bağlı olmadığı kart — bilgisayar akıcı kalır; *Hepsi*: en hızlı).
+- **Kontrol:** ffmpeg, deno, ekran kartları, model ve konuşmacı modelini denetler; sorunları kırmızıyla
+  ve ne yapılacağıyla gösterir. Motor başlatılamazsa üstte kırmızı şerit çıkar (sebebiyle birlikte).
 - Uygulama açılmazsa günlük: `%LOCALAPPDATA%\stt\stt_app.log`, ya da konsolda
   `C:\stt\.venv\Scripts\python.exe -m stt.gui`.
 
@@ -84,9 +85,9 @@ cikti\
 |---|---|
 | yt-dlp'nin desteklediği her site | YouTube, X, Instagram, TikTok, Facebook, Vimeo, kulüp siteleri… |
 | Yerel video/ses dosyası | `mp4 mkv mov webm avi mp3 m4a wav flac ogg opus …` |
-| Klasör (alt klasörler dahil) | `stt.bat D:\basin` |
-| Link listesi | `stt.bat linkler.txt` (satır başına bir link ya da dosya yolu, `#` yorum) |
-| İzleme klasörü | `stt.bat izle D:\gelen` (yeni gelen dosya otomatik işlenir) |
+| Klasör (alt klasörler dahil) | `stt D:\basin` |
+| Link listesi | `stt linkler.txt` (satır başına bir link ya da dosya yolu, `#` yorum) |
+| İzleme klasörü | `stt izle D:\gelen` (yeni gelen dosya otomatik işlenir) |
 
 Akış:
 
@@ -119,37 +120,33 @@ Smart App Control imzasız dosyayı engellerse: dosyaya sağ tık › Özellikle
 
 Gerekenler: NVIDIA sürücüsü (CUDA 12.8 destekleyen, 570+), Python 3.11, internet.
 
-```bat
-winget install Python.Python.3.11
-git clone <bu repo> C:\araclar\stt
-cd C:\araclar\stt
-install.bat
-```
+`STT-Kurulum.exe`'yi çalıştırın (Smart App Control engellerse, dosyanın olduğu klasörde PowerShell:
+`Unblock-File .\STT-Kurulum.exe`). Kurulum (`installer/kur.ps1`) şunları kendisi yapar:
 
-`install.bat` şunları yapar:
-
-- `.venv` adında bir Python 3.11 sanal ortamı oluşturur.
+- Python 3.11 yoksa python.org'dan kurar; `.venv` sanal ortamını oluşturur.
 - **PyTorch 2.8 + CUDA 12.8** kurar. cuBLAS/cuDNN DLL'leri de bununla gelir;
   faster-whisper (CTranslate2) bu DLL'leri kullanır, ayrıca CUDA Toolkit kurmanız gerekmez.
-- faster-whisper, yt-dlp (+ yt-dlp-ejs), pyannote.audio 3.4, jiwer, openai paketlerini kurar.
-- ffmpeg ve **deno** (yt-dlp'nin YouTube için istediği JS çalışma zamanı) yoksa `winget` ile kurar.
-- `stt.toml.example` dosyasını `stt.toml` olarak kopyalar.
-- Son olarak `stt kontrol` çalıştırır.
+- faster-whisper, yt-dlp (+ yt-dlp-ejs, her kurulumda en yeni sürüm), pyannote.audio 3.4, pywebview.
+- ffmpeg ve **deno**'yu (YouTube için) uygulamanın kendi `tools` klasörüne indirir; PATH/winget gerekmez.
+- `stt.toml` ayar dosyasını oluşturur, Whisper large-v3 modelini (~3 GB) indirir.
+- Masaüstü ve Başlat menüsüne **STT** kısayolunu koyar.
 
-> winget yeni bir şey kurduysa PATH'in yenilenmesi için **yeni bir terminal** açıp
-> `stt.bat kontrol` komutunu tekrar çalıştırın.
+Kurulum yarıda kalırsa tekrar çalıştırın: biten adımlar atlanır. Önceki `C:\stt` kurulumu varsa onu
+günceller (veriler ve ayarlar korunur, eski `stt.bat` / `install.bat` silinir).
 
-Her yerden `stt` yazabilmek için klasörü PATH'e ekleyin:
+Geliştirme için elle kurulum (Linux/Windows):
 
 ```bat
-setx PATH "%PATH%;C:\araclar\stt"
+python -m venv .venv
+.venv\Scripts\python -m pip install torch==2.8.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+.venv\Scripts\python -m pip install -c constraints.txt -e ".[diarize,test]"
 ```
 
 ### Kurulum kontrolü
 
 ```bat
-stt.bat kontrol          :: Python, ffmpeg, yt-dlp, deno, CUDA, GPU'lar, model, pyannote, OpenAI, FPL
-stt.bat kontrol --derin  :: modeli her GPU'ya yükleyip kısa bir tanıma yapar (cuDNN/cuBLAS testi)
+stt kontrol          :: Python, ffmpeg, yt-dlp, deno, CUDA, GPU'lar, model, pyannote, OpenAI, FPL
+stt kontrol --derin  :: modeli her GPU'ya yükleyip kısa bir tanıma yapar (cuDNN/cuBLAS testi)
 ```
 
 Beklenen çıktıdan bir kesit:
@@ -166,45 +163,47 @@ indirmeye çalışmasın diye model ana süreçte bir kez indirilir.
 
 ---
 
-## Kullanım
+## Komut satırı (gelişmiş)
+
+Uygulamanın yaptığı her şey komut satırından da yapılabilir. Komut: `C:\stt\.venv\Scripts\stt.exe`
+(aşağıda kısaca `stt`).
 
 ```bat
 :: tek link
-stt.bat "https://www.youtube.com/watch?v=XXXX"
+stt "https://www.youtube.com/watch?v=XXXX"
 
 :: dili sabitle (en / tr / az, yoksa otomatik)
-stt.bat "https://x.com/Arsenal/status/123" --lang en
+stt "https://x.com/Arsenal/status/123" --lang en
 
 :: yerel video
-stt.bat "D:\videolar\basin toplantisi.mp4" --lang tr
+stt "D:\videolar\basin toplantisi.mp4" --lang tr
 
 :: klasör (alt klasörler dahil)
-stt.bat D:\basin --lang en
+stt D:\basin --lang en
 
 :: link listesi
-stt.bat linkler.txt
+stt linkler.txt
 
 :: konuşmacı ayırma
-stt.bat "https://www.youtube.com/watch?v=XXXX" --diarize
+stt "https://www.youtube.com/watch?v=XXXX" --diarize
 
 :: FPL: inputs\pressers\GW11\ARS.txt yaz + presser.py çalıştır
-stt.bat "https://www.youtube.com/watch?v=XXXX" --fpl 11 ARS
+stt "https://www.youtube.com/watch?v=XXXX" --fpl 11 ARS
 
 :: izleme klasörü (Ctrl+C ile durur)
-stt.bat izle D:\gelen --lang en --diarize
+stt izle D:\gelen --lang en --diarize
 
 :: işlenenlerin listesi
-stt.bat durum
+stt durum
 ```
 
 > **cmd ipucu:** İçinde `&` geçen linkleri (ör. `...watch?v=X&t=30`) mutlaka **tırnak** içine alın.
 
 ### Toplu link (ör. 20 video)
 
-`stt.bat`'a çift tıklayın, link sorusunda **hiçbir şey yazmadan Enter**'a basın. Not Defteri'nde
-`linkler.txt` açılır: her satıra bir link yapıştırın, kaydedin, pencereye dönüp bir tuşa basın.
-Hepsi sırayla indirilir ve iki ekran kartında işlenir. Daha önce işlenenler atlanır.
-FPL için linkin yanına GW ve takım yazılabilir: `https://youtube.com/... 11 ARS`.
+Uygulamada linklerin hepsini *Yeni iş* kutusuna yapıştırıp **Başlat**'a basın. Komut satırında:
+her satıra bir link yazılmış bir `.txt` dosyası verin (`stt linkler.txt`). FPL için linkin yanına GW
+ve takım yazılabilir: `https://youtube.com/... 11 ARS`. Daha önce işlenenler atlanır.
 
 ### Dosya adları
 
@@ -233,7 +232,7 @@ He trained today...
 ```
 
 Konuşmacı ayırma yapılamazsa sebebi `.txt`'nin başında, `ozet.md`'de ve işlem sonundaki özette
-yazar (ör. "HuggingFace model koşulları kabul edilmemiş"). `stt.bat kontrol` modeli gerçekten
+yazar (ör. "HuggingFace model koşulları kabul edilmemiş"). `stt kontrol` modeli gerçekten
 yükleyip dener.
 
 ### Hız
@@ -288,7 +287,7 @@ Her kayıt için `cikti\<başlık>\` klasörü oluşur (yer `--out` ya da `stt.t
    - `setx HF_TOKEN hf_xxx` (önerilen)
    - `stt.toml` içine `hf_token = "hf_xxx"`
    - komut satırında `--hf-token hf_xxx`
-4. Çalıştırın: `stt.bat <link> --diarize`. Konuşmacı sayısını biliyorsanız `--speakers 3` ekleyin.
+4. Çalıştırın: `stt <link> --diarize`. Konuşmacı sayısını biliyorsanız `--speakers 3` ekleyin.
 
 Nasıl çalışır:
 
@@ -308,7 +307,7 @@ Nasıl çalışır:
 
 ```bat
 setx FPL_REPO D:\kod\fpl
-stt.bat "https://www.youtube.com/watch?v=XXXX" --fpl 11 ARS
+stt "https://www.youtube.com/watch?v=XXXX" --fpl 11 ARS
 ```
 
 - Metin `D:\kod\fpl\inputs\pressers\GW11\ARS.txt` dosyasına yazılır. GW iki haneye tamamlanır
@@ -333,7 +332,7 @@ stt.bat "https://www.youtube.com/watch?v=XXXX" --fpl 11 ARS
 - **Linkler** normalize edilir: `youtu.be/X`, `youtube.com/watch?v=X&si=…`, `shorts/X` hepsi
   aynı sayılır, takip parametreleri atılır. İndirmeden sonra `site:video-id` ile ikinci bir
   kontrol yapılır.
-- Kayıtlar `cikti\.stt\durum.sqlite` dosyasında tutulur. `stt.bat durum` hepsini listeler.
+- Kayıtlar `cikti\.stt\durum.sqlite` dosyasında tutulur. `stt durum` hepsini listeler.
   `--force` ile yeniden işlenir.
 - **Yarıda kalırsa** (Ctrl+C, elektrik, çökme): hazırlanmış WAV ve biten her parça
   `cikti\.stt\is\<hash>\` altında durur. Aynı komutu tekrar çalıştırınca yalnızca eksik parçalar
@@ -375,8 +374,8 @@ stt.bat "https://www.youtube.com/watch?v=XXXX" --fpl 11 ARS
 
 ```bat
 setx OPENAI_API_KEY sk-...
-stt.bat "<link>" --engine openai                         :: varsayılan model: gpt-transcribe
-stt.bat "<link>" --engine openai --openai-model whisper-1
+stt "<link>" --engine openai                         :: varsayılan model: gpt-transcribe
+stt "<link>" --engine openai --openai-model whisper-1
 ```
 
 - API anahtarı yalnızca `OPENAI_API_KEY` ortam değişkeninden okunur.
@@ -392,13 +391,13 @@ stt.bat "<link>" --engine openai --openai-model whisper-1
 
 ```bat
 :: 3 İngilizce örnek kaydı (LibriSpeech, referanslı) indirip ölçer, hedef < %8
-stt.bat olc --ornek
+stt olc --ornek
 
 :: kendi kayıtlarınızla (önerilen): klasöre ses + aynı adlı .txt referans koyun
 ::   D:\olcum\arteta_gw10.mp3   D:\olcum\arteta_gw10.txt
 ::   D:\olcum\slot_gw10.mp4     D:\olcum\slot_gw10.txt
 ::   D:\olcum\amorim_gw10.m4a   D:\olcum\amorim_gw10.txt
-stt.bat olc D:\olcum --lang en --hedef 8
+stt olc D:\olcum --lang en --hedef 8
 ```
 
 - Ölçüm normal akışla aynı ayarları kullanır: iki GPU, large-v3, beam 5, VAD.
@@ -456,8 +455,8 @@ Ayarların öncelik sırası: varsayılan < `stt.toml` < ortam değişkenleri (`
 | Uygulama penceresi donuyor | 1.2'de düzeltildi: pencere takılsa da iş arka planda sürer. Günlük: `%LOCALAPPDATA%\stt\stt_app.log`. |
 | `Could not copy Chrome cookie database` / DPAPI hatası | Windows'ta Chrome açıkken ve yeni sürümlerdeki uygulamaya bağlı şifreleme yüzünden çerezler okunamayabilir. Chrome'u tamamen kapatın, ya da `--cookies-browser firefox` / `edge` deneyin, ya da bir uzantıyla `cookies.txt` dışa aktarıp `--cookies cookies.txt` verin. |
 | YouTube: `Sign in to confirm you're not a bot` | Çerezle tekrar denenir. Olmazsa yt-dlp'yi güncelleyin: `.venv\Scripts\python -m pip install -U "yt-dlp[default]"`. Deno kurulu mu bakın (`stt kontrol`). |
-| YouTube: `n challenge` / JS uyarısı | Kurulumu (STT-Kurulum.exe) tekrar çalıştırın: deno'yu `tools\deno` klasörüne indirir. |
-| `cublas64_12.dll` / `cudnn_ops64_9.dll not found` | `install.bat`'ı yeniden çalıştırın (torch cu128 DLL'leri getirir). `stt kontrol --derin` ile doğrulayın. |
+| YouTube: `n challenge` / JS uyarısı | `STT-Kurulum.exe`'yi tekrar çalıştırın (deno'yu `tools` klasörüne kurar). |
+| `cublas64_12.dll` / `cudnn_ops64_9.dll not found` | `STT-Kurulum.exe`'yi yeniden çalıştırın (torch cu128 DLL'leri getirir). `stt kontrol --derin` ile doğrulayın. |
 | `CUDA out of memory` (3080) | `--compute-type int8_float16` ya da `--gpus 0`. |
 | Aynı cümle tekrar tekrar yazılıyor | `--no-context`. |
 | Azerice Türkçe sanılıyor | `--lang az`. |
@@ -469,7 +468,8 @@ Ayarların öncelik sırası: varsayılan < `stt.toml` < ortam değişkenleri (`
 ## Proje yapısı
 
 ```
-stt.bat / install.bat        Windows girişleri
+installer/                   STT-Kurulum.exe (NSIS stt.nsi + kur.ps1, build.sh)
+stt/gui.py, stt/gui.html     masaüstü uygulaması (pywebview)
 stt.toml.example             ayar örneği
 stt/cli.py                   komut satırı, alt komutlar
 stt/sources.py               girdileri genişletme, link normalizasyonu, hash

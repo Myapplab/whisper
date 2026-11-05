@@ -8,7 +8,7 @@ python3 - "$ROOT" "$WORK/staged" <<'PY'
 import shutil, sys
 src, dst = sys.argv[1], sys.argv[2]
 ign = shutil.ignore_patterns("__pycache__", "*.egg-info", ".pytest_cache", ".git", "installer", "dev", "dist",
-                             "ornekler", "cikti", ".venv", "stt.toml", "models", "tools", "CLAUDE.md", "*.log")
+                             "ornekler", "cikti", ".venv", "stt.toml", "tests", "models", "tools", "CLAUDE.md", "*.log")
 shutil.copytree(src, dst, ignore=ign)
 shutil.copy(f"{src}/installer/kur.ps1", f"{dst}/kur.ps1")
 PY

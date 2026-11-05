@@ -122,4 +122,13 @@ def load_config() -> Config:
         val = os.environ.get(env, "").strip()
         if val and not (val.startswith("%") and val.endswith("%")):  # boş/çözülmemiş %DEGISKEN% değil
             setattr(cfg, attr, _coerce(attr, val))
+    return normalize(cfg)
+
+
+def normalize(cfg: Config) -> Config:
+    """Uygulama/CLI ortak: 'none', 'auto' gibi değerleri None'a çevir."""
+    if isinstance(cfg.cookies_browser, str) and cfg.cookies_browser.strip().lower() in ("", "none", "yok", "off", "kullanma"):
+        cfg.cookies_browser = None
+    if isinstance(cfg.lang, str) and cfg.lang.strip().lower() in ("", "auto", "otomatik", "oto"):
+        cfg.lang = None
     return cfg

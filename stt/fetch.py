@@ -33,7 +33,7 @@ class FetchError(Exception):
 def ffmpeg_bin() -> str:
     exe = which("ffmpeg")
     if not exe:
-        raise FetchError("ffmpeg bulunamadı (PATH). 'winget install Gyan.FFmpeg' ile kurun.")
+        raise FetchError("ffmpeg bulunamadı. STT-Kurulum.exe'yi tekrar çalıştırın (ffmpeg'i kendisi kurar).")
     return exe
 
 
@@ -199,6 +199,7 @@ def ytdlp_download(url: str, workdir: Path, cookies_browser: str | None, cookies
     if any(host == d or host.endswith("." + d) for d in LOGIN_FIRST) and len(attempts) > 1:
         attempts = attempts[1:] + attempts[:1]  # giriş isteyen sitelerde önce çerezle dene
     last = ""
+    errors: list[tuple[str, str]] = []   # (deneme, hata): ilk denemenin hatası çoğu zaman asıl sebeptir
     for label, extra in attempts:
         try:
             with yt_dlp.YoutubeDL(_ytdlp_opts(workdir, extra)) as ydl:
@@ -216,6 +217,7 @@ def ytdlp_download(url: str, workdir: Path, cookies_browser: str | None, cookies
             return f, info
         except DownloadError as e:
             last = str(e)
+            errors.append((label, last))
             if is_drm_error(last):
                 raise DRMProtected(f"DRM korumalı: {url}") from None
             if "unsupported url" in last.lower():
@@ -227,12 +229,46 @@ def ytdlp_download(url: str, workdir: Path, cookies_browser: str | None, cookies
             raise
         except Exception as e:  # noqa: BLE001  (çerez okuma hataları vb.)
             last = f"{type(e).__name__}: {e}"
+            errors.append((label, last))
             hint = ""
             if "cookie" in last.lower() or "dpapi" in last.lower():
                 hint = (" | İpucu: Chrome açıkken/uygulamaya bağlı şifreleme yüzünden çerezler okunamayabilir. "
                         "Chrome'u kapatın, ya da --cookies-browser firefox/edge, ya da --cookies cookies.txt kullanın.")
             log.info("yt-dlp hata (%s): %s%s", label, last[:300], hint)
-    raise FetchError(last or "yt-dlp başarısız")
+    raise FetchError(ytdlp_error_summary(errors) or last or "yt-dlp başarısız")
+
+
+def _last_line(msg: str) -> str:
+    lines = [x.strip() for x in str(msg).splitlines() if x.strip()]
+    return (lines[-1] if lines else str(msg)).removeprefix("ERROR: ")[:300]
+
+
+def ytdlp_hint(msg: str) -> str:
+    m = msg.lower()
+    if "not a bot" in m or "sign in to confirm" in m:
+        return "YouTube giriş/robot kontrolü istiyor: Ayarlar'da çerez tarayıcısı olarak Firefox ya da Edge seçin."
+    if "js runtime" in m or "javascript" in m or "n challenge" in m or "deno" in m:
+        return "YouTube için deno gerekli: STT-Kurulum.exe'yi tekrar çalıştırın."
+    if "requested format is not available" in m or "only images are available" in m:
+        return "Ses biçimi alınamadı (yt-dlp eski olabilir ya da deno eksik): STT-Kurulum.exe'yi tekrar çalıştırın."
+    if "could not copy chrome cookie" in m or "dpapi" in m or "app-bound" in m or "failed to decrypt" in m:
+        return "Chrome çerezleri okunamadı: Ayarlar'da Firefox/Edge seçin ya da 'Kullanma' deyin."
+    if "private" in m or "login" in m or "log in" in m:
+        return "Video giriş istiyor: Ayarlar'da o sitede oturum açık olan tarayıcıyı seçin."
+    return ""
+
+
+def ytdlp_error_summary(errors: list[tuple[str, str]]) -> str:
+    """Asıl hatayı (ilk deneme) öne koy; çerez denemesi başka hata verdiyse onu da ekle."""
+    if not errors:
+        return ""
+    first_label, first = errors[0]
+    out = _last_line(first)
+    for label, msg in errors[1:]:
+        if _last_line(msg) != out:
+            out += f"  [{label}: {_last_line(msg)[:160]}]"
+    hint = ytdlp_hint(first) or next((ytdlp_hint(m) for _, m in errors[1:] if ytdlp_hint(m)), "")
+    return out + (f"  -> {hint}" if hint else "")
 
 
 # ---------------------------------------------------------------- sayfadan m3u8/mp4 çekme
@@ -343,6 +379,7 @@ def prepare_audio(item, workdir: Path, cfg) -> tuple[Path, dict]:
         log.info("Önceden hazırlanmış ses kullanılıyor: %s", item.title[:80])
         return wav, info
 
+    ffmpeg_bin()  # ffmpeg yoksa açık mesajla hemen dur (yedek yollar yanıltıcı hata vermesin)
     if item.kind == "file":
         info = {"title": Path(item.source).stem, "source_path": item.source,
                 "timestamp": int(Path(item.source).stat().st_mtime)}
@@ -373,7 +410,7 @@ def prepare_audio(item, workdir: Path, cfg) -> tuple[Path, dict]:
             except SkipItem:
                 raise
             except Exception as e2:  # noqa: BLE001
-                raise FetchError(f"İndirilemedi. yt-dlp: {str(e)[:300]} | yedek: {e2}") from None
+                raise FetchError(f"İndirilemedi. {str(e)[:700]}  (sayfadan yedek yol: {str(e2)[:200]})") from None
     info["duration_s"] = wav_duration(wav)
     info_path.write_text(json.dumps(info, ensure_ascii=False, indent=1), encoding="utf-8")
     return wav, info

@@ -8,7 +8,7 @@ ManifestSupportedOS all
 !include "WinMessages.nsh"
 
 !define APPNAME "STT - Basın Odası"
-!define VERSION "1.2.1"
+!define VERSION "1.3.0"
 !define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\STT"
 !define STEPS 8
 
@@ -23,7 +23,7 @@ SetCompressor /SOLID lzma
 BrandingText "STT ${VERSION}"
 SetFont "Segoe UI" 9
 
-VIProductVersion "1.2.1.0"
+VIProductVersion "1.3.0.0"
 VIAddVersionKey /LANG=1055 "ProductName" "${APPNAME}"
 VIAddVersionKey /LANG=1055 "FileDescription" "${APPNAME} kurulumu"
 VIAddVersionKey /LANG=1055 "FileVersion" "${VERSION}"
@@ -58,7 +58,7 @@ VIAddVersionKey /LANG=1055 "LegalCopyright" "STT"
 !insertmacro MUI_PAGE_INSTFILES
 
 !define MUI_FINISHPAGE_TITLE "STT kuruldu"
-!define MUI_FINISHPAGE_TEXT "Masaüstündeki ya da Başlat menüsündeki STT simgesiyle açabilirsiniz.$\r$\n$\r$\nİlk açılışta model ekran kartına yüklenir (1-2 dakika).$\r$\n$\r$\nBilgisayar akıcı kalsın diye STT, monitörün bağlı olmadığı ekran kartını kullanır. Ayarlar'dan değiştirebilirsiniz."
+!define MUI_FINISHPAGE_TEXT "Masaüstündeki ya da Başlat menüsündeki STT simgesiyle açabilirsiniz.$\r$\n$\r$\nİlk açılışta model ekran kartına yüklenir (1-2 dakika).$\r$\n$\r$\nBir sorun olursa uygulamadaki Kontrol düğmesine basın."
 !define MUI_FINISHPAGE_RUN
 !define MUI_FINISHPAGE_RUN_TEXT "STT'yi şimdi aç"
 !define MUI_FINISHPAGE_RUN_FUNCTION LaunchApp

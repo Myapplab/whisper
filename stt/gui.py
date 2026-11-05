@@ -103,6 +103,7 @@ class App:
         self._lock = threading.Lock()
         self._wake = threading.Event()
         self._sender_started = False
+        self._logpath: Path | None = None
 
     # ---------------------------------------------------------- JS'e olay
     MAX_OUTBOX = 3000
@@ -114,6 +115,8 @@ class App:
         indirme/motor iş parçacıkları da kilitlenirdi ve uygulama tamamen donardı. Artık yalnızca
         _sender iş parçacığı bekler; iş arka planda sürer.
         """
+        if ev.get("type") == "fatal":  # tüm işçiler başlatılamadı: motor hata durumunda görünsün
+            self._engine_state.update(state="error", error=ev.get("error"))
         if ev.get("type") == "worker":  # son durum: sayfa yeniden açılırsa GPU kartları doğru görünsün
             for d in self._engine_state.get("devices", []):
                 if d.get("wid") == ev.get("wid"):
@@ -195,11 +198,14 @@ class App:
                             break
                         self._pipe.submit(item)
                     self._pipe.pump(0.3)
+                    if self._pipe.failed_reason:
+                        raise RuntimeError(self._pipe.failed_reason)
                     if self._restart.is_set() and not self._pipe.active():
                         break
             except Exception as e:  # noqa: BLE001
                 log.error("Motor durdu: %s", e)
                 self._engine(state="error", error=str(e))
+                self._restart.clear()  # 'Yeniden başlat' düğmesini bekle
             finally:
                 try:
                     self._pipe.close()
@@ -284,6 +290,11 @@ class App:
         warn = None
         if opts.get("diarize") and not self._cfg.hf_token:
             warn = "Konuşmacı ayırma için HuggingFace token gerekli (Ayarlar). Bu işler konuşmacısız yazılacak."
+        if self._engine_state.get("state") == "error":
+            warn = ("Motor çalışmıyor: " + str(self._engine_state.get("error") or "")[:200]
+                    + " — İşler sırada bekliyor; üstteki 'Yeniden başlat'a basın ya da 'Kontrol'e bakın.")
+        if not items:
+            warn = "Link ya da dosya bulunamadı."
         return {"count": len(items), "warning": warn}
 
     def open(self, p: str) -> None:
@@ -300,6 +311,7 @@ class App:
             return f"(okunamadı: {e})"
 
     def retry_engine(self) -> None:
+        self._cfg = load_config()
         self._restart.set()
 
     def cancel_all(self) -> dict:
@@ -316,6 +328,29 @@ class App:
         if self._pipe is not None:
             n += self._pipe.cancel_all()
         return {"count": n}
+
+    def check(self) -> dict:
+        """Kurulum kontrolü (stt kontrol) ayrı süreçte; çıktıyı pencerede göstermek için döndürür."""
+        exe = Path(sys.executable)
+        py = exe.with_name("python.exe") if exe.name.lower() == "pythonw.exe" else exe
+        if not py.exists():
+            py = exe
+        try:
+            r = subprocess.run([str(py), "-m", "stt", "kontrol"], capture_output=True, text=True, encoding="utf-8",
+                               errors="replace", timeout=900, cwd=str(TOOL_DIR))
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "text": "Kontrol 15 dakikada bitmedi."}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "text": f"Kontrol çalıştırılamadı: {type(e).__name__}: {e}"}
+        text = r.stdout or ""
+        if r.returncode not in (0, 1) and r.stderr:
+            text += "\n" + r.stderr[-4000:]
+        log.info("Kontrol bitti (%s)", "sorun yok" if r.returncode == 0 else "sorun var")
+        return {"ok": r.returncode == 0, "text": text}
+
+    def open_log(self) -> None:
+        if self._logpath:
+            open_path(str(self._logpath))
 
     def dataset(self) -> dict:
         root = Path(self._cfg.out_dir).resolve()
@@ -410,9 +445,8 @@ def main() -> int:
     os.chdir(TOOL_DIR)  # göreli 'cikti' klasörü hep C:\stt\cikti olsun
     logpath = _redirect_std()
     _hide_child_consoles()
-    from .util import add_tool_paths
-    add_tool_paths()
-    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    from .util import prepare_env
+    prepare_env()  # ffmpeg / deno / GPU sırası / UTF-8: stt.bat'a gerek yok
     os.environ["PYTHONUTF8"] = "1"  # alt süreçler (GPU işçileri, ffmpeg, presser.py) Türkçe harfleri yazabilsin
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s", datefmt="%H:%M:%S",
                         handlers=[logging.FileHandler(logpath, encoding="utf-8")])
@@ -421,6 +455,7 @@ def main() -> int:
     import webview
 
     app = App()
+    app._logpath = logpath
     log.addHandler(_UiLogHandler(app))
     log.info("STT %s başlıyor (günlük: %s)", __version__, logpath)
     app._window = webview.create_window(

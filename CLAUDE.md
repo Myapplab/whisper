@@ -42,15 +42,19 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   toplu olarak `window.__stt.onEvents([...])`. evaluate_js'i başka yerden çağırma: WebView2 takılınca bütün
   motor kilitleniyordu. "Durdur" = `cancel_all` (biten parçalar saklanır). Tek kopya kilidi (mutex),
   pencere kapanınca `_shutdown` → `os._exit`.
-- **CLI:** `stt.bat <link|dosya|klasör|liste.txt> [--lang en] [--diarize] [--fpl 11 ARS]`,
-  alt komutlar: `kontrol [--derin]`, `olc`, `izle KLASOR`, `durum`. Çift tıklanınca etkileşimli
-  (panodaki linkleri okur).
+- **CLI (gelişmiş):** `C:\stt\.venv\Scripts\stt.exe <link|dosya|klasör|liste.txt> [--lang en] [--diarize] [--fpl 11 ARS]`,
+  alt komutlar: `kontrol [--derin]`, `olc`, `izle KLASOR`, `durum`. (`stt.bat` / `install.bat` / `BENI_OKU.txt` 1.2.0'da
+  kaldırıldı: kullanıcı yalnızca setup.exe + masaüstü simgesi kullanır.)
+- **Ortam hazırlığı** `stt/util.py: prepare_env()` (GUI + CLI açılışında): `tools\ffmpeg*\bin`, `tools\deno`,
+  kayıt defterindeki güncel PATH, winget yolları, `CUDA_VISIBLE_DEVICES` kaldırma, `CUDA_DEVICE_ORDER`, UTF-8.
 - **Kurulum:** `installer/stt.nsi` (NSIS) + `installer/kur.ps1`; `installer/build.sh` → `dist/STT-Kurulum.exe`.
   NSIS her adımı ayrı çağırır (`kur.ps1 -Step check|python|venv|torch|libs|tools|config|model`), çıktı
   `nsExec::ExecToLog /OEM` ile okunur → kur.ps1 **UTF-8 BOM'lu** kalmalı ve çıktıyı OEM kod sayfasında yazar.
   Tam günlük `<kurulum>\kurulum.log`. ffmpeg/deno `tools\` klasörüne doğrudan iner (winget yok).
   Görseller: `installer/make_images.py` (Pillow) → welcome.bmp / header.bmp. `ManifestDPIAware true`.
-  Eski yol: `install.bat` (venv + torch cu128 + `pip install -c constraints.txt -e .[diarize,test]`).
+  Eski bat dosyaları (stt.bat/install.bat) kur.ps1 tarafından silinir.
+- **GUI'de Kontrol düğmesi** `stt kontrol`'ü ayrı süreçte çalıştırıp sonucu gösterir; kullanıcıdan bunun ekran görüntüsünü iste.
+  Günlük: `%LOCALAPPDATA%\stt\stt_app.log`.
 
 ## Kullanıcının makinesi (önemli)
 - Windows 11, RTX 3090 (24 GB) + RTX 3080 (10 GB), sürücü 610.88. Kurulum `C:\stt` (venv `C:\stt\.venv`),

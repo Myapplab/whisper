@@ -195,6 +195,8 @@ function Step-Tools {
     Remove-Item $z -ErrorAction SilentlyContinue
     Say "   tamam."
   }
+  # indirilen araçlar "internetten geldi" işaretli olmasın (Smart App Control)
+  Get-ChildItem -Recurse $tools -Include *.exe, *.dll -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue
 }
 
 function Step-Config {
@@ -214,6 +216,13 @@ function Step-Model {
   Say "Whisper large-v3 modeli indiriliyor (~3 GB, yalnızca bir kez). Birkaç dakika sürebilir."
   Run $venv @("-c", "from faster_whisper.utils import download_model; print(download_model('large-v3'))") "Model indirme"
   Say "   tamam."
+  Say "Son kontrol"
+  Run $venv @("-c", "import faster_whisper, ctranslate2, yt_dlp, webview; print('kütüphaneler tamam, GPU sayısı:', ctranslate2.get_cuda_device_count())") "Kütüphane kontrolü"
+  # eski elle kurulumdan kalan dosyalar artık gerekmiyor (her şey uygulamada)
+  foreach ($f in @("stt.bat", "install.bat", "linkler_pano.txt")) {
+    $p = Join-Path $InstDir $f
+    if (Test-Path $p) { Remove-Item $p -Force -ErrorAction SilentlyContinue }
+  }
 }
 
 # ------------------------------------------------------------------ çalıştır

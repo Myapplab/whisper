@@ -23,6 +23,8 @@ from .match import parse_match
 from .util import fmt_clock, log, text_hash
 from .workers import WorkerPool
 
+MAX_PATH = 250  # Windows yol sınırı (260) altında kalmak için
+
 
 @dataclass
 class Job:
@@ -52,10 +54,28 @@ def diar_hint(err: str) -> str:
         return ("HuggingFace model koşulları kabul edilmemiş: huggingface.co/pyannote/speaker-diarization-3.1 ve "
                 "huggingface.co/pyannote/segmentation-3.0 sayfalarında 'Agree' deyin.")
     if "401" in e or "token" in e or "unauthorized" in e:
-        return "HF token geçersiz ya da okunamadı (yeni token alıp: setx HF_TOKEN hf_..., sonra yeni pencere)."
+        return "HF token geçersiz ya da okunamadı: huggingface.co'dan yeni token alıp uygulamada Ayarlar > HuggingFace token alanına yapıştırın."
     if "no module named" in e:
         return "pyannote/torch kurulu değil: STT-Kurulum.exe'yi tekrar çalıştırın."
     return err[:300]
+
+
+def worker_hint(err: str) -> str:
+    """Model yükleme / GPU hatalarını anlaşılır Türkçeye çevir."""
+    e = err.lower()
+    if "mkl_malloc" in e or "memoryerror" in e or "bad_alloc" in e or "not enough memory" in e:
+        return ("Bilgisayarın belleği (RAM) yetmedi. Açık programları (tarayıcı, oyun) kapatıp "
+                "'Yeniden başlat'a basın. (" + err[:160] + ")")
+    if "out of memory" in e:
+        return ("Ekran kartı belleği yetmedi: GPU'yu kullanan başka bir program (oyun, başka bir STT penceresi) "
+                "olabilir. Kapatıp 'Yeniden başlat'a basın. (" + err[:160] + ")")
+    if any(x in e for x in ("cublas", "cudnn", ".dll", "library", "cannot load symbol")):
+        return "CUDA kütüphaneleri yüklenemedi: STT-Kurulum.exe'yi tekrar çalıştırın. (" + err[:200] + ")"
+    if "cuda driver" in e or "no cuda" in e or "cuda failed" in e or "insufficient for cuda" in e:
+        return "Ekran kartı sürücüsü sorunu: NVIDIA sürücüsünü güncelleyip bilgisayarı yeniden başlatın. (" + err[:200] + ")"
+    if "unable to open file 'model.bin'" in e or "no such file" in e or "localentrynotfound" in e:
+        return "Whisper modeli bulunamadı/eksik: internet açıkken 'Yeniden başlat'a basın (model ~3 GB iner)."
+    return err[:400]
 
 
 def item_fpl(item: Item, cfg: Config) -> tuple[int, str] | None:
@@ -117,6 +137,9 @@ class Pipeline:
         self.fatal: set[str] = set()         # model yükleyemeyen işçiler (yeniden başlatılmaz)
         self.restarts: dict[str, int] = {}   # işçi -> yeniden başlatma sayısı
         self.cancel_gen = 0                  # "Durdur": bu sayıdan önce gönderilen işler iptal
+        self.ready_workers: set = set()
+        self.worker_errors: dict[str, str] = {}
+        self.failed_reason: str | None = None  # tüm işçiler başlatılamadıysa sebep (GUI motoru hata durumuna alır)
 
     # ---------------------------------------------------------- başlatma
     def start(self):
@@ -426,14 +449,21 @@ class Pipeline:
         typ, wid = m["type"], m.get("wid")
         if typ == "ready":
             self.idle.add(wid)
+            self.ready_workers.add(wid)
             self.emit("worker", wid=wid, state="idle")
             return
         if typ == "fatal":
+            hint = worker_hint(m["error"])
+            self.worker_errors[wid] = hint
             self.fatal.add(wid)
             self.idle.discard(wid)
-            self.emit("worker", wid=wid, state="error", error=m["error"])
+            self.emit("worker", wid=wid, state="error", error=hint)
             log.error("[%s] işçi başlatılamadı: %s", wid, m["error"])
-            log.debug(m.get("trace", ""))
+            log.info("%s", m.get("trace", ""))
+            main_ws = set(self.pool.workers) if self.pool else set()
+            if main_ws and not (self.ready_workers & main_ws) and main_ws <= set(self.worker_errors):
+                self.failed_reason = "Model yüklenemedi: " + hint
+                self.emit("fatal", error=self.failed_reason)
             return
         if typ == "start":
             self.inflight[wid] = (m["tid"], time.time())
@@ -564,16 +594,18 @@ class Pipeline:
                 main_alive = alive
         alive = main_alive
         if not alive and self.active():
+            why = next(iter(self.worker_errors.values()), "") or "GPU/model hatası"
             for job in list(self.jobs.values()):
                 if job.status in ("run", "prep", "queued"):
-                    job.status, job.error = "failed", "Çalışan işçi kalmadı (GPU/model hatası, 'stt kontrol' çalıştırın)"
+                    job.status, job.error = "failed", f"Çalışan işçi kalmadı: {why}"
                     self.emit("failed", job.item, error=job.error)
                     self.state.set(job.item.key, source=job.item.source, status="failed", title=job.item.title,
                                    error=job.error)
                     with self.lock:
                         self.results.append(job)
-            self.emit("fatal", error="Tüm işçiler durdu (GPU/model hatası).")
-            raise RuntimeError("Tüm işçiler durdu.")
+            self.failed_reason = self.failed_reason or f"Tüm işçiler durdu: {why}"
+            self.emit("fatal", error=self.failed_reason)
+            raise RuntimeError(self.failed_reason)
 
     # ---------------------------------------------------------- çıktı
     def _finalize_async(self, job: Job):
@@ -623,6 +655,13 @@ class Pipeline:
         title = info.get("title") or item.title or "kayit"
         d = target_dir(self.out_root, meta, title)
         base = presser_base_name(meta, title)
+        # Windows 260 karakter yol sınırı: en uzun dosya "<base> - ozet.md.tmp"
+        budget = MAX_PATH - len(str(d)) - len(" - ozet.md.tmp") - 12  # 12: olası " [abcdef]" eki
+        if budget < 20:  # klasör adı çok uzun (ör. video başlığı): kısalt
+            d = d.parent / d.name[:max(20, len(d.name) - (20 - budget))].rstrip(" .-")
+            budget = MAX_PATH - len(str(d)) - len(" - ozet.md.tmp") - 12
+        if len(base) > budget:
+            base = base[:max(20, budget)].rstrip(" .-")
         d.mkdir(parents=True, exist_ok=True)
         marker = d / f".{base}.key"
         if marker.exists() and marker.read_text().strip() != item.key:
@@ -683,7 +722,7 @@ class Pipeline:
         meta = classify(job.match, info, self.fpl())
         doc["dataset"] = {k: v for k, v in meta.items() if k != "fixture"}
         fpl = item_fpl(job.item, cfg)
-        if not fpl and cfg.fpl_auto and meta.get("gw") and meta.get("fpl_short") and cfg.fpl_repo \
+        if not fpl and self._opt(job.item, "fpl_auto") and meta.get("gw") and meta.get("fpl_short") and cfg.fpl_repo \
                 and (Path(cfg.fpl_repo) / "presser.py").is_file():
             fpl = (int(meta["gw"]), meta["fpl_short"])
         if fpl:

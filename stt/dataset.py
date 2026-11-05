@@ -239,7 +239,7 @@ def presser_base_name(meta: dict, fallback: str) -> str:
 
 def target_dir(root: Path, meta: dict, fallback_title: str) -> Path:
     if not meta.get("team"):
-        return Path(root) / OTHER_DIR / "Bilinmeyen" / safe_filename(fallback_title)
+        return Path(root) / OTHER_DIR / "Bilinmeyen" / safe_filename(fallback_title, 70)
     league = PL_DIR if meta.get("is_pl") else OTHER_DIR
     return Path(root) / league / safe_filename(meta["team"]) / match_folder_name(meta)
 

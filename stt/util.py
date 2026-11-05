@@ -62,9 +62,9 @@ def _registry_path() -> list[str]:
     return out
 
 
-def tool_dirs() -> list[Path]:
+def tool_dirs(root: Path | None = None) -> list[Path]:
     """ffmpeg / deno'nun bulunabileceği klasörler (kurulumun 'tools' klasörü, winget, deno kurulumu)."""
-    root = Path(__file__).resolve().parent.parent / "tools"
+    root = Path(root) if root else Path(__file__).resolve().parent.parent / "tools"
     dirs: list[Path] = []
     if root.is_dir():
         dirs += [*root.glob("ffmpeg*/bin"), root / "deno", root]
@@ -76,7 +76,7 @@ def tool_dirs() -> list[Path]:
     return [d for d in dirs if d.is_dir()]
 
 
-def add_tool_paths() -> None:
+def add_tool_paths(root: Path | None = None) -> None:
     """ffmpeg / deno PATH'te değilse bilinen klasörleri ve kayıt defterindeki güncel PATH'i ekle."""
     cur = os.environ.get("PATH", "").split(os.pathsep)
     seen = {c.lower().rstrip("\\/") for c in cur if c}
@@ -90,10 +90,20 @@ def add_tool_paths() -> None:
                 out.append(d)
         return out
 
-    front = fresh(tool_dirs())          # kurulumun kendi araçları önce
+    front = fresh(tool_dirs(root))          # kurulumun kendi araçları önce
     back = fresh(_registry_path())      # kayıt defterindeki yeni girdiler sonra
     if front or back:
         os.environ["PATH"] = os.pathsep.join(front + cur + back)
+
+
+def prepare_env() -> None:
+    """Uygulama/CLI açılışı: ortam hazırlığı (ffmpeg, deno, GPU sırası, UTF-8). Eskiden stt.bat yapıyordu."""
+    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"   # cuda:N == nvidia-smi N
+    # başka programların koyduğu kart kısıtlaması (3080 görünmüyordu); kart seçimi stt.toml 'gpus' ile
+    os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+    os.environ.setdefault("PYTHONUTF8", "1")        # alt süreçler (presser.py vb.) UTF-8 yazsın
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    add_tool_paths()
 
 
 _DLL_DONE = False
