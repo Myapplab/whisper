@@ -41,6 +41,9 @@ def _handle(task: dict, wid: str, device: str, engine_cfg: dict, cache: dict):
 
 
 def _init(device: str, engine_cfg: dict, cache: dict, load_lock=None) -> None:
+    if engine_cfg.get("role") == "diar":  # yalnızca konuşmacı ayırma: model ilk görevde yüklenir
+        cache["engine"] = None
+        return
     if engine_cfg["engine"] == "openai":
         with cache.setdefault("_init_lock", threading.Lock()):
             if "engine" not in cache:
@@ -61,7 +64,7 @@ def _init(device: str, engine_cfg: dict, cache: dict, load_lock=None) -> None:
         try:
             cache["engine"] = WhisperEngine(engine_cfg["model_path"], device, engine_cfg["compute_type"],
                                             engine_cfg["beam_size"], engine_cfg["condition_on_previous_text"],
-                                            batch, vram)
+                                            batch, vram, engine_cfg.get("languages"))
         finally:
             if load_lock is not None:
                 load_lock.release()
@@ -85,10 +88,18 @@ def worker_main(wid: str, device: str, engine_cfg: dict, task_q, result_q, share
     if shared_cache is None:  # ayrı süreç
         if engine_cfg.get("low_priority", True):
             lower_priority()
+        os.environ.setdefault("PYTHONUTF8", "1")
         if sys.stdout is None or sys.stderr is None:  # pythonw (uygulama) altında
-            devnull = open(os.devnull, "w")  # noqa: SIM115
+            # UTF-8 şart: Windows'un varsayılanı (cp1252) 'ş' gibi harfleri yazamıyor; pyannote/uyarılar
+            # bir şey yazınca UnicodeEncodeError ile konuşmacı ayırma çöküyordu
+            devnull = open(os.devnull, "w", encoding="utf-8", errors="replace")  # noqa: SIM115
             sys.stdout = sys.stdout or devnull
             sys.stderr = sys.stderr or devnull
+        for st in (sys.stdout, sys.stderr):
+            try:
+                st.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+            except Exception:  # noqa: BLE001
+                pass
         from .util import quiet_warnings
         quiet_warnings()
         logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s", datefmt="%H:%M:%S")
@@ -121,7 +132,7 @@ def worker_main(wid: str, device: str, engine_cfg: dict, task_q, result_q, share
 class WorkerPool:
     """Süreç (GPU/CPU) ya da iş parçacığı (OpenAI) havuzu; aynı mesaj protokolü."""
 
-    def __init__(self, devices: list[str], engine_cfg: dict, threads: bool = False):
+    def __init__(self, devices: list[str], engine_cfg: dict, threads: bool = False, names: list[str] | None = None):
         self.devices = devices
         self.threads = threads
         if threads:
@@ -137,7 +148,7 @@ class WorkerPool:
             self.task_q = self.ctx.Queue()
             self.result_q = self.ctx.Queue()
             self.load_lock = self.ctx.Lock()
-            names = [d if devices.count(d) == 1 else f"{d}#{i}" for i, d in enumerate(devices)]
+            names = names or [d if devices.count(d) == 1 else f"{d}#{i}" for i, d in enumerate(devices)]
             self._spec = dict(zip(names, devices))
             self._ecfg = engine_cfg
             self.workers = {n: self._new_proc(n) for n in names}

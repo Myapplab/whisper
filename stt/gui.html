@@ -481,7 +481,7 @@ footer.open #log{display:block}
         if (ev.state === "error") { $("#bannerText").textContent = "Motor başlatılamadı: " + (ev.error || ""); $("#banner").classList.add("show"); }
         renderGpus(ev); return;
       case "worker": {
-        const g = state.gpus.get(ev.wid) || { name: ev.wid };
+        const g = state.gpus.get(ev.wid) || { name: ev.name || ev.wid };
         state.gpus.set(ev.wid, { ...g, state: ev.state, task: ev.task, title: ev.title, error: ev.error });
         renderGpus({ state: "ready" }); return;
       }

@@ -174,3 +174,58 @@ def test_gui_push_never_blocks(tmp_path, monkeypatch):
     assert any(e.get("type") == "done" for e in app._outbox)   # önemli olaylar atılmaz
     app._stop.set()
     block.set()
+
+
+def test_pick_language_ignores_welsh():
+    from stt.engines import DEFAULT_LANGS, pick_language
+    allowed = set(DEFAULT_LANGS.split(","))
+    probs = [{"cy": 0.93, "en": 0.06}, {"cy": 0.55, "en": 0.44}, {"en": 0.9, "cy": 0.1}]
+    assert pick_language(probs, allowed)[0] == "en"
+    assert pick_language([{"tr": 0.6, "az": 0.3}], allowed)[0] == "tr"
+
+
+def test_collapse_repeats():
+    from stt.merge import collapse_repeats, merge_chunks
+    t = "Mae'n rhaid i ni ddweud hynny. " * 6 + "Thank you. Thank you."
+    assert collapse_repeats(t) == "Mae'n rhaid i ni ddweud hynny. Thank you. Thank you."
+    segs = [{"start": i, "end": i + 1, "text": "We have to keep going forward."} for i in range(5)]
+    out, _ = merge_chunks([{"segments": segs, "language": "en"}])
+    assert len(out) == 1 and out[0]["end"] == 5
+
+
+def test_redo_reason(tmp_path):
+    p = _pipe(tmp_path)
+    it = Item("url", "https://x/1", key="u_1")
+    assert p._redo_reason(it, {"info": {"language": "cy", "diarized": False}})
+    assert not p._redo_reason(it, {"info": {"language": "en", "diarized": False}})
+    it.extra["diarize"] = True
+    assert "konuşmacı" in p._redo_reason(it, {"info": {"language": "en", "diarized": False}})
+    it2 = Item("url", "https://x/2", key="u_2", extra={"lang": "cy"})   # kullanıcı dili kendisi seçtiyse dokunma
+    assert not p._redo_reason(it2, {"info": {"language": "cy"}})
+
+
+def test_diarize_runs_in_separate_pool(tmp_path):
+    p = _pipe(tmp_path, ("cuda:1",))
+    job, tasks = _job(p, tmp_path, n=1)
+    d = {"id": "u_test:d", "kind": "diarize", "job": job.item.key}
+    p.tasks[d["id"]] = d
+    job.pending.add(d["id"])
+    p.dbacklog.append(d)
+    started = []
+
+    def fake_start():
+        p.dpool = FakePool(["diar"])
+        started.append(1)
+    p._start_diar_pool = fake_start
+    p._on_msg({"type": "ready", "wid": "cuda:1"})
+    p._dispatch()
+    assert started and [t["kind"] for t in p.pool.put_q] == ["transcribe"]
+    assert p.dpool.put_q == []                    # ayırma süreci henüz hazır değil
+    p._on_msg({"type": "ready", "wid": "diar"})
+    p._dispatch()
+    assert [t["kind"] for t in p.dpool.put_q] == ["diarize"]
+    p._on_msg({"type": "start", "wid": "diar", "tid": d["id"]})
+    p.dpool.dead.add("diar")                      # pyannote çöktü: Whisper işçisi etkilenmez
+    p._health()
+    assert p.dpool.respawned == ["diar"] and p.pool.respawned == []
+    assert p.dbacklog and p.dbacklog[0]["id"] == d["id"]

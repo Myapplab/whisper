@@ -413,6 +413,7 @@ def main() -> int:
     from .util import add_tool_paths
     add_tool_paths()
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    os.environ["PYTHONUTF8"] = "1"  # alt süreçler (GPU işçileri, ffmpeg, presser.py) Türkçe harfleri yazabilsin
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s", datefmt="%H:%M:%S",
                         handlers=[logging.FileHandler(logpath, encoding="utf-8")])
     from .util import quiet_warnings

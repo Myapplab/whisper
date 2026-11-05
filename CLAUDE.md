@@ -13,6 +13,14 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   hepsi monitörlüyse / tek kartsa en büyük tek kart, toplu boyut `display_batch` (4) ile sınırlı. `gpus="all"` =
   hepsi. İşçiler ve ffmpeg BELOW_NORMAL öncelikte. Sebep: kullanıcıda ekran kartı tam yükte kalınca bilgisayar
   donuyor, YouTube/tarayıcı çöküyordu. Takılan görev (`_task_timeout`) ya da çöken işçi yeniden başlatılır.
+- **Konuşmacı ayırma ayrı süreçte** (`Pipeline.dpool`, wid `diar`, ilk ayırma görevinde açılır): aynı süreçte
+  torch + CTranslate2 → `cudaErrorInvalidDevice: invalid device ordinal` görüldü.
+- **Dil (1.2.1):** otomatik algılamada `WhisperEngine.detect_language` 3 pencerenin olasılıklarını toplar ve
+  izinli diller (`DEFAULT_LANGS` / `languages`) arasından seçer: large-v3 İngiliz aksanını Galce (cy) sanıp
+  bütün metni Galce yazıyordu. Dili yanlış ya da konuşmacısız eski çıktılar link tekrar eklenince yeniden işlenir
+  (`_redo_reason`). Aynı cümlenin tekrar döngüsü `merge.collapse_repeats` ile teke iner.
+- Windows/pythonw: işçilerde stdout/stderr UTF-8 olmalı (`PYTHONUTF8=1`); cp1252 'ş' yazamayıp pyannote'u
+  UnicodeEncodeError ile düşürüyordu.
 - İsteğe bağlı konuşmacı ayırma: pyannote/speaker-diarization-3.1 (HF token) → en uzun konuşan teknik
   direktör, diğerleri muhabir → `.txt` soru-cevap biçiminde.
 - Çıktı: `.txt` (soru-cevap), `.srt`, `.json` (kelime zamanı + konuşmacı), `ozet.md`, `mac.json`,
@@ -66,7 +74,7 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
 - Kullanıcı ileride uygulamayı paylaşmak istiyor (tek kurulum dosyası).
 
 ## Geliştirme (bulut/Linux)
-- Testler: `python -m pytest -q tests` (36 test; `tests/test_stability.py` = GPU seçimi, işçi yeniden başlatma, iptal,
+- Testler: `python -m pytest -q tests` (40 test; `tests/test_stability.py` = GPU seçimi, işçi yeniden başlatma, iptal,
   bloklamayan arayüz).
 - GPU yok ve HuggingFace engelliyse test modeli: GitHub `rhasspy/models` `asr_faster-whisper-small-int8`
   + `dev/make_tokenizer.py` (openai-whisper tiktoken → tokenizer.json) + `dev/add_alignment_heads.py`.

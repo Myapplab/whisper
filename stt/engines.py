@@ -98,9 +98,29 @@ def choose_gpus(n: int, info: dict[int, dict], mode: str = "auto") -> list[int]:
     return [max(idx, key=lambda i: (info[i].get("gb", 0), -i))]
 
 
+# Otomatik dil algılamada izin verilen diller. Whisper İngiliz aksanını sık sık Galce (cy) sanıyor ve
+# kendinden çok emin olduğu için metnin tamamı Galce "çeviri" olarak çıkıyordu.
+DEFAULT_LANGS = ("en,tr,az,es,pt,fr,de,it,nl,ar,ru,uk,pl,hr,sr,bs,sl,da,sv,no,fi,el,cs,sk,ro,hu,bg,ja,ko,zh,"
+                 "fa,he,ka")
+
+
+def pick_language(probs: list[dict[str, float]], allowed: set[str]) -> tuple[str | None, float]:
+    """Birkaç pencerenin dil olasılıklarını topla, izin verilen diller arasından en olasısını seç."""
+    tot: dict[str, float] = {}
+    for pr in probs:
+        for lang, p in pr.items():
+            tot[lang] = tot.get(lang, 0.0) + p
+    cands = {k: v for k, v in tot.items() if k in allowed} or tot
+    if not cands:
+        return None, 0.0
+    best = max(cands, key=cands.get)
+    return best, cands[best] / max(1, len(probs))
+
+
 class WhisperEngine:
     def __init__(self, model_path: str, device: str, compute_type: str, beam_size: int,
-                 condition_on_previous_text: bool = True, batch_size: int = -1, vram_gb: float | None = None):
+                 condition_on_previous_text: bool = True, batch_size: int = -1, vram_gb: float | None = None,
+                 languages: str | None = None):
         setup_cuda_dlls()
         kind, idx = parse_device(device)
         from faster_whisper import WhisperModel
@@ -110,6 +130,7 @@ class WhisperEngine:
         self.device = device
         self.beam_size = beam_size
         self.cond = condition_on_previous_text
+        self.allowed = {x.strip() for x in (languages or DEFAULT_LANGS).split(",") if x.strip()}
         t = time.time()
         kw = dict(device=kind, device_index=idx, compute_type=compute_type,
                   cpu_threads=max(2, (os.cpu_count() or 4) - 2) if kind == "cpu" else 2)  # 2 çekirdek boşta kalsın
@@ -129,8 +150,35 @@ class WhisperEngine:
         log.info("[%s] model yüklendi (%s, %s, %s) %.1fs", device, os.path.basename(model_path.rstrip("/\\")),
                  compute_type, f"toplu={self.batch_size}" if self.batched else "tekli", time.time() - t)
 
+    def detect_language(self, audio) -> str | None:
+        """Konuşmanın başından, ortasından ve sonundan 30 sn'lik pencerelerle dil algıla (izinli diller)."""
+        from .audio import speech_segments
+        try:
+            segs = speech_segments(audio)
+            speech = np.concatenate([audio[int(a * SR):int(b * SR)] for a, b in segs]) if segs else audio
+        except Exception:  # noqa: BLE001
+            speech = audio
+        win = 30 * SR
+        if len(speech) < SR:
+            return None
+        starts = sorted({0, max(0, len(speech) // 2 - win // 2), max(0, len(speech) - win)})
+        probs = []
+        for st in starts[:3]:
+            try:
+                _, _, allp = self.model.detect_language(speech[st:st + win], language_detection_segments=1)
+                probs.append(dict(allp))
+            except Exception:  # noqa: BLE001  (eski faster-whisper: algılamayı modele bırak)
+                return None
+        lang, p = pick_language(probs, self.allowed)
+        top = max(probs[0], key=probs[0].get) if probs and probs[0] else None
+        if top and top != lang:
+            log.info("[%s] dil: Whisper '%s' dedi, '%s' seçildi (%.2f)", self.device, top, lang, p)
+        return lang
+
     def transcribe(self, wav: str, start: float, end: float, lang: str | None, prompt: str | None) -> dict:
         audio = load_wav(wav, start, end)
+        if not lang:
+            lang = self.detect_language(audio)
         while True:
             try:
                 return self._run(audio, start, lang, prompt)

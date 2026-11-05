@@ -54,7 +54,7 @@ def diar_hint(err: str) -> str:
     if "401" in e or "token" in e or "unauthorized" in e:
         return "HF token geçersiz ya da okunamadı (yeni token alıp: setx HF_TOKEN hf_..., sonra yeni pencere)."
     if "no module named" in e:
-        return "pyannote/torch kurulu değil: install.bat'ı tekrar çalıştırın."
+        return "pyannote/torch kurulu değil: STT-Kurulum.exe'yi tekrar çalıştırın."
     return err[:300]
 
 
@@ -108,6 +108,10 @@ class Pipeline:
         self.results: list[Job] = []
         self._pending_futs = 0
         self.backlog: deque = deque()        # ortak kuyruk; boşta işçi oldukça dağıtılır
+        self.dbacklog: deque = deque()       # konuşmacı ayırma görevleri (ayrı süreç: "diar")
+        self.dpool: WorkerPool | None = None
+        self.dqueued_n = 0
+        self._ecfg: dict = {}
         self.idle: set[str] = set()          # boşta olduğunu bildiren işçiler
         self.queued_n = 0                    # işçi kuyruğuna konup henüz alınmamış görev sayısı
         self.fatal: set[str] = set()         # model yükleyemeyen işçiler (yeniden başlatılmaz)
@@ -120,7 +124,7 @@ class Pipeline:
         ecfg = {"engine": cfg.engine, "compute_type": cfg.compute_type, "beam_size": cfg.beam_size,
                 "batch_size": cfg.batch_size,
                 "condition_on_previous_text": cfg.condition_on_previous_text, "openai_model": cfg.openai_model,
-                "diar_model": cfg.diar_model, "hf_token": cfg.hf_token}
+                "diar_model": cfg.diar_model, "hf_token": cfg.hf_token, "languages": cfg.languages}
         if cfg.engine == "openai":
             devices = ["api"] * max(1, cfg.openai_workers)
             self.pool = WorkerPool(devices, ecfg, threads=True)
@@ -152,6 +156,27 @@ class Pipeline:
             ecfg["model_path"] = resolve_model_path(cfg.model)
             self.pool = WorkerPool(devices, ecfg)
         self.pool.start()
+        self._ecfg = ecfg
+
+    def _start_diar_pool(self) -> None:
+        """Konuşmacı ayırma (pyannote/torch) Whisper'dan AYRI bir süreçte çalışır.
+
+        Aynı süreçte torch ile CTranslate2 ekran kartını paylaşınca 'invalid device ordinal' hataları
+        görüldü; ayrıca pyannote çökerse Whisper işçisi etkilenmesin. İlk ayırma görevinde açılır.
+        """
+        cuda = [d for d in self.devices if d.startswith("cuda")]
+        dev = cuda[0] if cuda else "auto"
+        self.dpool = WorkerPool([dev], {**self._ecfg, "role": "diar"}, names=["diar"])
+        self.dpool.start()
+        self.emit("worker", wid="diar", state="loading", name="Konuşmacı ayırma")
+
+    def _pool_of(self, wid: str) -> WorkerPool | None:
+        if self.dpool is not None and wid in self.dpool.workers:
+            return self.dpool
+        return self.pool
+
+    def _pools(self) -> list:
+        return [p for p in (self.pool, self.dpool) if p is not None]
 
     # ---------------------------------------------------------- olaylar (GUI)
     def emit(self, typ: str, item: Item | None = None, **data) -> None:
@@ -184,7 +209,26 @@ class Pipeline:
 
     def _prepare_safe(self, item: Item):
         try:
-            self._prepare(item)
+            for attempt in range(3):
+                try:
+                    self._prepare(item)
+                    break
+                except MemoryError:
+                    # RAM bir anlığına doldu (tarayıcı, model yükleme...): biraz bekleyip tekrar dene
+                    with self.lock:
+                        j = self.jobs.get(item.key)
+                        if j is not None and j.status == "prep":
+                            del self.jobs[item.key]
+                    if attempt == 2:
+                        raise
+                    log.warning("Bellek (RAM) yetmedi; 30 sn sonra tekrar denenecek: %s", item.title[:60])
+                    import gc
+                    gc.collect()
+                    time.sleep(30)
+        except MemoryError:
+            log.exception("Hazırlık hatası: %s", item.source)
+            self._fail_item(item, "Bilgisayarın belleği (RAM) yetmedi. Açık programları (tarayıcı sekmeleri, "
+                                  "oyunlar) kapatıp linki tekrar ekleyin; kaldığı yerden devam eder.")
         except Exception as e:  # noqa: BLE001
             log.exception("Hazırlık hatası: %s", item.source)
             from .fetch import explain_error
@@ -205,6 +249,19 @@ class Pipeline:
             self.state.set(item.key, source=item.source, status=status, title=item.title, error=err)
         self.emit("failed" if status == "failed" else "skipped", item, status=status, error=err)
 
+    def _redo_reason(self, item: Item, prev: dict | None) -> str:
+        """Önceki çıktı varsa ama yetersizse sebebi (yeniden işlenir), yoksa boş."""
+        if not prev:
+            return ""
+        info = prev.get("info") or {}
+        if self._opt(item, "diarize") and not info.get("diarized"):
+            return "Önceki çıktıda konuşmacı ayrımı yok"
+        from .engines import DEFAULT_LANGS
+        allowed = {x.strip() for x in (self.cfg.languages or DEFAULT_LANGS).split(",")}
+        if not self._opt(item, "lang") and info.get("language") and info["language"] not in allowed:
+            return f"Önceki çıktının dili yanlış algılanmış ({info['language']})"
+        return ""
+
     def _cancelled(self, item: Item) -> bool:
         return item.extra.get("_gen", 0) < self.cancel_gen
 
@@ -217,8 +274,9 @@ class Pipeline:
             item.key = self.state.file_key(item.source, item.compute_key)
         item.compute_key()
         prev = self.state.get(item.key) if not cfg.force else None
-        if prev and self._opt(item, "diarize") and prev["status"] == "done" and not (prev.get("info") or {}).get("diarized"):
-            log.info("Önceki çıktıda konuşmacı yok; --diarize ile yeniden işleniyor: %s", item.title[:70])
+        why = self._redo_reason(item, prev)
+        if prev and prev["status"] == "done" and why:
+            log.info("%s; yeniden işleniyor: %s", why, item.title[:70])
         elif not cfg.force and self.state.is_done(item.key):
             log.info("Atlandı (daha önce işlendi): %s -> %s", item.title[:70], prev["out_dir"] if prev else "")
             if prev and item_fpl(item, cfg):
@@ -260,8 +318,8 @@ class Pipeline:
         if item.kind == "url" and job.info.get("id") and job.info.get("extractor"):
             canon = "u_" + text_hash(f"{job.info['extractor']}:{job.info['id']}")
             cprev = self.state.get(canon) or {}
-            redo_diar = self._opt(item, "diarize") and not (cprev.get("info") or {}).get("diarized")
-            if not cfg.force and not redo_diar and canon != item.key and self.state.is_done(canon):
+            redo = bool(cprev) and bool(self._redo_reason(item, cprev))
+            if not cfg.force and not redo and canon != item.key and self.state.is_done(canon):
                 log.info("Atlandı (aynı video farklı link): %s", item.source)
                 self.state.add_alias(item.key, canon)
                 with self.lock:
@@ -329,16 +387,18 @@ class Pipeline:
             for t in tasks:
                 t["job"] = item.key
                 self.tasks[t["id"]] = t
-            self.backlog.extend(tasks)
+            self.backlog.extend(t for t in tasks if t["kind"] != "diarize")
+            self.dbacklog.extend(t for t in tasks if t["kind"] == "diarize")
         if not tasks:
             self._finalize_async(job)
 
     # ---------------------------------------------------------- sonuç döngüsü
     def pump(self, timeout: float = 0.5) -> None:
-        msg = self.pool.get(timeout)
-        while msg is not None:
-            self._on_msg(msg)
-            msg = self.pool.get(0.01)
+        for i, pool in enumerate(self._pools()):
+            msg = pool.get(timeout if i == 0 else 0.01)
+            while msg is not None:
+                self._on_msg(msg)
+                msg = pool.get(0.01)
         self._health()
         self._dispatch()
 
@@ -351,6 +411,16 @@ class Pipeline:
                     continue  # iş iptal/başarısız: görevi at
                 self.queued_n += 1
                 self.pool.put(t)
+            if self.dbacklog and self.dpool is None:
+                self._start_diar_pool()
+            didle = 1 if "diar" in self.idle else 0
+            while didle - self.dqueued_n > 0 and self.dbacklog:
+                t = self.dbacklog.popleft()
+                job = self.jobs.get(t["job"])
+                if not job or job.status != "run":
+                    continue
+                self.dqueued_n += 1
+                self.dpool.put(t)
 
     def _on_msg(self, m: dict):
         typ, wid = m["type"], m.get("wid")
@@ -368,7 +438,10 @@ class Pipeline:
         if typ == "start":
             self.inflight[wid] = (m["tid"], time.time())
             self.idle.discard(wid)
-            self.queued_n = max(0, self.queued_n - 1)
+            if wid == "diar":
+                self.dqueued_n = max(0, self.dqueued_n - 1)
+            else:
+                self.queued_n = max(0, self.queued_n - 1)
             t = self.tasks.get(m["tid"]) or {}
             j = self.jobs.get(t.get("job", ""))
             self.emit("worker", wid=wid, state="busy", task=t.get("kind"),
@@ -447,7 +520,7 @@ class Pipeline:
         log.error("[%s] %s; görev yeniden kuyrukta (deneme %d)", wid, why, n)
         if n < 3:
             with self.lock:
-                self.backlog.appendleft(task)
+                (self.dbacklog if task["kind"] == "diarize" else self.backlog).appendleft(task)
         else:
             self._on_msg({"type": "error", "wid": wid, "tid": tid, "error": f"{why} (3 deneme)"})
             self.idle.discard(wid)
@@ -458,30 +531,38 @@ class Pipeline:
         now = time.time()
         for wid, (tid, t0) in list(self.inflight.items()):  # takılan görev: işçiyi yeniden başlat
             task = self.tasks.get(tid) or {}
-            if task and now - t0 > self._task_timeout(task) and wid in self.pool.alive():
+            pool = self._pool_of(wid)
+            if task and now - t0 > self._task_timeout(task) and wid in pool.alive():
                 log.error("[%s] görev %.0f dakikadır bitmedi (GPU takıldı?); işçi yeniden başlatılıyor", wid,
                           (now - t0) / 60)
-                self.pool.respawn(wid)
+                pool.respawn(wid)
                 self.restarts[wid] = self.restarts.get(wid, 0) + 1
                 self.inflight.pop(wid, None)
                 self._requeue(wid, tid, "işçi takıldı")
                 self.idle.discard(wid)
                 self.emit("worker", wid=wid, state="loading")
-        alive = set(self.pool.alive())
-        for wid in list(self.pool.workers):
-            if wid in alive:
-                continue
-            self.idle.discard(wid)
-            if wid in self.inflight:  # işçi çöktü: görevi yeniden kuyruğa koy
-                tid, _ = self.inflight.pop(wid)
-                self._requeue(wid, tid, "işçi öldü")
+        main_alive: set = set()
+        for pool in self._pools():
+            alive = set(pool.alive())
+            for wid in list(pool.workers):
+                if wid in alive:
+                    continue
                 self.idle.discard(wid)
-            if wid not in self.fatal and self.restarts.get(wid, 0) < 3 and not self.pool.threads:
-                self.restarts[wid] = self.restarts.get(wid, 0) + 1
-                log.warning("[%s] işçi yeniden başlatılıyor (%d/3)", wid, self.restarts[wid])
-                self.pool.respawn(wid)
-                self.emit("worker", wid=wid, state="loading")
-                alive.add(wid)
+                if wid in self.inflight:  # işçi çöktü: görevi yeniden kuyruğa koy
+                    tid, _ = self.inflight.pop(wid)
+                    self._requeue(wid, tid, "işçi öldü")
+                    self.idle.discard(wid)
+                if wid == "diar":
+                    self.dqueued_n = 0  # kuyruktaki ayırma görevi yeni süreçte de alınır
+                if wid not in self.fatal and self.restarts.get(wid, 0) < 3 and not pool.threads:
+                    self.restarts[wid] = self.restarts.get(wid, 0) + 1
+                    log.warning("[%s] işçi yeniden başlatılıyor (%d/3)", wid, self.restarts[wid])
+                    pool.respawn(wid)
+                    self.emit("worker", wid=wid, state="loading")
+                    alive.add(wid)
+            if pool is self.pool:
+                main_alive = alive
+        alive = main_alive
         if not alive and self.active():
             for job in list(self.jobs.values()):
                 if job.status in ("run", "prep", "queued"):
@@ -656,6 +737,7 @@ class Pipeline:
         with self.lock:
             self.cancel_gen += 1
             self.backlog.clear()
+            self.dbacklog.clear()
             for job in self.jobs.values():
                 if job.status in ("queued", "prep", "run"):
                     job.status, job.error = "cancelled", "Durduruldu."
@@ -681,5 +763,5 @@ class Pipeline:
     def close(self):
         self.prep.shutdown(wait=False, cancel_futures=True)
         self.fin.shutdown(wait=True)
-        if self.pool:
-            self.pool.close()
+        for pool in self._pools():
+            pool.close()

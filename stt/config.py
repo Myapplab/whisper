@@ -14,6 +14,7 @@ TOOL_DIR = Path(__file__).resolve().parent.parent
 class Config:
     out_dir: Path = Path("cikti")
     lang: str | None = None              # None = otomatik
+    languages: str | None = None         # otomatik algılamada izinli diller ("en,tr,az"); None = varsayılan liste
     engine: str = "whisper"              # whisper | openai
     model: str = "large-v3"
     compute_type: str = "float16"

@@ -11,6 +11,7 @@ def merge_chunks(parts: list[dict]) -> tuple[list[dict], str | None]:
         for s in p.get("segments", []):
             if not s.get("text"):
                 continue
+            s = {**s, "text": collapse_repeats(s["text"])}
             segs.append(s)
             if p.get("language"):
                 lang_dur[p["language"]] += max(0.0, s["end"] - s["start"])
@@ -20,9 +21,31 @@ def merge_chunks(parts: list[dict]) -> tuple[list[dict], str | None]:
     for s in segs:
         if out and s["text"] == out[-1]["text"] and s["start"] < out[-1]["end"]:
             continue
+        # Whisper tekrar döngüsü: aynı uzun cümle art arda (ör. 8 kez) yazılmışsa bir kez tut
+        if out and len(s["text"]) > 15 and _norm(s["text"]) == _norm(out[-1]["text"]):
+            out[-1] = {**out[-1], "end": max(out[-1]["end"], s["end"])}
+            continue
         out.append(s)
     lang = lang_dur.most_common(1)[0][0] if lang_dur else None
     return out, lang
+
+
+_SENT = __import__("re").compile(r"(?<=[.!?…])\s+")
+
+
+def collapse_repeats(text: str) -> str:
+    """Bir segment içinde art arda tekrarlanan uzun cümleleri teke indir (Whisper tekrar döngüsü)."""
+    parts = _SENT.split(text)
+    out: list[str] = []
+    for p in parts:
+        if out and len(p) > 15 and _norm(p) == _norm(out[-1]):
+            continue
+        out.append(p)
+    return " ".join(out)
+
+
+def _norm(t: str) -> str:
+    return "".join(ch for ch in t.lower() if ch.isalnum())
 
 
 def _overlap(a0, a1, b0, b1) -> float:
