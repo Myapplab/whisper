@@ -7,3 +7,4 @@ stt.toml
 .pytest_cache/
 models/
 dev/*.png
+dist/*.zip
