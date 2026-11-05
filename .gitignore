@@ -8,3 +8,4 @@ stt.toml
 models/
 dev/*.png
 dist/*.zip
+installer/*.bmp
