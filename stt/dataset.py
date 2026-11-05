@@ -32,6 +32,7 @@ from .util import atomic_write_text, log
 FPL_BASE = "https://fantasy.premierleague.com/api"
 PL_DIR = "Premier League"
 OTHER_DIR = "Diger Takimlar"
+GENERAL_DIR = "Podcast ve Film"
 
 # FPL'ye ulaşılamazsa: 2025-26 Premier League takımları (kısa kodlarıyla)
 PL_FALLBACK = {
@@ -238,6 +239,8 @@ def presser_base_name(meta: dict, fallback: str) -> str:
 
 
 def target_dir(root: Path, meta: dict, fallback_title: str) -> Path:
+    if meta.get("general"):
+        return Path(root) / GENERAL_DIR / safe_filename(fallback_title, 70)
     if not meta.get("team"):
         return Path(root) / OTHER_DIR / "Bilinmeyen" / safe_filename(fallback_title, 70)
     league = PL_DIR if meta.get("is_pl") else OTHER_DIR

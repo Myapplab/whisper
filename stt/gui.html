@@ -80,6 +80,13 @@ textarea{width:100%;min-height:150px;resize:vertical;border:1px solid var(--line
 .toggle input:checked{background:var(--accent)}
 .toggle input:checked::after{left:16px}
 .toggle small{display:block;color:var(--muted);font-size:12px}
+.sub{display:flex;flex-direction:column;gap:8px;margin:-4px 0 0 44px}
+.sub[hidden]{display:none}
+.sub .seg{display:grid;grid-template-columns:1fr .8fr 1.3fr}
+.sub .seg button{padding:6px 4px;font-size:13px;text-align:center;white-space:nowrap}
+.sub small{color:var(--muted);font-size:12px}
+.sub .n{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--muted);white-space:nowrap}
+.sub .n input{width:64px;padding:5px 8px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink);font:inherit}
 .hint{font-size:12.5px;color:var(--muted)}
 .note{font-size:12.5px;padding:8px 10px;border-radius:8px;background:var(--warn-soft);color:var(--warn)}
 .startbar{padding:14px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:8px}
@@ -152,6 +159,10 @@ pre.check .bad{color:var(--err);font-weight:600} pre.check .warn{color:var(--war
 .reader{font-size:14px;line-height:1.6;white-space:normal}
 .reader h4{margin:16px 0 4px;font:600 13px var(--ui);color:var(--accent)}
 .reader h4.a{color:var(--ok)}
+.reader h4.s0{color:#c2410c}.reader h4.s1{color:#1d4ed8}.reader h4.s2{color:#15803d}
+.reader h4.s3{color:#7c3aed}.reader h4.s4{color:#a16207}.reader h4.s5{color:#0e7490}
+@media (prefers-color-scheme: dark){.reader h4.s0{color:#fb923c}.reader h4.s1{color:#60a5fa}.reader h4.s2{color:#4ade80}
+.reader h4.s3{color:#c4b5fd}.reader h4.s4{color:#facc15}.reader h4.s5{color:#22d3ee}}
 .reader p{margin:0}
 .reader .hd{color:var(--muted);font-size:12.5px;white-space:pre-wrap;margin-bottom:6px}
 .toast{position:fixed;right:18px;bottom:52px;background:var(--ink);color:var(--panel);padding:10px 14px;border-radius:8px;opacity:0;transform:translateY(8px);transition:.2s;pointer-events:none;max-width:420px;z-index:30}
@@ -201,7 +212,16 @@ pre.check .bad{color:var(--err);font-weight:600} pre.check .warn{color:var(--war
           <button type="button" data-v="az" aria-pressed="false">AZ</button>
         </div>
       </div>
-      <label class="toggle"><input type="checkbox" id="optDiar"><span>Soru–cevap olarak ayır<small>Teknik direktör ve muhabirleri ayırır (HuggingFace token gerekir)</small></span></label>
+      <label class="toggle"><input type="checkbox" id="optDiar"><span>Konuşmacıları ayır<small>Kim konuşuyor, ayrı ayrı yazar (HuggingFace token gerekir)</small></span></label>
+      <div class="sub" id="diarSub">
+        <div class="seg" id="spkMode" role="group" aria-label="Video türü">
+          <button type="button" data-v="auto" aria-pressed="true">Otomatik</button>
+          <button type="button" data-v="basin" aria-pressed="false">Basın</button>
+          <button type="button" data-v="herkes" aria-pressed="false">Podcast · film</button>
+        </div>
+        <small id="spkHint">Başlıkta "press conference / basın toplantısı" varsa soru–cevap, yoksa herkes ayrı yazılır.</small>
+        <label class="n">Kişi sayısı <input type="number" id="optSpk" min="1" max="20" placeholder="?"> <span>bilmiyorsanız boş</span></label>
+      </div>
       <label class="toggle"><input type="checkbox" id="optFpl"><span>FPL presser.py'yi çalıştır<small>Premier League maçı bulunursa GW ve takım otomatik</small></span></label>
       <div class="note" id="newNote" hidden></div>
     </div>
@@ -245,7 +265,7 @@ pre.check .bad{color:var(--err);font-weight:600} pre.check .warn{color:var(--war
     <div class="pb">
       <div class="field"><label for="sOut">Veri seti klasörü</label>
         <div class="inline"><input type="text" id="sOut"><button class="btn small" id="sOutPick" type="button">Seç</button></div></div>
-      <div class="field"><label for="sHf">HuggingFace token (soru–cevap ayrımı için)</label>
+      <div class="field"><label for="sHf">HuggingFace token (konuşmacı ayırma için)</label>
         <input type="password" id="sHf" placeholder="hf_…  (boş bırakırsanız mevcut token kalır)">
         <span class="hint" id="sHfState"></span>
         <span class="hint">huggingface.co/pyannote/speaker-diarization-3.1 ve /segmentation-3.0 sayfalarında “Agree” deyin.</span></div>
@@ -302,7 +322,7 @@ pre.check .bad{color:var(--err);font-weight:600} pre.check .warn{color:var(--war
   const fmtDur = s => { s = Math.round(s || 0); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60; return (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(x).padStart(2, "0"); };
   const PHASE = { "mac-oncesi": "maç öncesi", "mac-sonrasi": "maç sonrası" };
 
-  const state = { files: [], lang: "auto", jobs: new Map(), gpus: new Map(), settings: {} };
+  const state = { files: [], lang: "auto", spkMode: "auto", jobs: new Map(), gpus: new Map(), settings: {} };
 
   function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove("show"), 3500); }
 
@@ -320,9 +340,18 @@ pre.check .bad{color:var(--err);font-weight:600} pre.check .warn{color:var(--war
   $("#btnFiles").onclick = async () => { const r = await call("pick_files"); if (r && r.length) { state.files.push(...r); renderChips(); } };
   $("#btnFolder").onclick = async () => { const r = await call("pick_folder"); if (r) { state.files.push(r); renderChips(); } };
   $("#optDiar").onchange = updateNote;
+  $("#spkMode").addEventListener("click", e => {
+    const b = e.target.closest("button"); if (!b) return;
+    state.spkMode = b.dataset.v;
+    for (const x of $("#spkMode").children) x.setAttribute("aria-pressed", String(x === b));
+    $("#spkHint").textContent = { auto: "Başlıkta \"press conference / basın toplantısı\" varsa soru–cevap, yoksa herkes ayrı yazılır.",
+      basin: "Teknik direktör ve muhabirler: soru–cevap biçimi.",
+      herkes: "Herkes ayrı: Konuşmacı 1, Konuşmacı 2, … (podcast, film, röportaj)." }[state.spkMode];
+  });
   function updateNote() {
+    $("#diarSub").hidden = !$("#optDiar").checked;
     const n = $("#newNote"); const msgs = [];
-    if ($("#optDiar").checked && !state.settings.hf_token_set) msgs.push("Soru–cevap ayrımı için Ayarlar'dan HuggingFace token girin.");
+    if ($("#optDiar").checked && !state.settings.hf_token_set) msgs.push("Konuşmacı ayırma için Ayarlar'dan HuggingFace token girin.");
     if ($("#optFpl").checked && !state.settings.fpl_ok) msgs.push("FPL için Ayarlar'dan presser.py'nin olduğu klasörü seçin.");
     n.textContent = msgs.join(" "); n.hidden = !msgs.length;
   }
@@ -331,7 +360,8 @@ pre.check .bad{color:var(--err);font-weight:600} pre.check .warn{color:var(--war
     const text = $("#links").value;
     if (!text.trim() && !state.files.length) { toast("Önce link yapıştırın ya da dosya ekleyin."); return; }
     $("#btnStart").disabled = true;
-    const r = await call("start", text, state.files, { lang: state.lang, diarize: $("#optDiar").checked, fpl_auto: $("#optFpl").checked });
+    const r = await call("start", text, state.files, { lang: state.lang, diarize: $("#optDiar").checked, fpl_auto: $("#optFpl").checked,
+      speaker_mode: state.spkMode, speakers: parseInt($("#optSpk").value, 10) || null });
     $("#btnStart").disabled = false;
     if (!r) return;
     if (!r.count) { toast("Geçerli link ya da dosya bulunamadı."); return; }
@@ -372,7 +402,7 @@ pre.check .bad{color:var(--err);font-weight:600} pre.check .warn{color:var(--war
         j.source && j.source !== j.title ? el("div", { class: "src", title: j.source }, j.source) : null,
         (j.kind === "busy" || j.kind === "ok") ? el("div", { class: "bar" }, el("i", { style: "width:" + pct + "%" })) : null,
         tags.length ? el("div", { class: "meta" }, tags) : null,
-        j.diar_error ? el("div", { class: "err" }, "Soru–cevap ayrılamadı: " + j.diar_error) : null,
+        j.diar_error ? el("div", { class: "err" }, "Konuşmacılar ayrılamadı: " + j.diar_error) : null,
         j.error ? el("div", { class: "err" }, j.error) : null,
         j.fpl ? el("div", { class: "meta" }, "FPL GW" + String(j.fpl.gw).padStart(2, "0") + " " + j.fpl.team + " — presser.py " + (j.fpl_rc === 0 ? "çalıştı" : "hata verdi (günlüğe bakın)")) : null,
         (j.txt || j.out_dir) ? el("div", { class: "row" },
@@ -417,11 +447,13 @@ pre.check .bad{color:var(--err);font-weight:600} pre.check .warn{color:var(--war
       t.append(el("div", { class: "empty" }, el("b", {}, "Veri seti boş"), "İşlenen her basın toplantısı burada lig › takım › maç olarak görünür."));
     }
     for (const lg of ds.leagues || []) {
+      const gen = lg.league === "Podcast ve Film";
+      const nRec = lg.teams.reduce((a, x) => a + x.matches.length, 0);
       const d = el("details", { class: "lg", open: lg.league === "Premier League" },
-        el("summary", {}, lg.league === "Diger" ? "Diğer takımlar" : lg.league, el("span", { class: "count" }, lg.teams.length + " takım")));
+        el("summary", {}, lg.league === "Diger" ? "Diğer takımlar" : lg.league, el("span", { class: "count" }, gen ? nRec + " kayıt" : lg.teams.length + " takım")));
       for (const tm of lg.teams) {
-        teams++; matches += tm.matches.length;
-        const td = el("details", { class: "tm" }, el("summary", {}, tm.team, el("span", { class: "count" }, tm.matches.length + " maç"),
+        if (!gen) { teams++; matches += tm.matches.length; }
+        const td = el("details", { class: "tm" }, el("summary", {}, tm.team, el("span", { class: "count" }, tm.matches.length + (gen ? " kayıt" : " maç")),
           el("button", { class: "linkbtn", type: "button", title: "Klasörü aç", onclick: e => { e.preventDefault(); call("open", tm.folder); } }, "↗")));
         const box = el("div", { class: "mt" });
         for (const m of tm.matches) {
@@ -430,7 +462,7 @@ pre.check .bad{color:var(--err);font-weight:600} pre.check .warn{color:var(--war
           for (const p of m.pressers) {
             const label = [p.date, PHASE[p.phase] || "", p.manager || ""].filter(Boolean).join(" · ");
             box.append(el("div", { class: "pr" }, el("a", { onclick: () => openReader(p.txt), title: p.txt }, label || "metin"),
-              p.diarized ? el("span", { class: "count" }, (p.questions || 0) + " soru") : null));
+              p.diarized && !gen ? el("span", { class: "count" }, (p.questions || 0) + " soru") : null));
           }
         }
         td.append(box); d.append(td);
@@ -443,14 +475,15 @@ pre.check .bad{color:var(--err);font-weight:600} pre.check .warn{color:var(--war
   const refreshDataset = async () => { const d = await call("dataset"); if (d) renderDataset(d); };
 
   // ---------- metin okuyucu
+  const spkColor = h => (parseInt((h.match(/(\d+)\s*$/) || [0, 1])[1], 10) - 1) % 6;
   async function openReader(path) {
     const txt = await call("read_text", path); if (txt === null) return;
     const r = $("#reader"); r.replaceChildren();
     const blocks = txt.split(/\n\s*\n/);
     r.append(el("div", { class: "hd" }, blocks.shift() || ""));
     for (const b of blocks) {
-      const m = b.match(/^((?:Soru \d+|Cevap|Açılış) - [^\n:]+):\n([\s\S]*)$/);
-      if (m) r.append(el("h4", { class: m[1].startsWith("Soru") ? "" : "a" }, m[1]), el("p", {}, m[2]));
+      const m = b.match(/^((?:Soru \d+|Cevap|Açılış) - [^\n:]+|\[[\d:]+\] [^\n:]+):\n([\s\S]*)$/);
+      if (m) r.append(el("h4", { class: m[1].startsWith("Soru") ? "" : m[1].startsWith("[") ? "s" + spkColor(m[1]) : "a" }, m[1]), el("p", {}, m[2]));
       else r.append(el("p", { style: "margin-top:10px" }, b));
     }
     $("#h-read").textContent = path.split(/[\\/]/).pop();
@@ -463,7 +496,7 @@ pre.check .bad{color:var(--err);font-weight:600} pre.check .warn{color:var(--war
   function fillSettings(s) {
     state.settings = s;
     $("#sOut").value = s.out_dir || ""; $("#sFpl").value = s.fpl_repo || ""; $("#sCookie").value = s.cookies_browser || "chrome"; $("#sGpu").value = s.gpus === "all" ? "all" : "auto";
-    $("#sHf").value = ""; $("#sHfState").textContent = s.hf_token_set ? "Token kayıtlı." : "Token yok: soru–cevap ayrımı yapılamaz.";
+    $("#sHf").value = ""; $("#sHfState").textContent = s.hf_token_set ? "Token kayıtlı." : "Token yok: konuşmacı ayırma yapılamaz.";
     $("#sFplState").textContent = s.fpl_repo ? (s.fpl_ok ? "presser.py bulundu." : "Bu klasörde presser.py yok.") : "";
     updateNote();
   }

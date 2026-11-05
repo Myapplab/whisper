@@ -59,9 +59,31 @@ def qa_blocks(segments: list[dict], td_label: str | None) -> list[tuple[str, str
     return out
 
 
+def dialog_blocks(segments: list[dict]) -> list[tuple[str, str, dict]]:
+    """Podcast / film: her tur '[dakika] Konuşmacı N' başlığıyla."""
+    return [(f"[{fmt_clock(t['start'])}] {t['speaker'] or '?'}", t["text"], t) for t in turns_from_segments(segments)]
+
+
+def is_general(doc: dict) -> bool:
+    return doc.get("speaker_mode") == "herkes" or bool((doc.get("dataset") or {}).get("general"))
+
+
 def header_lines(doc: dict) -> list[str]:
     m = doc.get("match") or {}
     ds = doc.get("dataset") or {}
+    if is_general(doc):
+        lines = [doc.get("title") or "Kayıt"]
+        if doc.get("speakers"):
+            lines.append(f"{len(doc['speakers'])} konuşmacı: "
+                         + ", ".join(f"{v['label']} ({fmt_clock(v['seconds'])})" for v in doc["speakers"].values()))
+        if m.get("date"):
+            lines.append(f"Yayın tarihi: {m['date']}")
+        src = doc.get("webpage_url") or doc.get("source")
+        if src:
+            lines.append(f"Kaynak: {src}")
+        if not doc.get("speakers") and doc.get("diarization_error"):
+            lines.append(f"(Konuşmacı ayrımı yapılamadı: {doc['diarization_error']})")
+        return lines
     home, away = ds.get("home") or m.get("home"), ds.get("away") or m.get("away")
     teams = " vs ".join(x for x in (home, away) if x)
     title = " - ".join(x for x in (teams, m.get("manager")) if x)
@@ -89,7 +111,9 @@ def header_lines(doc: dict) -> list[str]:
 def to_txt(doc: dict) -> str:
     segs = doc["segments"]
     body: list[str]
-    if doc.get("speakers"):
+    if doc.get("speakers") and is_general(doc):
+        body = [f"{head}:\n{text}" for head, text, _ in dialog_blocks(segs)]
+    elif doc.get("speakers"):
         body = [f"{head}:\n{text}" for head, text, _ in qa_blocks(segs, doc.get("td_label"))]
     else:
         body = _paragraphs(segs)
@@ -225,12 +249,13 @@ def to_summary(doc: dict, txt_name: str) -> str:
          f"| Motor | {doc.get('engine')} / {doc.get('model')} |",
          f"| Kelime | {words} |",
          f"| Oluşturma | {doc.get('created')} |"]
-    m = doc.get("match") or {}
+    general = is_general(doc)
+    m = {} if general else (doc.get("match") or {})
     if m.get("home") or m.get("away"):
         L.append(f"| Maç | {' vs '.join(x for x in (m.get('home'), m.get('away')) if x)} |")
     if m.get("manager"):
         L.append(f"| Teknik direktör | {m['manager']} |")
-    ds = doc.get("dataset") or {}
+    ds = {} if general else (doc.get("dataset") or {})
     if ds.get("gw"):
         L.append(f"| GW | {ds['gw']} |")
     if ds.get("competition"):
@@ -252,6 +277,9 @@ def to_summary(doc: dict, txt_name: str) -> str:
         tot = sum(v["seconds"] for v in doc["speakers"].values()) or 1
         for sid, v in doc["speakers"].items():
             L.append(f"| {sid} | {v['label']} | {fmt_clock(v['seconds'])} | %{100 * v['seconds'] / tot:.0f} |")
+        if general:
+            L.append("")
+    if doc.get("speakers") and not general:
         td_label = doc.get("td_label") or next((v["label"] for v in doc["speakers"].values()), None)
         blocks = qa_blocks(segs, td_label)
         qs = [t for h, _, t in blocks if h.startswith("Soru")]

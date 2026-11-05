@@ -225,6 +225,22 @@ def _is_opponent_mention(title: str, team: str) -> bool:
     return False
 
 
+_PRESSER_RE = re.compile(
+    r"press[ -]?conf|presser|pre[ -]?match|post[ -]?match|basin toplanti|mac (?:oncesi|sonrasi)|"
+    r"metbuat konfrans|oyun(?:dan|undan)? (?:evvel|sonra)|news conference|rueda de prensa|pressekonferenz|"
+    r"conferenza stampa|conference de presse")
+
+
+def looks_like_presser(info: dict, match: dict | None = None) -> bool:
+    """Başlık/açıklama basın toplantısına benziyor mu (ya da bilinen bir teknik direktör adı geçiyor mu)?
+    find_manager büyük harfli her ad dizisini aday sayar ("Golden State"), bu yüzden yalnız bilinen adlar sayılır."""
+    mgr = (match or {}).get("manager") or ""
+    if mgr and (_norm(mgr.split()[-1]) in MANAGER_HINTS or mgr in MANAGER_HINTS.values()):
+        return True
+    text = _norm(f"{info.get('title') or ''} {(info.get('description') or '')[:300]}")
+    return bool(_PRESSER_RE.search(text))
+
+
 def parse_match(info: dict) -> dict:
     title = info.get("title") or ""
     channel = info.get("channel") or info.get("uploader") or ""

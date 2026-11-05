@@ -40,6 +40,8 @@ def _common(p: argparse.ArgumentParser) -> None:
                    help="pyannote ile konuşmacı ayır")
     g.add_argument("--hf-token", dest="hf_token")
     g.add_argument("--speakers", dest="speakers", type=int, help="konuşmacı sayısı biliniyorsa")
+    g.add_argument("--mod", "--speaker-mode", dest="speaker_mode", choices=("auto", "basin", "herkes"),
+                   help="auto (varsayılan) | basin: teknik direktör + muhabir | herkes: podcast/film, Konuşmacı 1..N")
     g.add_argument("--td-label", dest="td_label")
     g.add_argument("--reporter-label", dest="reporter_label")
     g = p.add_argument_group("indirme")
@@ -59,7 +61,7 @@ def _common(p: argparse.ArgumentParser) -> None:
 
 def _apply(cfg: Config, a: argparse.Namespace) -> Config:
     for name in ("lang", "engine", "model", "compute_type", "beam_size", "batch_size", "gpus", "prompt", "split_min",
-                 "chunk_min", "openai_model", "diarize", "hf_token", "td_label", "reporter_label",
+                 "chunk_min", "openai_model", "diarize", "hf_token", "td_label", "reporter_label", "speaker_mode",
                  "cookies_browser", "cookies_file", "out_dir", "force", "keep_audio", "fpl_repo", "fpl_python"):
         v = getattr(a, name, None)
         if v is not None:
@@ -131,7 +133,8 @@ def _run_pipeline(cfg: Config, items=None, watch_dir: Path | None = None) -> int
         doc = j.result or {}
         if doc.get("speakers"):
             n = len(doc["speakers"])
-            note = f"konuşmacı ayrıldı: {doc.get('td_label')} + {n - 1} muhabir sesi"
+            note = (f"konuşmacı ayrıldı: {n} kişi (herkes ayrı)" if doc.get("speaker_mode") == "herkes"
+                    else f"konuşmacı ayrıldı: {doc.get('td_label')} + {n - 1} muhabir sesi")
         elif cfg.diarize:
             note = f"KONUŞMACI AYRILAMADI: {doc.get('diarization_error') or j.diar_error or '?'}"
         else:

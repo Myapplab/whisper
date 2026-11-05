@@ -144,6 +144,17 @@ def label_speakers(turns: list[list], td_label: str, reporter_label: str) -> dic
             for spk, sec in sorted(tot.items(), key=lambda kv: -kv[1])}
 
 
+def label_speakers_all(turns: list[list], prefix: str = "Konuşmacı") -> dict[str, dict]:
+    """Podcast / film: her konuşmacı ayrı etiket alır (ilk konuşan = Konuşmacı 1)."""
+    tot: dict[str, float] = defaultdict(float)
+    first: dict[str, float] = {}
+    for s, e, spk in turns:
+        tot[spk] += max(0.0, e - s)
+        first[spk] = min(first.get(spk, s), s)
+    order = sorted(tot, key=lambda k: first[k])
+    return {spk: {"label": f"{prefix} {i}", "seconds": round(tot[spk], 1)} for i, spk in enumerate(order, 1)}
+
+
 def apply_labels(segments: list[dict], speakers: dict[str, dict], reporter_label: str) -> None:
     for s in segments:
         sid = s.get("speaker_id")

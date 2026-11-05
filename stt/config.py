@@ -34,6 +34,7 @@ class Config:
     diar_model: str = "pyannote/speaker-diarization-3.1"
     min_speakers: int | None = None
     max_speakers: int | None = None
+    speaker_mode: str = "auto"           # auto | basin (TD + muhabir) | herkes (podcast/film: Konuşmacı 1..N)
     td_label: str = "Teknik direktör"
     reporter_label: str = "Muhabir"
     # indirme

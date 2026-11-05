@@ -18,6 +18,7 @@ from pathlib import Path
 
 from . import __version__
 from .config import TOOL_DIR, Config, load_config
+from .dataset import GENERAL_DIR
 from .sources import expand_inputs, is_url
 from .util import log
 
@@ -325,7 +326,15 @@ class App:
         for it in items:
             it.extra.setdefault("uid", uuid.uuid4().hex[:10])
             it.extra.update({"lang": opts.get("lang") or "auto", "diarize": bool(opts.get("diarize")),
-                             "fpl_auto": bool(opts.get("fpl_auto"))})
+                             "fpl_auto": bool(opts.get("fpl_auto")),
+                             "speaker_mode": opts.get("speaker_mode") if opts.get("speaker_mode") in
+                             ("auto", "basin", "herkes") else "auto"})
+            try:
+                n = int(opts.get("speakers") or 0)
+            except (TypeError, ValueError):
+                n = 0
+            if 0 < n <= 20:
+                it.extra["speakers"] = n
             self._push({"type": "queued", "uid": it.extra["uid"], "source": it.source, "title": it.title})
             self._inbox.put(it)
         warn = None
@@ -406,7 +415,7 @@ class App:
         tree: dict = {}
         for r in rows:
             league = r.get("league") or "Diger"
-            team = r.get("team") or "Bilinmeyen"
+            team = "Kayıtlar" if league == GENERAL_DIR else (r.get("team") or "Bilinmeyen")
             txt = r.get("txt") or ""
             folder = str((root / txt).parent) if txt else str(root)
             m = tree.setdefault(league, {}).setdefault(team, {}).setdefault(folder, {
@@ -416,12 +425,13 @@ class App:
                                   "phase": r.get("phase"), "date": r.get("presser_date"),
                                   "questions": r.get("questions"), "diarized": r.get("diarized")})
         out = []
-        for league in sorted(tree, key=lambda x: (x != "Premier League", x)):
+        for league in sorted(tree, key=lambda x: (x != "Premier League", x == GENERAL_DIR, x)):
             teams = []
             for team in sorted(tree[league]):
                 matches = sorted(tree[league][team].values(), key=lambda m: m.get("match_date") or "", reverse=True)
                 teams.append({"team": team, "folder": str(Path(matches[0]["folder"]).parent), "matches": matches})
             out.append({"league": league, "folder": str(root / ("Premier League" if league == "Premier League"
+                                                                else league if league == GENERAL_DIR
                                                                 else "Diger Takimlar")), "teams": teams})
         return {"root": str(root), "count": len(rows), "leagues": out,
                 "index_csv": str(root / "index.csv") if (root / "index.csv").exists() else ""}

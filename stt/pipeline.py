@@ -14,12 +14,12 @@ from pathlib import Path
 from .audio import plan_chunks
 from .config import Config
 from .fetch import DRMProtected, FetchError, SkipItem, prepare_audio
-from .merge import apply_labels, assign_speakers, label_speakers, merge_chunks
+from .merge import apply_labels, assign_speakers, label_speakers, label_speakers_all, merge_chunks
 from .outputs import to_txt, write_all
 from .sources import Item
 from .state import State
 from .dataset import classify, fpl_data, presser_base_name, target_dir, update_index, write_match_json
-from .match import parse_match
+from .match import looks_like_presser, parse_match
 from .util import fmt_clock, log, text_hash
 from .workers import WorkerPool
 
@@ -244,6 +244,20 @@ class Pipeline:
             return None if name == "lang" and v in ("auto", "", None) else v
         return getattr(self.cfg, name)
 
+    def _speaker_mode(self, item: Item, info: dict, match: dict | None) -> str:
+        """'basin' (teknik direktör + muhabir) ya da 'herkes' (podcast / film: Konuşmacı 1..N)."""
+        mode = (self._opt(item, "speaker_mode") or "auto").lower()
+        if mode in ("basin", "herkes"):
+            return mode
+        return "basin" if looks_like_presser(info, match) else "herkes"
+
+    def _speakers_wanted(self, item: Item) -> int | None:
+        n = item.extra.get("speakers") or self.cfg.min_speakers
+        try:
+            return int(n) if n and int(n) > 0 else None
+        except (TypeError, ValueError):
+            return None
+
     # ---------------------------------------------------------- girdi ekleme
     def submit(self, item: Item) -> None:
         import uuid
@@ -301,6 +315,18 @@ class Pipeline:
         info = prev.get("info") or {}
         if self._opt(item, "diarize") and not info.get("diarized"):
             return "Önceki çıktıda konuşmacı ayrımı yok"
+        if self._opt(item, "diarize") and info.get("diarized"):
+            had = info.get("speaker_mode")  # 1.5.0 öncesi çıktılarda yok = soru-cevap
+            asked = (self._opt(item, "speaker_mode") or "auto").lower()
+            if asked in ("basin", "herkes"):
+                want = asked
+            elif had:
+                want = had  # otomatik karar zaten verilmiş (açıklama da kullanıldı); tekrar işleme
+            else:
+                title = prev.get("title") or item.title or ""
+                want = self._speaker_mode(item, {"title": title}, parse_match({"title": title}))
+            if want != (had or "basin"):
+                return "Konuşmacı etiketleme biçimi değişti (" + ("herkes ayrı" if want == "herkes" else "soru-cevap") + ")"
         from .engines import DEFAULT_LANGS
         allowed = {x.strip() for x in (self.cfg.languages or DEFAULT_LANGS).split(",")}
         if not self._opt(item, "lang") and info.get("language") and info["language"] not in allowed:
@@ -416,7 +442,8 @@ class Pipeline:
                           "lang": lang, "prompt": prompt, "idx": i, "n": len(chunks)})
         if self._opt(item, "diarize") and not (job.work / "konusmaci.json").exists():
             tasks.insert(0, {"id": f"{item.key}:d", "kind": "diarize", "wav": str(job.wav),
-                             "min_speakers": cfg.min_speakers or 2, "max_speakers": cfg.max_speakers})
+                             "min_speakers": self._speakers_wanted(item) or cfg.min_speakers or 2,
+                             "max_speakers": self._speakers_wanted(item) or cfg.max_speakers})
         done_before = len(chunks) - sum(1 for t in tasks if t["kind"] == "transcribe")
         if done_before:
             log.info("Sürdürülüyor: %d/%d parça önceden bitmiş", done_before, len(chunks))
@@ -703,6 +730,7 @@ class Pipeline:
         diar_path = job.work / "konusmaci.json"
         if not job.match:
             job.match = parse_match({**job.info, "title": job.info.get("title") or job.item.title})
+        mode = self._speaker_mode(job.item, {**job.info, "title": job.info.get("title") or job.item.title}, job.match)
         td_label = cfg.td_label
         if td_label == "Teknik direktör" and job.match.get("manager"):
             td_label = job.match["manager"]
@@ -713,10 +741,15 @@ class Pipeline:
                 job.diar_error = diar_hint(dj["error"])
             if turns:
                 segments = assign_speakers(segments, turns)
-                speakers = label_speakers(turns, td_label, cfg.reporter_label)
-                apply_labels(segments, speakers, cfg.reporter_label)
+                if mode == "herkes":
+                    speakers = label_speakers_all(turns)
+                    apply_labels(segments, speakers, "Konuşmacı ?")
+                else:
+                    speakers = label_speakers(turns, td_label, cfg.reporter_label)
+                    apply_labels(segments, speakers, cfg.reporter_label)
                 if len(speakers) < 2:
-                    job.diar_error = "Yalnızca 1 konuşmacı bulundu (muhabir sesi çok düşük olabilir)."
+                    job.diar_error = ("Yalnızca 1 konuşmacı bulundu." if mode == "herkes" else
+                                      "Yalnızca 1 konuşmacı bulundu (muhabir sesi çok düşük olabilir).")
             elif not job.diar_error:
                 job.diar_error = "Konuşma bulunamadı."
         for i, s in enumerate(segments):
@@ -731,7 +764,8 @@ class Pipeline:
                          "compute_type": cfg.compute_type if any(d.startswith("cuda") for d in self.devices)
                          else ("int8" if self.devices else None),
                          "word_timestamps": True, "chunks": len(job.chunks)},
-            "match": job.match, "td_label": td_label if speakers else None,
+            "match": job.match, "td_label": td_label if speakers and mode == "basin" else None,
+            "speaker_mode": mode if speakers else None,
             "diarization_error": job.diar_error or None,
             "speakers": speakers, "source_info": {k: v for k, v in info.items() if k != "description"},
             "segments": [{k: s.get(k) for k in ("id", "start", "end", "speaker", "speaker_id", "text", "words",
@@ -742,25 +776,28 @@ class Pipeline:
             for s in doc["segments"]:
                 s.pop("speaker", None)
         meta = classify(job.match, info, self.fpl())
+        if mode == "herkes" and self._opt(job.item, "diarize"):
+            meta["general"] = True  # podcast / film: veri setinin takım klasörlerine karışmasın
         doc["dataset"] = {k: v for k, v in meta.items() if k != "fixture"}
         fpl = item_fpl(job.item, cfg)
-        if not fpl and self._opt(job.item, "fpl_auto") and meta.get("gw") and meta.get("fpl_short") and cfg.fpl_repo \
+        if not fpl and not meta.get("general") and self._opt(job.item, "fpl_auto") and meta.get("gw") and meta.get("fpl_short") and cfg.fpl_repo \
                 and (Path(cfg.fpl_repo) / "presser.py").is_file():
             fpl = (int(meta["gw"]), meta["fpl_short"])
         if fpl:
             doc["fpl"] = {"gw": fpl[0], "team": fpl[1]}
         out, base = self._out_paths(job, meta)
         paths = write_all(out, base, doc, f"{base} - ozet.md")
-        if meta.get("team"):
+        if meta.get("team") and not meta.get("general"):
             write_match_json(out, meta)
         n_q = 0
-        if speakers:
+        if speakers and mode == "basin":
             from .outputs import qa_blocks
             n_q = sum(1 for h, _, _ in qa_blocks(doc["segments"], doc.get("td_label")) if h.startswith("Soru"))
         update_index(self.out_root, {
             **{k: meta.get(k) for k in ("presser_date", "phase", "team", "opponent", "competition", "gw",
                                         "match_date", "home", "away", "manager")},
-            "key": job.item.key, "league": "Premier League" if meta.get("is_pl") else "Diger",
+            "key": job.item.key,
+            "league": "Podcast ve Film" if meta.get("general") else "Premier League" if meta.get("is_pl") else "Diger",
             "language": doc["language"], "duration_s": doc["duration_s"], "questions": n_q,
             "words": sum(len(s["text"].split()) for s in doc["segments"]), "diarized": bool(speakers),
             "url": doc.get("webpage_url") or doc["source"],
@@ -779,7 +816,7 @@ class Pipeline:
         self.state.set(job.item.key, source=job.item.source, status="done", title=doc["title"], out_dir=str(out),
                        info={"language": doc["language"], "duration_s": doc["duration_s"], "diarized": bool(speakers),
                              "fpl": doc.get("fpl"), "fpl_returncode": fpl_res["returncode"] if fpl_res else None,
-                             "json": str(paths["json"])})
+                             "json": str(paths["json"]), "speaker_mode": doc.get("speaker_mode")})
         job.status = "done"
         el = time.time() - job.t0
         self.emit("done", job.item, title=doc["title"], out_dir=str(out), txt=str(paths["txt"]),

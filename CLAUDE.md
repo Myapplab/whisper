@@ -22,6 +22,17 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   izinli diller (`DEFAULT_LANGS` / `languages`) arasından seçer: large-v3 İngiliz aksanını Galce (cy) sanıp
   bütün metni Galce yazıyordu. Dili yanlış ya da konuşmacısız eski çıktılar link tekrar eklenince yeniden işlenir
   (`_redo_reason`). Aynı cümlenin tekrar döngüsü `merge.collapse_repeats` ile teke iner.
+- **Konuşmacı biçimi (1.5.0):** `speaker_mode` = `auto` | `basin` (en uzun konuşan TD, diğerleri muhabir,
+  soru-cevap) | `herkes` (podcast/film: `Konuşmacı 1..N` ilk konuşma sırasına göre, `[dk] Konuşmacı N:` diyalog).
+  `auto`: `match.looks_like_presser` (başlık/açıklamada press conference / basın toplantısı / mətbuat konfransı…
+  ya da `MANAGER_HINTS`'te bilinen TD; `find_manager` "Golden State" gibi her büyük harfli diziyi aday sayar, ona
+  güvenme). `herkes` çıktıları `<out>/Podcast ve Film/<başlık>/`, FPL/mac.json yok, index `league="Podcast ve Film"`.
+  GUI'de "Konuşmacıları ayır" altında tür seçimi + "Kişi sayısı" (pyannote min=max). Eski (biçim kaydı olmayan)
+  soru-cevap çıktısı podcast'e benziyorsa link tekrar eklenince yeniden işlenir (`_redo_reason`). Kullanıcı
+  YouTube podcast'inde "sesleri ayırmıyor" demişti: sebep herkesin TD/Muhabir diye iki etikete inmesiydi.
+- **NVIDIA Nemotron (2026-11 değerlendirmesi):** Nemotron 3.5 ASR (0.6B, akış/canlı odaklı, 40 dil-yerel, NeMo)
+  Whisper large-v3'ün yerine geçmedi: bizim iş toplu ve doğruluk odaklı, AZ desteği belirsiz. İleride denenecekse
+  ayrı motor olarak (`--engine`) ekle ve `stt olc` ile WER karşılaştır; Sortformer/multitalker konuşmacı ayırma da aday.
 - Windows/pythonw: işçilerde stdout/stderr UTF-8 olmalı (`PYTHONUTF8=1`); cp1252 'ş' yazamayıp pyannote'u
   UnicodeEncodeError ile düşürüyordu.
 - İsteğe bağlı konuşmacı ayırma: pyannote/speaker-diarization-3.1 (HF token) → en uzun konuşan teknik
@@ -98,7 +109,7 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
 - Kullanıcı ileride uygulamayı paylaşmak istiyor (tek kurulum dosyası).
 
 ## Geliştirme (bulut/Linux)
-- Testler: `python -m pytest -q tests` (58 test; `test_updater.py` = güncelleme/geri alma; `test_stability.py` = GPU seçimi, işçi yeniden başlatma, iptal,
+- Testler: `python -m pytest -q tests` (66 test; `test_speakers.py` = podcast/film modu; `test_updater.py` = güncelleme/geri alma; `test_stability.py` = GPU seçimi, işçi yeniden başlatma, iptal,
   bloklamayan arayüz, cuDNN geri çekilmesi; `test_app.py` = ortam hazırlığı, ayarlar, hata mesajları).
 - GPU yok ve HuggingFace engelliyse test modeli: GitHub `rhasspy/models` `asr_faster-whisper-small-int8`
   + `dev/make_tokenizer.py` (openai-whisper tiktoken → tokenizer.json) + `dev/add_alignment_heads.py`.
