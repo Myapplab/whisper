@@ -222,13 +222,16 @@ _RETRYABLE = ("mkl_malloc", "bad_alloc", "out of memory", "winerror 1455", "pagi
               "device-side", "unspecified launch failure", "illegal memory")
 
 
-_GPU_FAULT = ("invalid device ordinal", "cudaerror", "cublas", "cuda failed", "cuda error", "illegal memory",
+# "invalid device ordinal" burada YOK: içeriğe bağlı, yeniden açmak düzeltmiyor (engines.odd_cuda_error yedek yolu)
+_GPU_FAULT = ("cudaerrorillegaladdress", "cudaerrorlaunchfailure", "cublas", "cuda failed", "cuda error", "illegal memory",
               "unspecified launch failure", "device-side", "cudnn_status_execution_failed")
 
 
 def gpu_fault(err: str) -> bool:
     """Ekran kartı / sürücü takılması (bellek yetmemesi değil): süreci yeniden açmak gerekir."""
     e = err.lower()
+    if "parallel_for failed" in e or "invalid device ordinal" in e:
+        return False
     return "out of memory" not in e and any(x in e for x in _GPU_FAULT)
 
 

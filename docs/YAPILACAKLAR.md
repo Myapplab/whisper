@@ -4,6 +4,11 @@ Kullanıcı iki Claude hesabıyla (iki profil) sırayla çalışır: biri sını
 Ortak hafıza bu dosyadır. **Oturum sonunda güncelle** (Son durum + liste) ve `main`'e push et.
 
 ## Son durum
+- Sürüm 1.8.1: `invalid device ordinal` konuşmacı ayırma boştayken de çıktı (NBA videosu, parça 0–3 tamam, t:0004 üç
+  kez) → eşzamanlılık değil, İÇERİĞE BAĞLI CTranslate2 hatası (büyük olasılıkla kelime zamanı hizalama / toplu çeviri).
+  `WhisperEngine._fallback`: toplu olmadan, sonra kelime zamansız tekrar (`engines.odd_cuda_error`); bu hata artık
+  işçiyi yeniden açtırmıyor. Yine olmazsa parça atlanıyor (`job.info["skipped_chunks"]`, en çok parçaların 1/4'ü),
+  iş bitiyor. Görev hatasının izi (trace) günlüğe yazılıyor: kullanıcıdan "PARÇA ATLANDI" / trace satırları istensin.
 - Sürüm 1.8.0: konuşmacı ayırmayı referans videoyla eğitme ("Konuşmacılar" → "Kaydet ve eğit", `stt/tune.py`,
   `stt egit`; ayrıntı `docs/KONUSMACI_AYIRMA.md` adım 3 ve 6). Windows'ta denenmedi: ilk denemede günlükte
   "[eğitim]" ve "Konuşmacı ayarı eğitildi" satırları istensin. 134 test.

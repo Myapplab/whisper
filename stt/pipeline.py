@@ -838,6 +838,8 @@ class Pipeline:
             n = job.attempts.get(tid, 0) + 1
             job.attempts[tid] = n
             log.error("[%s] görev hatası (%s, deneme %d): %s", wid, tid.split(":", 1)[1], n, m["error"])
+            if m.get("trace"):
+                log.info("%s", m["trace"][-2500:])  # nerede düştüğü günlükte görünsün
             if m.get("restart"):  # ekran kartı takıldı: işçi kendini kapattı, _health temiz açar
                 self.idle.discard(wid)
                 self.emit("worker", wid=wid, state="loading")
@@ -849,6 +851,19 @@ class Pipeline:
             if n < 2 and task["kind"] == "transcribe":
                 with self.lock:
                     self.backlog.appendleft(task)
+                return
+            skipped = job.info.setdefault("skipped_chunks", []) if task["kind"] == "transcribe" else []
+            if task["kind"] == "transcribe" and not (job.live or task.get("redo")) \
+                    and len(skipped) < max(1, (task.get("n") or len(job.chunks) or 1) // 4):
+                # tek parça yüzünden 1 saatlik iş çöpe gitmesin: o parça boş kalır, günlükte ve json'da yazar
+                skipped.append([round(task["start"], 1), round(task["end"], 1)])
+                log.warning("PARÇA ATLANDI (%s–%s) çevrilemedi: %s", fmt_clock(task["start"]), fmt_clock(task["end"]),
+                            m["error"][:160])
+                (job.work / "parcalar" / f"{task['idx']:04d}.json").write_text(
+                    json.dumps({"segments": [], "language": None}), encoding="utf-8")
+                job.done_chunks += 1
+                job.pending.discard(tid)
+                self._maybe_finalize(job)
                 return
             if task["kind"] == "transcribe" and (job.live or task.get("redo")):
                 # canlı yayında tek parça yüzünden kayıt durmasın: boş geç (dil düzeltmesi olmazsa eskisi kalır)

@@ -218,6 +218,12 @@ _JUNK = ("altyazı", "subtitle", "abone ol", "izlediğiniz için", "thanks for w
          "müzik]", "music]")
 
 
+def odd_cuda_error(err: str) -> bool:
+    """CTranslate2'nin içeriğe bağlı CUDA hatası (bellek değil, kart çökmesi değil)."""
+    e = err.lower()
+    return "parallel_for failed" in e or "invalid device ordinal" in e or "cudaerrorinvaliddevice" in e
+
+
 def seg_dict(s, off: float) -> dict:
     words = [{"start": round(w.start + off, 3), "end": round(w.end + off, 3), "word": w.word,
               "prob": round(w.probability, 3)} for w in (s.words or [])]
@@ -327,6 +333,9 @@ class WhisperEngine:
                 res = self._run(audio, start, lang, prompt)
                 break
             except RuntimeError as e:  # bellek yetmezse toplu boyutu yarıya indir
+                if "out of memory" not in str(e).lower() and odd_cuda_error(str(e)):
+                    res = self._fallback(audio, start, lang, prompt, e)
+                    break
                 if "out of memory" not in str(e).lower() or self.batched is None:
                     raise
                 self.batch_size //= 2
@@ -361,15 +370,31 @@ class WhisperEngine:
             log.info("[%s] metindeki %d boşluktan %d satır geri alındı", self.device, len(gaps), len(added))
             res["segments"] = sorted(segs + added, key=lambda x: x["start"])
 
-    def _run(self, audio, start: float, lang: str | None, prompt: str | None) -> dict:
-        if self.batched is not None:
+    def _fallback(self, audio, start: float, lang: str | None, prompt: str | None, err: Exception) -> dict:
+        """CTranslate2 bazı parçalarda hep aynı yerde 'parallel_for failed: invalid device ordinal' veriyor
+        (içeriğe bağlı; süreci yeniden açmak düzeltmiyor). Parçayı başka yollarla dene:
+        1) toplu olmayan çeviri, 2) kelime zamanları olmadan (konuşmacı ataması satır düzeyinde kalır)."""
+        log.warning("[%s] çeviri hatası (%s); parça toplu olmadan tekrar deneniyor", self.device, str(err)[:120])
+        try:
+            return self._run(audio, start, lang, prompt, batched=False)
+        except RuntimeError as e2:
+            if not odd_cuda_error(str(e2)):
+                raise
+        log.warning("[%s] yine olmadı; parça kelime zamanları olmadan çevriliyor", self.device)
+        res = self._run(audio, start, lang, prompt, batched=False, words=False)
+        res["no_words"] = True
+        return res
+
+    def _run(self, audio, start: float, lang: str | None, prompt: str | None, batched: bool = True,
+             words: bool = True) -> dict:
+        if self.batched is not None and batched:
             segs, info = self.batched.transcribe(
                 audio, language=lang, beam_size=self.beam_size, vad_filter=True, word_timestamps=True,
                 initial_prompt=prompt, batch_size=self.batch_size, vad_parameters=self.vad,
             )
         else:
             segs, info = self.model.transcribe(
-                audio, language=lang, beam_size=self.beam_size, vad_filter=True, word_timestamps=True,
+                audio, language=lang, beam_size=self.beam_size, vad_filter=True, word_timestamps=words,
                 initial_prompt=prompt, condition_on_previous_text=self.cond, vad_parameters=self.vad,
             )
         out = [seg_dict(s, start) for s in segs]

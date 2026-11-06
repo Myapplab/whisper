@@ -59,7 +59,8 @@ def test_diarizer_sends_progress_via_hook(tmp_path):
 
 def test_gpu_fault_detection():
     from stt.workers import gpu_fault
-    assert gpu_fault("RuntimeError: parallel_for failed: cudaErrorInvalidDevice: invalid device ordinal")
+    # içeriğe bağlı CTranslate2 hatası: süreç yeniden açılmaz (engines yedek yolu dener)
+    assert not gpu_fault("RuntimeError: parallel_for failed: cudaErrorInvalidDevice: invalid device ordinal")
     assert gpu_fault("RuntimeError: cuBLAS failed with status CUBLAS_STATUS_EXECUTION_FAILED")
     assert not gpu_fault("RuntimeError: CUDA failed with error out of memory")
     assert not gpu_fault("ValueError: bozuk ses")
@@ -104,3 +105,51 @@ def test_diar_and_transcribe_take_turns_on_same_gpu(tmp_path):
                    "payload": {"segments": [], "language": "en"}})
         p._dispatch()
     assert [t["kind"] for t in p.dpool.put_q] == ["diarize"]  # metin bitti: sıra ayırmada
+
+
+def test_whisper_falls_back_on_parallel_for_error():
+    import types
+
+    import numpy as np
+
+    from stt.engines import WhisperEngine
+    calls = []
+    err = RuntimeError("parallel_for failed: cudaErrorInvalidDevice: invalid device ordinal")
+    seg = types.SimpleNamespace(start=0.0, end=1.0, text="hi", avg_logprob=-0.1, no_speech_prob=0.0, words=None)
+    info = types.SimpleNamespace(language="en", language_probability=0.9)
+
+    class Model:
+        def transcribe(self, audio, **kw):
+            calls.append(("tek", kw["word_timestamps"]))
+            if kw["word_timestamps"]:
+                raise err
+            return iter([seg]), info
+
+    class Batched:
+        def transcribe(self, audio, **kw):
+            calls.append(("toplu", True))
+            raise err
+    e = WhisperEngine.__new__(WhisperEngine)
+    e.model, e.batched, e.batch_size, e.beam_size, e.cond, e.vad = Model(), Batched(), 8, 5, False, {}
+    e.device, e.agc, e.fill_gaps = "cuda:1", False, False
+    import stt.engines as en
+    old = en.load_wav
+    en.load_wav = lambda *a, **k: np.zeros(16000, dtype=np.float32)
+    try:
+        res = e.transcribe("x.wav", 0.0, 1.0, "en", None)
+    finally:
+        en.load_wav = old
+    assert calls == [("toplu", True), ("tek", True), ("tek", False)]
+    assert res["segments"][0]["text"] == "hi" and res["no_words"]
+
+
+def test_failing_chunk_is_skipped_not_whole_job(tmp_path):
+    p = _pipe(tmp_path, ("a",))
+    job, tasks = _job(p, tmp_path, n=8)
+    p.backlog.clear()
+    tid = tasks[4]["id"]
+    for _ in range(2):
+        p._on_msg({"type": "start", "wid": "a", "tid": tid})
+        p._on_msg({"type": "error", "wid": "a", "tid": tid, "error": "RuntimeError: parallel_for failed"})
+    assert job.status == "run" and tid not in job.pending
+    assert job.info["skipped_chunks"] == [[240.0, 300.0]]
