@@ -43,7 +43,10 @@ class Config:
     # konuşmacı ayırma
     diarize: bool = False
     hf_token: str | None = None
-    diar_model: str = "pyannote/speaker-diarization-3.1"
+    diar_model: str = "pyannote/speaker-diarization-community-1"  # olmazsa 3.1'e düşülür
+    diar_music: str = "auto"             # konuşmacı ayırmadan önce müzik ayıklama: auto (podcast/film) | on | off
+    voice_match: bool = True             # ses kütüphanesindeki kişileri yeni videolarda adıyla tanı
+    voice_threshold: float = 0.6         # ses imzası benzerliği (kosinüs) en az bu kadarsa aynı kişi sayılır
     min_speakers: int | None = None
     max_speakers: int | None = None
     speaker_mode: str = "auto"           # auto | basin (TD + muhabir) | herkes (podcast/film: Konuşmacı 1..N)

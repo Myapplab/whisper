@@ -185,8 +185,14 @@ def run_doctor(cfg, deep: bool = False) -> int:
             print("       konuşmacı ayırma modeli deneniyor (ilk seferde ~30 MB iner)...", flush=True)
             try:
                 from .engines import Diarizer
-                Diarizer(cfg.diar_model, tok, "cpu")
-                add(OK, "Konuşmacı modeli", f"{cfg.diar_model} yüklendi")
+                d = Diarizer(cfg.diar_model, tok, "cpu", cpu_ok=True)  # yalnızca yükleme denemesi; iş kartta yapılır
+                if d.model_used and d.model_used != cfg.diar_model:
+                    add(WARN, "Konuşmacı modeli", f"{cfg.diar_model} kullanılamadı; eski model {d.model_used} ile "
+                        f"çalışılıyor. Yeni model için huggingface.co/{cfg.diar_model} sayfasında 'Agree' deyin"
+                        + ("" if d.v4 else " ve uygulamayı güncelleyin (pyannote.audio 4 gerekli)") + ".")
+                else:
+                    add(OK, "Konuşmacı modeli", f"{d.model_used or cfg.diar_model} yüklendi")
+                del d
             except Exception as e:  # noqa: BLE001
                 from .pipeline import diar_hint
                 add(BAD, "Konuşmacı modeli", diar_hint(f"{type(e).__name__}: {e}"))

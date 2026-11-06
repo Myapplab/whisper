@@ -74,8 +74,9 @@ def diar_hint(err: str) -> str:
     if "proxyerror" in e or "max retries" in e or "connectionerror" in e or "timed out" in e:
         return "huggingface.co'ya bağlanılamadı (internet/güvenlik duvarı). Model bir kez inince internet gerekmez."
     if "gated" in e or "403" in e or "accept" in e or "koşulları" in e or "nonetype" in e:
-        return ("HuggingFace model koşulları kabul edilmemiş: huggingface.co/pyannote/speaker-diarization-3.1 ve "
-                "huggingface.co/pyannote/segmentation-3.0 sayfalarında 'Agree' deyin.")
+        return ("HuggingFace model koşulları kabul edilmemiş: huggingface.co/pyannote/speaker-diarization-community-1, "
+                "huggingface.co/pyannote/speaker-diarization-3.1 ve huggingface.co/pyannote/segmentation-3.0 "
+                "sayfalarında 'Agree' deyin.")
     if "401" in e or "token" in e or "unauthorized" in e:
         return "HF token geçersiz ya da okunamadı: huggingface.co'dan yeni token alıp uygulamada Ayarlar > HuggingFace token alanına yapıştırın."
     if "no module named" in e:
@@ -535,7 +536,21 @@ class Pipeline:
     def _diarize_task(self, item: Item, wav: Path) -> dict:
         n = self._speakers_wanted(item)
         return {"id": f"{item.key}:d", "kind": "diarize", "wav": str(wav), "job": item.key,
-                "min_speakers": n or self.cfg.min_speakers or 2, "max_speakers": n or self.cfg.max_speakers}
+                "min_speakers": n or self.cfg.min_speakers or 2, "max_speakers": n or self.cfg.max_speakers,
+                "vocals": self._want_vocals(item)}
+
+    def _want_vocals(self, item: Item) -> bool:
+        """Konuşmacı ayırmadan önce müzik ayıklansın mı: auto = podcast / film evet, basın toplantısı hayır."""
+        v = str(self._opt(item, "diar_music") or "auto").strip().lower()
+        if v in ("on", "acik", "açık", "1", "true", "evet"):
+            return True
+        if v in ("off", "kapali", "kapalı", "0", "false", "hayir", "hayır"):
+            return False
+        job = self.jobs.get(item.key)
+        info = {**(job.info if job else {})}
+        info["title"] = info.get("title") or item.title
+        match = job.match if job is not None and job.match else parse_match(info)
+        return self._speaker_mode(item, info, match) == "herkes"
 
     def _prompt(self, item: Item, job: Job) -> str | None:
         cfg = self.cfg
@@ -1002,6 +1017,27 @@ class Pipeline:
         marker.write_text(item.key)
         return d, base
 
+    def _voice_names(self, job: Job, dj: dict, speakers: dict, mode: str, td_label: str) -> str:
+        """Konuşmacı imzalarını sakla; ses kütüphanesinde tanınan kişilere adlarını ver. Döner: TD etiketi."""
+        emb = dj.get("emb")
+        if not emb or not speakers:
+            return td_label
+        from .voices import VoiceLibrary, apply_voice_names, save_doc_voices
+        st = self.out_root / ".stt"
+        try:
+            save_doc_voices(st, job.item.key, dj.get("model"), emb)
+            if not self.cfg.voice_match:
+                return td_label
+            lib = VoiceLibrary(st)
+            names = lib.identify(emb, dj.get("model"), self.cfg.voice_threshold)
+            if names:
+                log.info("Ses kütüphanesinden tanındı: %s",
+                         ", ".join(f"{n} ({sim:.2f})" for n, sim in names.values()))
+            return apply_voice_names(speakers, names, mode, td_label, self.cfg.reporter_label, lib.td_names())
+        except Exception as e:  # noqa: BLE001
+            log.warning("Ses kütüphanesi kullanılamadı: %s", e)
+            return td_label
+
     def _finalize(self, job: Job):
         cfg = self.cfg
         parts = []
@@ -1017,19 +1053,21 @@ class Pipeline:
         td_label = cfg.td_label
         if td_label == "Teknik direktör" and job.match.get("manager"):
             td_label = job.match["manager"]
+        diar_meta: dict = {}
         if self._opt(job.item, "diarize") and diar_path.exists():
             dj = json.loads(diar_path.read_text(encoding="utf-8"))
             turns = dj.get("turns", [])
+            diar_meta = {k: dj[k] for k in ("model", "vocals") if dj.get(k) is not None}
             if dj.get("error") and not job.diar_error:
                 job.diar_error = diar_hint(dj["error"])
             if turns:
                 segments = assign_speakers(segments, turns)
                 if mode == "herkes":
                     speakers = label_speakers_all(turns)
-                    apply_labels(segments, speakers, "Konuşmacı ?")
                 else:
                     speakers = label_speakers(turns, td_label, cfg.reporter_label)
-                    apply_labels(segments, speakers, cfg.reporter_label)
+                td_label = self._voice_names(job, dj, speakers, mode, td_label)
+                apply_labels(segments, speakers, "Konuşmacı ?" if mode == "herkes" else cfg.reporter_label)
                 if len(speakers) < 2:
                     job.diar_error = ("Yalnızca 1 konuşmacı bulundu." if mode == "herkes" else
                                       "Yalnızca 1 konuşmacı bulundu (muhabir sesi çok düşük olabilir).")
@@ -1066,7 +1104,9 @@ class Pipeline:
             "settings": {"beam_size": cfg.beam_size, "vad_filter": True, "devices": self.devices,
                          "compute_type": cfg.compute_type if any(d.startswith("cuda") for d in self.devices)
                          else ("int8" if self.devices else None),
-                         "word_timestamps": True, "chunks": len(job.chunks)},
+                         "word_timestamps": True, "chunks": len(job.chunks),
+                         **({"diar_model": diar_meta["model"]} if diar_meta.get("model") else {}),
+                         **({"diar_music_removed": True} if diar_meta.get("vocals") else {})},
             "match": job.match, "td_label": td_label if speakers and mode == "basin" else None,
             "speaker_mode": mode if speakers else None,
             "diarization_error": job.diar_error or None, "speaker_source": speaker_source,

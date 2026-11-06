@@ -1,5 +1,8 @@
 # Kurulum (installer/kur.ps1) bu sürümleri sabitler (CUDA 12.8 torch PyPI CPU sürümüyle değişmesin)
 torch==2.8.0
 torchaudio==2.8.0
-# pyannote.audio 3.4, huggingface_hub 1.0'da kaldırılan use_auth_token parametresini kullanıyor
+# pyannote.audio 3.4 (eski kurulumlar) huggingface_hub 1.0'da kaldırılan use_auth_token'ı kullanıyor
 huggingface_hub<1.0
+# pyannote.audio 4 ses dosyası okumak için torchcodec ister; torch 2.8 ile uyumlu sürüm 0.7
+# (uygulama sesi bellekten verir, torchcodec yüklenemese de çalışır)
+torchcodec==0.7.0

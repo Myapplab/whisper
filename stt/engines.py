@@ -440,11 +440,41 @@ class OpenAIEngine:
         return {"segments": segs, "language": getattr(res, "language", None) or lang, "language_probability": None}
 
 
+FALLBACK_DIAR_MODEL = "pyannote/speaker-diarization-3.1"
+
+
+def chunk_spans(n: int, seg: int, ov: int):
+    """Uzun sesi parça parça işlemek için: (a, b, c, d) = işlenen pencere [a, b), saklanan kısım [c, d).
+    Her parçanın iki yanında ``ov`` örnek bağlam bırakılır; kenarlardaki bozulma atılır."""
+    seg = max(1, int(seg))
+    for c in range(0, max(0, n), seg):
+        d = min(n, c + seg)
+        yield max(0, c - ov), min(n, d + ov), c, d
+
+
+def speaker_embeddings(labels, cents) -> dict | None:
+    """pyannote'un konuşmacı başına ortalama ses imzası (labels() sırasıyla) -> {SPEAKER_xx: [..]}.
+    Sıfır / NaN satırlar (kümeye düşmeyen konuşmacı) atlanır."""
+    if cents is None:
+        return None
+    import numpy as np
+    arr = np.asarray(cents, dtype=float)
+    out = {}
+    for lbl, row in zip(list(labels), arr):
+        if row.ndim == 1 and np.all(np.isfinite(row)) and float(np.linalg.norm(row)) > 1e-6:
+            out[str(lbl)] = [round(float(v), 5) for v in row]
+    return out or None
+
+
 class Diarizer:
     agc = True  # testler __new__ ile kurar
     batch = 8
     ram_pct = 70
     cpu_ok = False  # işlemciye (CPU) geçilmez: kullanıcıda fan çok dönüyor, i3'te çok yavaş
+    v4 = False           # pyannote.audio 4.x (community-1 modeli, örtüşmesiz çıktı)
+    model_used = None    # gerçekten yüklenen model (yeni model olmazsa eskisine düşülür)
+    last_emb = None      # son ayırmadaki konuşmacı ses imzaları
+    _sep = None          # müzik ayıklama modeli (HDemucs), ilk gerekince yüklenir
     def __init__(self, model: str, token: str | None, device: str, agc: bool = True, batch: int = 8,
                  gpu_frac: float | None = None, ram_pct: int = 70, cpu_ok: bool = False):
         os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")  # pyannote 3.x + torch>=2.6
@@ -481,17 +511,42 @@ class Diarizer:
             self.device = device
 
     def _load(self):
+        try:
+            pipe = self._load_model(self.model)
+            self.model_used = self.model
+        except Exception as e:  # noqa: BLE001
+            if self.model == FALLBACK_DIAR_MODEL:
+                raise
+            log.warning("Konuşmacı modeli %s yüklenemedi (%s); %s kullanılıyor. Yeni model için: "
+                        "huggingface.co/%s sayfasında 'Agree' deyin.", self.model, str(e)[:200],
+                        FALLBACK_DIAR_MODEL, self.model)
+            pipe = self._load_model(FALLBACK_DIAR_MODEL)
+            self.model_used = FALLBACK_DIAR_MODEL
+        log.info("Konuşmacı modeli: %s", self.model_used)
+        return pipe
+
+    def _load_model(self, model: str):
+        import pyannote.audio
         from pyannote.audio import Pipeline
         try:
-            pipe = Pipeline.from_pretrained(self.model, use_auth_token=self.token)       # pyannote 3.x
+            self.v4 = int(str(pyannote.audio.__version__).split(".")[0]) >= 4
+        except ValueError:
+            self.v4 = False
+        if "community" in model and not self.v4:
+            raise RuntimeError(f"{model} için pyannote.audio 4 gerekli (kurulu: {pyannote.audio.__version__})")
+        try:
+            if self.v4:
+                pipe = Pipeline.from_pretrained(model, token=self.token)                 # pyannote 4.x
+            else:
+                pipe = Pipeline.from_pretrained(model, use_auth_token=self.token)        # pyannote 3.x
         except TypeError as e:
             if "hf_hub_download" in str(e):
                 raise RuntimeError("pyannote 3.x için huggingface_hub<1.0 gerekli: "
                                    'pip install "huggingface_hub<1.0"') from None
-            pipe = Pipeline.from_pretrained(self.model, token=self.token)                # pyannote 4.x
+            pipe = Pipeline.from_pretrained(model, token=self.token)                     # pyannote 4.x
         if pipe is None:
-            raise RuntimeError(f"{self.model} yüklenemedi: HF'de model sayfasındaki koşulları kabul ettiniz mi? "
-                               "(pyannote/speaker-diarization-3.1 ve pyannote/segmentation-3.0)")
+            raise RuntimeError(f"{model} yüklenemedi: HF'de model sayfasındaki koşulları kabul ettiniz mi? "
+                               f"(huggingface.co/{model})")
         self._set_batch(pipe, self.batch)
         return pipe
 
@@ -525,10 +580,69 @@ class Diarizer:
         log.warning("Bellek beklemesi bitti; konuşmacı ayırma yine de deneniyor")
 
     def _run(self, audio, kw) -> list[list]:
-        out = self.pipe({"waveform": self.torch.from_numpy(audio)[None], "sample_rate": SR}, **kw)
-        # pyannote 4.x DiarizeOutput: metinle hizalama için örtüşmesiz çıktı önce
-        ann = getattr(out, "exclusive_speaker_diarization", None) or getattr(out, "speaker_diarization", out)
+        file = {"waveform": self.torch.from_numpy(audio)[None], "sample_rate": SR}
+        cents = None
+        if self.v4:
+            out = self.pipe(file, **kw)
+            full = getattr(out, "speaker_diarization", out)
+            # pyannote 4.x DiarizeOutput: metinle hizalama için örtüşmesiz çıktı önce
+            ann = getattr(out, "exclusive_speaker_diarization", None) or full
+            cents = getattr(out, "speaker_embeddings", None)
+        else:
+            try:  # 3.x: konuşmacı başına ses imzası da istenir (ses kütüphanesi için)
+                out = self.pipe(file, return_embeddings=True, **kw)
+            except TypeError:
+                out = self.pipe(file, **kw)
+            if isinstance(out, tuple):
+                out, cents = out
+            full = ann = getattr(out, "exclusive_speaker_diarization", None) or getattr(out, "speaker_diarization", out)
+        try:
+            self.last_emb = speaker_embeddings(full.labels(), cents) if hasattr(full, "labels") else None
+        except Exception:  # noqa: BLE001
+            log.debug("ses imzaları alınamadı", exc_info=True)
+            self.last_emb = None
         return [[round(seg.start, 3), round(seg.end, 3), str(spk)] for seg, _, spk in ann.itertracks(yield_label=True)]
+
+    def _vocals(self, audio):
+        """Müzik / efektleri ayıkla, yalnız konuşmayı bırak (HDemucs, torchaudio içinde; ek kurulum yok).
+        Yalnızca ekran kartında; olmazsa özgün ses döner. Film / podcast müziği ses imzasını bozmasın diye."""
+        if not str(self.device).startswith("cuda"):
+            log.info("Müzik ayıklama atlandı: yalnızca ekran kartında yapılır")
+            return audio
+        import numpy as np
+        torch = self.torch
+        t0 = time.time()
+        try:
+            import torchaudio
+            if self._sep is None:
+                from torchaudio.pipelines import HDEMUCS_HIGH_MUSDB_PLUS as bundle
+                log.info("Müzik ayıklama modeli yükleniyor (ilk seferde ~300 MB iner)")
+                m = bundle.get_model().eval().to(torch.device(self.device))
+                srcs = list(getattr(m, "sources", []) or [])
+                self._sep = (m, bundle.sample_rate, srcs.index("vocals") if "vocals" in srcs else 3)
+            model, msr, vi = self._sep
+            x = np.asarray(audio, dtype=np.float32)
+            mean, std = float(x.mean()), float(x.std()) or 1.0
+            out = np.empty_like(x)
+            dev = torch.device(self.device)
+            with torch.inference_mode():
+                for a, b, c, d in chunk_spans(len(x), 10 * SR, SR):  # 12 sn pencere: bellek az
+                    ch = torch.from_numpy((x[a:b] - mean) / std).to(dev)
+                    up = torchaudio.functional.resample(ch, SR, msr)
+                    y = model(up[None, None].expand(1, 2, -1).contiguous())[0, vi].mean(0)
+                    y = torchaudio.functional.resample(y, msr, SR)[: b - a]
+                    if y.shape[0] < b - a:
+                        y = torch.nn.functional.pad(y, (0, b - a - y.shape[0]))
+                    out[c:d] = y[c - a:d - a].float().cpu().numpy() * std + mean
+            log.info("[%s] müzik ayıklandı (%.0f sn ses, %.1f sn)", self.device, len(x) / SR, time.time() - t0)
+            return out
+        except Exception as e:  # noqa: BLE001
+            log.warning("Müzik ayıklanamadı (%s); konuşmacı ayırma özgün sesle yapılıyor", str(e)[:200])
+            try:
+                torch.cuda.empty_cache()
+            except Exception:  # noqa: BLE001
+                pass
+            return audio
 
     def _run_lowmem(self, audio, kw) -> list[list]:
         """RAM / ekran kartı belleği yetmezse toplu boyutu küçültüp, belleği boşaltıp tekrar dene."""
@@ -552,9 +666,12 @@ class Diarizer:
                 time.sleep(30)
                 self.wait_memory(len(audio) / SR, max_wait=600)
 
-    def run(self, wav: str, min_speakers=None, max_speakers=None) -> list[list]:
+    def run(self, wav: str, min_speakers=None, max_speakers=None, vocals: bool = False) -> list[list]:
         audio = load_wav(wav)
         self.wait_memory(len(audio) / SR)
+        self.last_emb = None
+        if vocals:  # film / podcast: müzik ve efektler ses imzasını bozmasın
+            audio = self._vocals(audio)
         if self.agc:  # uzaktan konuşan muhabirler de ayrı konuşmacı olarak bulunsun
             from .audio import agc
             agc(audio)

@@ -50,8 +50,10 @@ def _handle(task: dict, wid: str, device: str, engine_cfg: dict, cache: dict):
                                          gpu_frac=engine_cfg.get("diar_gpu_frac"), ram_pct=engine_cfg.get("ram_limit_pct", 70),
                                          cpu_ok=engine_cfg.get("diar_cpu", False))
             d = cache["diar"]
-            return {"turns": d.run(task["wav"], task.get("min_speakers"), task.get("max_speakers")),
-                    "device": d.device}
+            turns = d.run(task["wav"], task.get("min_speakers"), task.get("max_speakers"),
+                          vocals=bool(task.get("vocals")))
+            return {"turns": turns, "device": d.device, "emb": d.last_emb, "model": d.model_used,
+                    "vocals": bool(task.get("vocals"))}
     raise ValueError(f"bilinmeyen görev: {kind}")
 
 

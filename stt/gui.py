@@ -671,6 +671,60 @@ class App:
         except Exception as e:  # noqa: BLE001
             return f"(okunamadı: {e})"
 
+    # ---------------------------------------------------------- konuşmacı düzeltme / ses kütüphanesi
+    def _doc_path(self, p: str) -> Path:
+        jp = Path(p).with_suffix(".json")
+        if not jp.is_file():
+            raise FileNotFoundError("Bu metnin .json dosyası yok")
+        return jp
+
+    def speakers_load(self, p: str) -> dict:
+        """Okuyucunun 'Konuşmacılar' görünümü: konuşmacılar + satırlar + bilinen sesler."""
+        try:
+            from .voices import VoiceLibrary, load_doc_voices
+            doc = json.loads(self._doc_path(p).read_text(encoding="utf-8"))
+            if not doc.get("speakers"):
+                return {"ok": False, "error": "Bu metinde konuşmacı ayrımı yok."}
+            emb = load_doc_voices(self._state_dir(), doc.get("key") or "").get("emb") or {}
+            return {"ok": True, "mode": doc.get("speaker_mode") or "basin", "td_label": doc.get("td_label"),
+                    "speakers": [{"id": k, "label": v.get("label"), "seconds": v.get("seconds", 0),
+                                  "voice": v.get("voice"), "sig": k in emb}
+                                 for k, v in (doc.get("speakers") or {}).items()],
+                    "segments": [{"id": sg.get("id"), "start": sg.get("start"), "sid": sg.get("speaker_id"),
+                                  "text": sg.get("text", "")} for sg in doc.get("segments") or []],
+                    "voices": VoiceLibrary(self._state_dir()).names()}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e)}
+
+    def speakers_save(self, p: str, data: dict) -> dict:
+        """Düzeltmeleri yaz (txt/srt/json/özet yeniden), adı konan seslerin imzasını kütüphaneye ekle."""
+        try:
+            from .outputs import write_all
+            from .voices import apply_corrections, learn_from_doc, save_reference
+            jp = self._doc_path(p)
+            doc = json.loads(jp.read_text(encoding="utf-8"))
+            apply_corrections(doc, (data or {}).get("labels"), (data or {}).get("moves"), (data or {}).get("td"))
+            base = jp.stem
+            write_all(jp.parent, base, doc, f"{base} - ozet.md")
+            st = self._state_dir()
+            save_reference(st, doc)
+            learned = learn_from_doc(st, doc, ignore=(self._cfg.reporter_label, self._cfg.td_label, "Teknik direktör"))
+            log.info("Konuşmacılar düzeltildi: %s (öğrenilen sesler: %s)", base[:60], ", ".join(learned) or "-")
+            return {"ok": True, "learned": learned}
+        except Exception as e:  # noqa: BLE001
+            log.exception("Konuşmacı düzeltmesi kaydedilemedi")
+            return {"ok": False, "error": str(e)}
+
+    def voices_list(self) -> list[dict]:
+        from .voices import VoiceLibrary
+        return VoiceLibrary(self._state_dir()).names()
+
+    def voice_delete(self, name: str) -> list[dict]:
+        from .voices import VoiceLibrary
+        lib = VoiceLibrary(self._state_dir())
+        lib.remove(name)
+        return lib.names()
+
     def retry_engine(self) -> None:
         self._cfg = load_config()
         self._restart.set()
