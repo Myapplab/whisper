@@ -24,11 +24,11 @@ class Config:
     gpus: str = "auto"                   # "auto" (monitörsüz kart), "yardim" (monitörlü kart yardımcı, düşük yük),
                                          # "all" (hepsi tam), "0,1", "0", "cpu"
     display_batch: int = 4               # monitörün bağlı olduğu kart kullanılırsa en fazla bu toplu boyut
-    # "yardim": monitörlü kart (3080) yalnız ana kart (3090) yetişemeyince metin çevirir; başka program kartı
-    # kullanıyorsa (oyun, video düzenleme) ya da kartta az bellek kaldıysa beklenir. Konuşmacı ayırma oraya gitmez.
-    helper_rest_s: float = 2.0           # yardımcı kart her parçadan sonra bu kadar dinlenir (ölçüm de bu arada)
-    helper_busy_pct: int = 50            # yardımcı boştayken kart bu yüzdeden fazla kullanılıyorsa (başka program) bekler
-    helper_min_free_gb: float = 1.5      # yardımcı kartta bundan az boş bellek kaldıysa bekler (YouTube, tarayıcı)
+    # "yardim": monitörlü kart (3080) ana kart (3090) yetişemeyince metin çevirir. Kartta YouTube / tarayıcı
+    # sekmeleri için helper_reserve_gb boş bırakılır, kalan bellek ve güç bu işe verilir (toplu boyut ona göre).
+    # Başka programlar belleği kullanırsa beklenir / yardımcı kapanır. Konuşmacı ayırma oraya gitmez.
+    helper_reserve_gb: float = 2.0       # yardımcı kartta başka programlara (YouTube, sekmeler) bırakılan boş bellek
+    helper_rest_s: float = 0.0           # yardımcı kart her parçadan sonra bu kadar dinlenir (0 = tam güç)
     low_priority: bool = True            # tanıma süreçleri düşük öncelikte (bilgisayar donmasın)
     isolate_gpu: bool = True             # her işçi yalnızca kendi kartını görür (monitörlü kartta CUDA bağlamı yok)
     ui_gpu: bool = False                 # arayüz (WebView2) ekran kartı hızlandırması; kapalı = ekran kararmasın
@@ -235,9 +235,8 @@ def normalize(cfg: Config) -> Config:
     cfg.split_min = _num(cfg.split_min, 8.0, 0.5)
     cfg.live_chunk_s = _num(cfg.live_chunk_s, 20.0, 5.0)
     cfg.llm_budget_usd = _num(cfg.llm_budget_usd, 5.0, 0.0)
-    cfg.helper_rest_s = _num(cfg.helper_rest_s, 2.0, 1.0, 600.0)  # en az 1 sn: ölçüm kendi işini görmesin
-    cfg.helper_busy_pct = int(_num(cfg.helper_busy_pct, 50, 1, 100))
-    cfg.helper_min_free_gb = _num(cfg.helper_min_free_gb, 1.5, 0.0, 64.0)
+    cfg.helper_rest_s = _num(cfg.helper_rest_s, 0.0, 0.0, 600.0)
+    cfg.helper_reserve_gb = _num(cfg.helper_reserve_gb, 2.0, 0.5, 16.0)
     for k in ("gemini_api_key", "anthropic_api_key", "openai_api_key", "hf_token", "api_token", "webhook_url",
               "llm_model"):
         v = getattr(cfg, k)

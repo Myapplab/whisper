@@ -26,9 +26,12 @@ from .workers import WorkerPool
 FPL_MEM_S = 1800     # FPL fikstür verisi bellekte en çok bu kadar tutulur (erteleme / skor için yeniden okunur)
 AUTO_SPECS = ("auto", "all", "hepsi", "tum", "tümü")
 HELPER_SPECS = ("yardim", "yardım", "helper")   # monitörsüz kart(lar) tam + monitörlü kart yardımcı (düşük yük)
-HELPER_RECHECK_S = 30.0  # yardımcı kart meşgulse bu kadar sonra yeniden ölçülür
-HELPER_PARK_S = 120.0    # bu kadar süre meşgul kalırsa yardımcı işçi kapatılır (model belleği o programa kalır)
-HELPER_NEED_GB = 5.0     # kapatılmış yardımcının yeniden açılması için (eşiğin üstünde) gereken boş bellek
+HELPER_RECHECK_S = 30.0  # yardımcı kartta yer yoksa bu kadar sonra yeniden ölçülür
+HELPER_PROBE_S = 15.0    # açık yardımcıda kart ölçümü en çok bu kadar sn'de bir (görev arası)
+HELPER_PARK_S = 60.0     # başka programlar ayrılan belleği bu kadar süre aşarsa yardımcı kapatılır (bellek onlara kalır)
+# yardımcının toplu boyuta göre kartta kapladığı bellek (GB, tahmin + pay). faster-whisper README (large-v2 fp16,
+# beam 5, RTX 3070 Ti): tekli 4.5 GB, toplu 8 6.1 GB. Gerçekte fazla gelirse kapanır, sonra bir küçük boyutla açılır.
+HELPER_FOOT_GB = {8: 6.4, 4: 5.6, 2: 5.2}
 HELPER_IDLE_PARK_S = 300.0  # bu kadar süre iş fazlası olmazsa yardımcı kapatılır (model belleği karta geri döner)
 HELPER_OFF = "kapalı · gerekince açılır"
 
@@ -244,6 +247,8 @@ class Pipeline:
         self._h_note: dict[str, str] = {}        # arayüze son bildirilen bekleme sebebi
         self._h_gone: set[str] = set()           # bir daha açılmayacak yardımcılar (görevleri geri alındı)
         self._h_last: dict[str, float] = {}      # yardımcı -> son görev / hazır olma zamanı (boşta kapatma için)
+        self._h_cap: dict[str, int] = {}         # yardımcı -> en büyük toplu boyut (bellek yetmeyince küçülür)
+        self._h_batch: dict[str, int] = {}       # yardımcı -> şu an yüklü modelin toplu boyutu
         self._ecfg: dict = {}
         self.idle: set[str] = set()          # boşta olduğunu bildiren işçiler
         self.queued_n = 0                    # işçi kuyruğuna konup henüz alınmamış görev sayısı
@@ -304,9 +309,13 @@ class Pipeline:
             ecfg["model_path"] = resolve_model_path(cfg.model)
             self.pool = WorkerPool(devices, ecfg)
             if self.helper_devices:
-                log.info("Yardımcı kart: toplu boyut en fazla %d, en düşük öncelik; başka program kartı kullanırken "
-                         "(%%%d üstü ya da %.1f GB'tan az boş bellek) beklenir. Konuşmacı ayırma yardımcıya gitmez.",
-                         cfg.display_batch, cfg.helper_busy_pct, cfg.helper_min_free_gb)
+                from .engines import auto_batch_size
+                for d in self.helper_devices:
+                    gb = (gi.get(int(d.split(":")[1])) or {}).get("gb")
+                    self._h_cap[d] = cfg.batch_size if cfg.batch_size >= 1 else auto_batch_size("cuda", gb)
+                log.info("Yardımcı kart: YouTube / tarayıcı için %.1f GB boş bırakılır, kalan bellek bu işe verilir "
+                         "(toplu boyut ona göre, en çok %s); en düşük işlemci önceliği. Konuşmacı ayırma yardımcıya gitmez.",
+                         cfg.helper_reserve_gb, "/".join(str(v) for v in self._h_cap.values()))
                 # modeller iki havuzda da SIRAYLA yüklensin (ortak kilit: aynı anda iki 3 GB yükleme RAM'i tüketiyordu)
                 self.hpool = WorkerPool(self.helper_devices, {**ecfg, "helper": True},
                                         load_lock=getattr(self.pool, "load_lock", None))
@@ -978,20 +987,32 @@ class Pipeline:
                 self._h_probing.discard(wid)
         self._spawn(run)
 
-    def _helper_reason(self, load: dict | None, parked: bool) -> str:
-        """Yardımcı kart neden beklemeli ('' = çalışabilir). Ölçüm yardımcı dinlenirken (ya da kapalıyken) alınır:
-        kullanım başka programlarındır. Okunamazsa çalışılır (eski sürücüde sonsuza dek beklemesin)."""
-        if not load:
-            return ""
-        util, used, total = load.get("util"), load.get("used_mb"), load.get("total_mb")
-        if isinstance(util, (int, float)) and util >= self.cfg.helper_busy_pct:
-            return f"kart başka programla meşgul (%{int(util)})"
-        if isinstance(used, (int, float)) and isinstance(total, (int, float)) and total > 0:
-            free = (total - used) / 1024
-            need = self.cfg.helper_min_free_gb + (HELPER_NEED_GB if parked else 0.0)
-            if free < need:
-                return f"kartta boş bellek az ({free:.1f} GB)"
-        return ""
+    def _helper_check(self, wid: str, load: dict | None, parked: bool) -> tuple[str, int]:
+        """(bekleme sebebi, açılışta toplu boyut). Kartta ``helper_reserve_gb`` YouTube / tarayıcı için boş kalır.
+        Kapalı yardımcı: boş bellekten ayrılan çıkınca kalan yere sığan en büyük toplu boyutla açılır (yoksa bekler).
+        Açık yardımcı: başka programlar ayrılan belleğin yarısından fazlasını kullandıysa bekler (uzarsa kapanır).
+        Ölçülemezse (eski sürücü) çalışılır; açılışta küçük toplu boyut."""
+        cap = self._h_cap.get(wid) or 4
+        sizes = [b for b in sorted(HELPER_FOOT_GB, reverse=True) if b <= cap] or [min(HELPER_FOOT_GB)]
+        used, total = (load or {}).get("used_mb"), (load or {}).get("total_mb")
+        if not (isinstance(used, (int, float)) and isinstance(total, (int, float)) and total > 0):
+            return "", sizes[-1]
+        free = (total - used) / 1024
+        reserve = self.cfg.helper_reserve_gb
+        if parked:
+            for b in sizes:
+                if free - reserve >= HELPER_FOOT_GB[b]:
+                    return "", b
+            return f"kartta yer yok ({free:.1f} GB boş, {reserve:.1f} GB ayrılmış)", 0
+        if free < reserve / 2:
+            return f"başka programlar belleği kullanıyor ({free:.1f} GB boş)", 0
+        return "", self._h_batch.get(wid, 0)
+
+    def _helper_shrink(self, wid: str) -> None:
+        """Bellek yetmedi: bir sonraki açılış bir küçük toplu boyutla (aynı boyutla açılıp kapanma döngüsü olmasın)."""
+        cur = self._h_batch.get(wid) or self._h_cap.get(wid) or 4
+        smaller = [b for b in HELPER_FOOT_GB if b < cur]
+        self._h_cap[wid] = max(smaller) if smaller else min(HELPER_FOOT_GB)
 
     def _helper_note(self, wid: str, note: str) -> None:
         if self._h_note.get(wid, "") == note:
@@ -1007,9 +1028,9 @@ class Pipeline:
 
     def _helper_dispatch(self, takers: int) -> None:
         """Yardımcıya görev: yalnız ana kart(lar)ın alabileceğinden fazla iş varsa (``takers`` = görev alabilen
-        ana işçi sayısı; kart konuşmacı ayırmadaysa 0), yardımcı dinlendiyse ve kart başka programla meşgul
-        değilse. Uzun süre meşgulse yardımcı işçi kapatılır (bellek o programa kalır), kart boşalınca yeniden açılır.
-        ``self.lock`` altında çağrılır."""
+        ana işçi sayısı; kart konuşmacı ayırmadaysa 0) ve kartta YouTube / tarayıcı için ayrılan bellek korunuyorsa
+        (`_helper_check`). Başka programlar o belleği uzun süre aşarsa yardımcı kapatılır (bellek onlara kalır), yer
+        açılınca sığan toplu boyutla yeniden açılır. ``self.lock`` altında çağrılır."""
         hp = self.hpool
         if hp is None or self.hqueued_n > 0:
             return  # kuyruktaki görev henüz alınmadı: ikinci görev verilmez
@@ -1037,10 +1058,12 @@ class Pipeline:
             if not parked and wid not in self.idle:
                 continue
             pr = self._h_probe.get(wid)
-            if pr is None or pr[0] < max(self._h_ready.get(wid, 0.0), now - HELPER_RECHECK_S):
-                self._probe_helper(wid)  # dinlenme bitti: kartı şimdi ölç (sonuç sonraki turda)
+            # kapalıyken her karar yeni ölçümle; açıkken ölçüm 15 sn geçerli (nvidia-smi her parçada çalışmasın: i3)
+            fresh = max(self._h_ready.get(wid, 0.0), now - HELPER_RECHECK_S) if parked else now - HELPER_PROBE_S
+            if pr is None or pr[0] < fresh:
+                self._probe_helper(wid)  # kartı şimdi ölç (sonuç sonraki turda)
                 continue
-            reason = self._helper_reason(pr[1], parked)
+            reason, batch = self._helper_check(wid, pr[1], parked)
             if reason:
                 since = self._h_busy_since.setdefault(wid, now)
                 self._h_ready[wid] = now + HELPER_RECHECK_S
@@ -1048,6 +1071,7 @@ class Pipeline:
                 if not parked and now - since >= HELPER_PARK_S and wid not in self.inflight:
                     log.warning("[%s] yardımcı kart %.0f dakikadır bekliyor (%s): işçi kapatılıyor (bellek o programa "
                                 "kalsın), kart boşalınca yeniden açılacak", wid, (now - since) / 60, reason)
+                    self._helper_shrink(wid)
                     self._park_helper(wid, reason)
                 elif parked:
                     self._helper_note(wid, "kapalı, kart boşalınca açılacak: " + reason)
@@ -1055,11 +1079,15 @@ class Pipeline:
                     self._helper_note(wid, reason)
                 continue
             self._h_busy_since.pop(wid, None)
-            self._h_probe.pop(wid, None)  # her görev için yeni ölçüm
             if parked:
+                self._h_probe.pop(wid, None)
                 del self._h_parked[wid]
-                log.info("[%s] kart boşaldı: yardımcı yeniden açılıyor", wid)
+                log.info("[%s] yardımcı kart açılıyor (toplu boyut %d, %.1f GB YouTube / tarayıcıya ayrıldı)", wid,
+                         batch, self.cfg.helper_reserve_gb)
                 self._h_note[wid] = ""
+                self._h_batch[wid] = batch
+                if isinstance(getattr(hp, "_ecfg", None), dict):
+                    hp._ecfg = {**hp._ecfg, "helper_batch": batch}  # yeni süreç bu toplu boyutla yükler
                 hp.respawn(wid)
                 self.emit("worker", wid=wid, state="loading")
                 continue
@@ -1116,6 +1144,8 @@ class Pipeline:
                 # girmesin (6 denemeden sonra oturum boyu kaybolurdu); kart boşalınca açılır
                 log.warning("[%s] yardımcı kartta model yüklenemedi (%s); kart boşalınca tekrar denenecek", wid,
                             m["error"][:160])
+                if is_oom(m["error"]):
+                    self._helper_shrink(wid)
                 self._park_helper(wid, "model yüklenemedi (kartta yer yok)", graceful=False)
                 return
             if m.get("retryable") and self.restarts.get(wid, 0) < self.cfg.worker_restarts:
@@ -1183,6 +1213,7 @@ class Pipeline:
             log.warning("[%s] yardımcı kartta bellek yetmedi (başka program?): parça yeniden sırada", wid)
             with self.lock:
                 self.backlog.appendleft(task)
+            self._helper_shrink(wid)
             self._park_helper(wid, "görev sırasında kartta bellek yetmedi")
             return
         if typ == "error":

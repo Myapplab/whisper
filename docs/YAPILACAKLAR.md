@@ -38,6 +38,13 @@ E.2 (C5) ve aşağıdaki K5 planı. **(1.9.5'ten kalan):** kullanıcı Güncelle
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
+- 1.9.11 (Claude; kullanıcı istedi): yardımcı kart (3080) artık "hafif" değil: kullanıcının önerisiyle kartta YouTube /
+  sekmeler için **ayrılan bellek** (Ayarlar > "Yardımcı kartta YouTube / tarayıcı için boş bırakılacak bellek",
+  varsayılan 2 GB, kaydedince hemen geçerli) dışında kalan bellek ve güç işe verilir: toplu boyut kalan yere göre
+  (8/4/2), dinlenme ve kullanım-yüzdesi beklemesi yok. Başka programlar belleği alırsa bekler / kapanır, sonra daha
+  küçük toplu boyutla açılır. Ayrıntı GELISTIRME "1.9.11". Kullanıcıya söylendi: GPU hesap gücü bölünemez, YouTube
+  ayrı video çözücüyü kullanır. DENENMEDİ: Windows, gerçek kartlar (toplu boyut bellek tahminleri README'den, ölçülmedi).
+  KULLANICIDAN: Güncelle → yardımcı + ayrılan bellek → kart şeridi + Görev Yöneticisi 3080 "Dedicated GPU memory".
 - 1.9.10 (Claude; 488 test): kullanıcı 1.9.9'da Ayarlar > Ekran kartı kullanımında yalnız "Önerilen" ve "Hepsi"
   gördü ("yardımcı" ve "Yalnızca RTX ..." yok). Sebep (eskiden de vardı): Ayarlar uygulama açılışında (`hello`)
   dolduruluyordu, o anda motor başlamadığı için `App._gpus` boş → kart listesi boş. Düzeltme: `get_settings` motor

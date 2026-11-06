@@ -396,7 +396,10 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
       <div class="sec">Ekran kartı</div>
       <div class="field"><label for="sGpu">Ekran kartı kullanımı</label>
         <select id="sGpu"></select>
-        <span class="hint">Önerilen ayar monitörün bağlı olduğu kartı boş bırakır (ekran kararmaz, bilgisayar donmaz). "Yardımcı" seçilirse monitörlü kart yalnız ana kart yetişemeyince metin çevirir; konuşmacı ayırma hep ana kartta kalır. Değişiklik, sıradaki işler bitince uygulanır.</span></div>
+        <span class="hint">Önerilen ayar monitörün bağlı olduğu kartı boş bırakır (ekran kararmaz, bilgisayar donmaz). "Yardımcı" seçilirse monitörlü kart, ana kart yetişemeyince metin çevirir; konuşmacı ayırma hep ana kartta kalır. Değişiklik, sıradaki işler bitince uygulanır.</span></div>
+      <div class="field" id="sHelperRow"><label for="sHelperGb">Yardımcı kartta YouTube / tarayıcı için boş bırakılacak bellek (GB)</label>
+        <input type="text" id="sHelperGb" inputmode="decimal" style="width:90px" class="txt">
+        <span class="hint">Bu kadar bellek YouTube ve sekmelere kalır, geri kalanı ve kartın gücü metin çevirisine verilir. Birkaç YouTube + 10 kadar sekme için 2 GB yeterli; YouTube takılırsa artırın. Kaydedince hemen geçerli.</span></div>
       <label class="toggle"><input type="checkbox" id="sUiGpu"><span>Arayüzde ekran kartı hızlandırması<small>Kapalı önerilir (açılışta ekranın kararıp gelmesini önler). Değişiklik yeniden açılışta geçerli.</small></span></label>
       <div class="sec">Yapay zekâ (isteğe bağlı)</div>
       <div class="field"><label for="sLlm">Sağlayıcı</label>
@@ -987,11 +990,12 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     const cards = s.gpu_cards || [], mon = cards.filter(c => c.display), free = cards.filter(c => !c.display);
     if (cards.length > 1 || s.gpus === "yardim")
       g.append(el("option", { value: "yardim" }, (free.length && mon.length ? free.map(c => c.name).join(" + ") + " + " + mon.map(c => c.name).join(" + ") + " yardımcı"
-        : "Monitörlü kart yardımcı") + ": çok video için (monitörlü kart düşük yükle çalışır, oyun / başka program kartı kullanınca bekler)"));
+        : "Monitörlü kart yardımcı") + " (çok video için)"));
     g.append(el("option", { value: "all" }, "Hepsi tam yükte: en hızlı (masaüstü takılabilir, ekran kararabilir)"));
     for (const c of s.gpu_cards || []) g.append(el("option", { value: c.id }, "Yalnızca " + c.name + " (" + c.gb + " GB" + (c.display ? ", monitör bağlı" : "") + ")"));
     if (![...g.options].some(o => o.value === s.gpus)) g.append(el("option", { value: s.gpus }, "Kart: " + s.gpus));
     g.value = s.gpus || "auto";
+    $("#sHelperGb").value = s.helper_reserve_gb ?? 2; $("#sHelperRow").hidden = g.value !== "yardim";
     $("#sOut").value = s.out_dir || ""; $("#sFpl").value = s.fpl_repo || ""; $("#sCookie").value = s.cookies_browser || "auto";
     $("#sCookieFile").value = s.cookies_file || ""; $("#sBrowser").checked = !!s.browser_capture; $("#sUiGpu").checked = !!s.ui_gpu;
     $("#sDiarEng").value = s.diar_engine || "pyannote"; $("#sDiarAgc").value = s.diar_agc || "auto";
@@ -1014,6 +1018,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     $("#sFplState").textContent = s.fpl_repo ? (s.fpl_ok ? "presser.py bulundu." : "Bu klasörde presser.py yok.") : "";
     updateNote();
   }
+  $("#sGpu").onchange = () => { $("#sHelperRow").hidden = $("#sGpu").value !== "yardim"; };
   $("#btnSettings").onclick = async () => {  // her açılışta güncel ayarlar (kart listesi motor açılınca belli oluyor)
     const s = await call("get_settings"); if (s) fillSettings(s);
     $("#mSettings").classList.add("show");
@@ -1048,7 +1053,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
   $("#sFollowNow").onclick = async () => { toast("Takip edilen kanallar kontrol ediliyor…"); const r = await call("follow_check_now"); if (r) toast(r.count + " yeni video bulundu."); };
   // keepOpen: pencere açık kalsın (anahtar denemesi / silme); clear: stt.toml'dan silinecek anahtarlar
   async function saveSettings(keepOpen, clear) {
-    const s = await call("save_settings", { out_dir: $("#sOut").value, hf_token: $("#sHf").value, fpl_repo: $("#sFpl").value, cookies_browser: $("#sCookie").value, gpus: $("#sGpu").value,
+    const s = await call("save_settings", { out_dir: $("#sOut").value, hf_token: $("#sHf").value, fpl_repo: $("#sFpl").value, cookies_browser: $("#sCookie").value, gpus: $("#sGpu").value, helper_reserve_gb: $("#sHelperGb").value,
       cookies_file: $("#sCookieFile").value, browser_capture: $("#sBrowser").checked, ui_gpu: $("#sUiGpu").checked,
       llm_provider: $("#sLlm").value, llm_model: $("#sLlmModel").value, llm_budget_usd: $("#sBudget").value, gemini_api_key: $("#sGemKey").value,
       anthropic_api_key: $("#sClaKey").value, openai_api_key: $("#sOaiKey").value, llm_news: $("#sLlmNews").checked, llm_qa: $("#sLlmQa").checked,

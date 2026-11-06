@@ -25,7 +25,7 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   kuyruk, model yükleme kilidi ana havuzla ortak). `_helper_dispatch`: yardımcıya görev yalnız bekleyen iş, ana
   işçilerin alabileceğinden fazlaysa (3090 konuşmacı ayırırken ana işçi sayılmaz: asıl kazanç bu), tek tek, her
   görevden sonra `helper_rest_s` (2 sn) dinlenme, sonra `engines.gpu_load` (nvidia-smi, arka plan iş parçacığı)
-  ölçümü: kart başka programla %`helper_busy_pct` (50) üstü meşgulse ya da `helper_min_free_gb` (1.5) altı boş bellek
+  ölçümü (1.9.11: yüzde ölçümü ve dinlenme kaldırıldı, aşağıya bakın): kart başka programla %`helper_busy_pct` (50) üstü meşgulse ya da `helper_min_free_gb` (1.5) altı boş bellek
   varsa 30 sn bekler; 2 dk sürerse yardımcı süreç kapatılır (`_h_parked`, model belleği boşalır), kart boşalınca
   (+5 GB) yeniden açılır. Yardımcı baştan KAPALI açılır (model ilk iş fazlasında yüklenir), 5 dk iş fazlası olmazsa
   yine kapanır; görev sırasında bellek yetmezse (oyun) parça deneme sayılmadan sıraya döner, yardımcı kapanır;
@@ -38,6 +38,14 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   (`test_real_queue_idle_worker_stop_keeps_queue_usable`, gerçek süreçlerle). Konuşmacı ayırma
   yardımcıya GİTMEZ (`_diar_device` yalnız ana kartlar). Yardımcı kalıcı düşerse kuyruğundaki görev ana karta döner
   (`_helper_gone`). Arayüz: kart şeridinde "yardımcı" etiketi, "bekliyor · sebep". Windows'ta / gerçek kartlarda DENENMEDİ.
+- **1.9.11 yardımcı kart = "ayrılan bellek dışında tam güç":** kullanıcı istedi: 3080'de birkaç YouTube + ~10 sekme
+  için bellek ayrılsın, gerisi işe verilsin. `helper_reserve_gb` (Ayarlar'da, varsayılan 2 GB, hemen geçerli).
+  Kapalı yardımcı, boş bellek − ayrılan ≥ `HELPER_FOOT_GB[b]` olan en büyük toplu boyutla açılır (8: 6.4, 4: 5.6,
+  2: 5.2 GB; faster-whisper README large-v2 fp16 beam 5: tekli 4.5, toplu 8 6.1 GB + pay); sığmazsa bekler. Açıkken
+  boş bellek ayrılanın yarısının altına inerse bekler, 60 sn sürerse kapanır ve sonraki açılış bir küçük toplu
+  boyutla (`_helper_shrink`; görevde / yüklemede bellek yetmeyince de). Kullanım yüzdesi ölçümü ve dinlenme
+  kaldırıldı (`helper_rest_s` = 0; kendi yükümüz ölçüme karışıyordu). nvidia-smi açık yardımcıda en çok 15 sn'de bir.
+  GPU hesap gücü GeForce'ta bölünemez (Windows zaman paylaşımı); YouTube videoyu ayrı çözücü birimde (NVDEC) açar.
 - **Konuşmacı ayırma ayrı süreçte** (`Pipeline.dpool`, wid `diar`, ilk ayırma görevinde açılır, belleği en büyük
   kartta): aynı süreçte torch + CTranslate2 → `invalid device ordinal` ve 1.2.0'da `CUDNN_STATUS_EXECUTION_FAILED`
   + `MemoryError` görüldü. `Diarizer.run`: cuDNN hatasında cuDNN kapalı tekrar dener; işlemciye geçmez (1.6.2, `diar_cpu`).

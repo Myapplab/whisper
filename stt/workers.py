@@ -131,6 +131,8 @@ def _init(device: str, engine_cfg: dict, cache: dict, load_lock=None, run_device
             # monitörlü / yardımcı kart: küçük toplu boyut (az bellek; YouTube, tarayıcı, masaüstü yer bulsun)
             from .engines import auto_batch_size
             cap = max(1, int(engine_cfg.get("display_batch") or 4))
+            if engine_cfg.get("helper") and engine_cfg.get("helper_batch"):
+                cap = int(engine_cfg["helper_batch"])  # yardımcı: ayrılan bellek dışında kalan yere sığan toplu boyut
             batch = min(auto_batch_size("cuda", vram) if batch < 0 else batch, cap)
         # modeller SIRAYLA yüklenir: aynı anda iki 3 GB yükleme RAM'i (mkl_malloc) tüketebilir
         if load_lock is not None:

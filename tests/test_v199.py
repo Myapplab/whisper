@@ -16,6 +16,7 @@ class FakeHelperPool(FakePool):
         self._spec = {n: n for n in names}
         self.stopped: list = []
         self.queue_left: list = []
+        self._ecfg: dict = {"helper": True}
 
     def stop(self, n, idle=False):
         self.stopped.append(n)
@@ -103,23 +104,45 @@ def test_helper_rests_after_each_task(tmp_path):
     assert len(p.hpool.put_q) == 1 and len(p.loads) == n_loads    # dinleniyor: ölçüm de görev de yok
     p._h_ready["cuda:0"] = time.time() - 1                        # dinlenme bitti
     p._dispatch()
-    assert len(p.loads) == n_loads + 1                            # yeni ölçüm (eskisi kullanılmaz)
+    assert len(p.hpool.put_q) == 2 and len(p.loads) == n_loads    # 15 sn içindeki ölçüm geçerli (i3: az nvidia-smi)
+    p._h_probe["cuda:0"] = (time.time() - 20, p.load)
+    p._on_msg({"type": "start", "wid": "cuda:0", "tid": p.hpool.put_q[1]["id"]})
+    p._on_msg({"type": "done", "wid": "cuda:0", "tid": p.hpool.put_q[1]["id"], "elapsed": 1.0,
+               "payload": {"segments": [], "language": "en"}})
+    p._h_ready["cuda:0"] = time.time() - 1
     p._dispatch()
-    assert len(p.hpool.put_q) == 2
+    assert len(p.loads) == n_loads + 1 and len(p.hpool.put_q) == 2   # eski ölçüm: önce yeniden ölçülür
+    p._dispatch()
+    assert len(p.hpool.put_q) == 3
 
 
-def test_helper_waits_when_card_busy_with_other_program(tmp_path):
+def test_full_power_by_default_no_rest(tmp_path):
     p, job, tasks = _pipe(tmp_path, n=6)
+    assert p.cfg.helper_rest_s == 0.0
+    _ready(p, "cuda:1", "cuda:0")
+    p._dispatch()
+    p._dispatch()
+    t = p.hpool.put_q[0]
+    p._on_msg({"type": "start", "wid": "cuda:0", "tid": t["id"]})
+    p._on_msg({"type": "done", "wid": "cuda:0", "tid": t["id"], "elapsed": 1.0,
+               "payload": {"segments": [], "language": "en"}})
+    p._dispatch()
+    assert len(p.hpool.put_q) == 2                                # dinlenmeden sıradaki parça
+
+
+def test_helper_waits_when_others_use_reserved_memory(tmp_path):
+    """Yardımcı açıkken YouTube / sekmeler ayrılan belleğin yarısından fazlasını kullanırsa görev verilmez."""
+    p, job, tasks = _pipe(tmp_path, n=6)                              # ayrılan: 2 GB
     events = []
     p.events = events.append
-    p.load = {"util": 90, "used_mb": 4000.0, "total_mb": 10240.0}     # oyun
+    p.load = {"util": 99, "used_mb": 9500.0, "total_mb": 10240.0}     # 0.7 GB boş
     _ready(p, "cuda:1", "cuda:0")
     p._dispatch()
     p._dispatch()
     assert p.hpool.put_q == []
     paused = [e for e in events if e.get("state") == "paused"]
-    assert paused and "%90" in paused[-1]["note"]
-    p.load = {"util": 10, "used_mb": 4000.0, "total_mb": 10240.0}
+    assert paused and "belleği kullanıyor" in paused[-1]["note"]
+    p.load = {"util": 99, "used_mb": 8500.0, "total_mb": 10240.0}     # 1.7 GB boş; kartın kendi yükü önemli değil
     p._dispatch()
     assert p.hpool.put_q == []                       # 30 sn sonra yeniden bakılır
     p._h_ready["cuda:0"] = time.time() - 1
@@ -129,13 +152,18 @@ def test_helper_waits_when_card_busy_with_other_program(tmp_path):
     assert events[-1].get("state") == "idle"         # "bekliyor" yazısı kalktı
 
 
-def test_helper_waits_when_card_memory_low(tmp_path):
+def test_open_batch_fits_left_memory(tmp_path):
+    """Kapalı yardımcı: boş bellekten ayrılan çıkar, kalan yere sığan en büyük toplu boyutla açılır."""
     p, job, tasks = _pipe(tmp_path, n=6)
-    p.load = {"util": 5, "used_mb": 9500.0, "total_mb": 10240.0}     # 0.7 GB boş
-    _ready(p, "cuda:1", "cuda:0")
-    p._dispatch()
-    p._dispatch()
-    assert p.hpool.put_q == []
+    p._h_cap["cuda:0"] = 8
+    free9 = {"util": 0, "used_mb": 1024.0, "total_mb": 10240.0}       # 9 GB boş (masaüstü + sekmeler 1 GB)
+    assert p._helper_check("cuda:0", free9, parked=True) == ("", 8)   # 9 - 2 = 7 GB -> 8
+    p.cfg.helper_reserve_gb = 3.0
+    assert p._helper_check("cuda:0", free9, parked=True) == ("", 4)   # 6 GB -> 4
+    p.cfg.helper_reserve_gb = 4.0
+    reason, b = p._helper_check("cuda:0", free9, parked=True)         # 5 GB: model sığmaz
+    assert b == 0 and "kartta yer yok" in reason and "4.0 GB ayrılmış" in reason
+    assert p._helper_check("cuda:0", None, parked=True) == ("", 2)    # ölçülemedi: en küçük
 
 
 def test_unreadable_load_does_not_block_forever(tmp_path):
@@ -149,7 +177,9 @@ def test_unreadable_load_does_not_block_forever(tmp_path):
 
 def test_helper_parked_after_long_busy_and_reopened(tmp_path):
     p, job, tasks = _pipe(tmp_path, n=6)
-    p.load = {"util": 95, "used_mb": 9000.0, "total_mb": 10240.0}
+    p._h_cap["cuda:0"] = 8
+    p._h_batch["cuda:0"] = 8
+    p.load = {"util": 95, "used_mb": 9500.0, "total_mb": 10240.0}
     _ready(p, "cuda:1", "cuda:0")
     p._dispatch()
     p._dispatch()
@@ -171,6 +201,7 @@ def test_helper_parked_after_long_busy_and_reopened(tmp_path):
     p._dispatch()
     p._dispatch()
     assert p.hpool.respawned == ["cuda:0"] and not p._h_parked
+    assert p.hpool._ecfg["helper_batch"] == 4        # 8'le bellek yetmemişti: bir küçük boyutla (açılıp kapanma döngüsü yok)
     assert p.hpool.put_q == []                                        # önce model yüklensin (ready)
 
 
@@ -221,8 +252,9 @@ def test_task_timeout_uses_helper_device(tmp_path):
 
 
 def test_helper_config_bounds():
-    c = normalize(Config(helper_rest_s=0, helper_busy_pct=500, helper_min_free_gb=float("nan")))
-    assert c.helper_rest_s == 1.0 and c.helper_busy_pct == 100 and c.helper_min_free_gb == 1.5
+    c = normalize(Config(helper_rest_s=-5, helper_reserve_gb=float("nan")))
+    assert c.helper_rest_s == 0.0 and c.helper_reserve_gb == 2.0
+    assert normalize(Config(helper_reserve_gb=0)).helper_reserve_gb == 0.5
 
 
 def test_settings_accept_helper_mode(tmp_path, monkeypatch):
@@ -240,8 +272,9 @@ def test_settings_accept_helper_mode(tmp_path, monkeypatch):
     app._start_api = lambda: None
     monkeypatch.setattr(gui.App, "llm", lambda self: type("L", (), {"key": lambda s, x: None,
                                                                      "status": lambda s: {}})())
-    r = app.save_settings({"gpus": "yardim"})
+    r = app.save_settings({"gpus": "yardim", "helper_reserve_gb": "2,5"})
     assert saved["gpus"] == "yardim" and r["gpus"] == "yardim"
+    assert saved["helper_reserve_gb"] == 2.5        # Türkçe virgülle yazılsa da
     assert app._restart.is_set()                    # işler bitince motor yeni kart düzeniyle açılır
 
 
@@ -348,6 +381,7 @@ def test_helper_oom_during_task_requeues_without_losing_chunk(tmp_path):
     assert p.backlog[0]["id"] == t["id"] and t["id"] not in job.attempts       # deneme sayılmadı
     assert "cuda:0" in p._h_parked and p.hpool.stop_idle == [True]
     assert not job.info.get("skipped_chunks")
+    assert p._h_cap["cuda:0"] == 2                   # yeniden açılışta bir küçük toplu boyut (4 -> 2)
 
 
 def test_helper_load_oom_parks_instead_of_restart_loop(tmp_path):
@@ -366,7 +400,7 @@ def test_stale_probe_not_used_later(tmp_path):
     p, job, tasks = _pipe(tmp_path, n=6)
     _ready(p, "cuda:1", "cuda:0")
     p._h_probe["cuda:0"] = (time.time() - 3600, {"util": 0, "used_mb": 0.0, "total_mb": 10240.0})
-    p.load = {"util": 95, "used_mb": 4000.0, "total_mb": 10240.0}   # şimdi oyun açık
+    p.load = {"util": 95, "used_mb": 9800.0, "total_mb": 10240.0}   # şimdi bellek dolu
     p._dispatch()
     p._dispatch()
     assert p.hpool.put_q == [] and p.loads == [0]
@@ -394,3 +428,19 @@ def test_settings_list_cards_before_engine_ready(tmp_path, monkeypatch):
                                                                      "status": lambda s: {}})())
     cards = app.get_settings()["gpu_cards"]
     assert [c["name"] for c in cards] == ["RTX 3080", "RTX 3090"] and cards[0]["display"] is True
+
+
+def test_worker_uses_helper_batch_from_pipeline(monkeypatch):
+    import stt.engines as eng
+    import stt.workers as w
+    seen = {}
+
+    class FakeEngine:
+        def __init__(self, path, device, ct, beam, cond, batch, vram, *a, **k):
+            seen["batch"] = batch
+    monkeypatch.setattr(eng, "WhisperEngine", FakeEngine)
+    cfg = {"engine": "whisper", "batch_size": -1, "gpu_mem": {0: 10}, "display_gpus": [0], "display_batch": 4,
+           "helper": True, "helper_batch": 8, "model_path": "m", "compute_type": "float16", "beam_size": 5,
+           "condition_on_previous_text": True}
+    w._init("cuda:0", cfg, {})
+    assert seen["batch"] == 8                       # ayrılan bellek dışında yer var: kartın tam toplu boyutu

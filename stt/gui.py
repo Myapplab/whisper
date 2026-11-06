@@ -366,6 +366,7 @@ class App:
                 "cookies_browser": c.cookies_browser or "none", "cookies_file": c.cookies_file or "",
                 "lang": c.lang or "auto", "diarize": bool(c.diarize), "fpl_auto": bool(c.fpl_auto),
                 "gpus": g if g in ("auto", "all", "yardim") else str(c.gpus), "gpu_cards": cards,
+                "helper_reserve_gb": c.helper_reserve_gb,
                 "browser_capture": bool(c.browser_capture), "ui_gpu": bool(c.ui_gpu),
                 "llm_provider": c.llm_provider or "none", "llm_model": c.llm_model or "",
                 "gemini_key_set": bool(llm.key("gemini")), "anthropic_key_set": bool(llm.key("claude")),
@@ -405,10 +406,11 @@ class App:
             upd["llm_provider"] = s["llm_provider"] if s["llm_provider"] in ("gemini", "claude", "openai") else ""
         if "llm_model" in s:
             upd["llm_model"] = (s.get("llm_model") or "").strip()
-        for k, typ in (("llm_budget_usd", float), ("api_port", int), ("follow_interval_h", float)):
+        for k, typ in (("llm_budget_usd", float), ("api_port", int), ("follow_interval_h", float),
+                       ("helper_reserve_gb", float)):
             if s.get(k) not in (None, ""):
                 try:
-                    upd[k] = typ(s[k])
+                    upd[k] = typ(str(s[k]).replace(",", ".")) if typ is float else typ(s[k])  # "2,5" de olur
                 except (TypeError, ValueError):
                     pass
         if s.get("diar_engine") in ("pyannote", "diarizen"):
