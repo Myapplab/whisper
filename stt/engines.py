@@ -719,6 +719,14 @@ class Diarizer:
                 time.sleep(30)
                 self.wait_memory(len(audio) / SR, max_wait=600)
 
+    VOCALS_MIN_FREE_GB = 4.0  # müzik ayıklama için en az bu kadar boş RAM ve sanal bellek
+
+    def _low_memory(self) -> bool:
+        """Müzik ayıklama ek bellek ister (1.8.7: tarayıcı belleği doldurunca ayırma "out of memory" ile düştü)."""
+        from .util import memory_status
+        m = memory_status()
+        return bool(m) and min(m["ram_free"], m["commit_free"]) < self.VOCALS_MIN_FREE_GB
+
     def _diarizen(self, audio, min_speakers, max_speakers) -> list[list] | None:
         """DiariZen ile dene (müzik ayıklanmış / agc'li ses); olmazsa None -> pyannote. Ses imzası çıkmaz."""
         from . import diarizen
@@ -761,6 +769,9 @@ class Diarizer:
                  ", önce müzik ayıklanacak" if vocals else "")
         self.wait_memory(len(audio) / SR)
         self.last_emb = None
+        if vocals and self._low_memory():
+            log.warning("[%s] bellek az; müzik ayıklama atlandı (konuşmacı ayırma özgün sesle)", self.device)
+            vocals = False
         if vocals:  # film / podcast: müzik ve efektler ses imzasını bozmasın
             audio = self._vocals(audio)
             self._beat(True)

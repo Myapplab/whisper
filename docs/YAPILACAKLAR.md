@@ -21,8 +21,8 @@ sıradakine geç. Kullanım biterse diğer profil ilk ✅ olmayan adımdan devam
       K6c Ayarlar'a "Konuşmacı motoru" seçimi + "DiariZen'i kur" düğmesi, K6d K5 ölçümüyle community-1 karşılaştırması.
 - [x] K7 (#2) ✅ `merge._td_guess`: uzun (≥5 sn) turların toplamı, tek uzun turu olan yarı puan (açılış yapan sözcü); ses kütüphanesi zaten önce geliyordu. Tercüman durumu çözülmedi (dil bilgisi gerekir).
 - [x] K8 (#5) ✅ `merge.exclusive_turns`: başka turun tamamen içindeki ≥1 sn söz kazanır (daha kısası "hı hı"). pyannote 4 zaten örtüşmesiz veriyor; bu kural 3.x ve DiariZen çıktısı için.
-- [ ] K9 (#6) Kelime zamanı kayması: kelime için en yakın tur yerine segment içi tutarlılık (K4 testleriyle).
-- [ ] K10 (#7) Müzik ayıklama yalnız film/podcast'te ve bellek yeterse; bellek az → atla (günlüğe yaz).
+- [~] K9 (#6) kısmen: sessizlik sonrası erken ilk kelime 1.8.6'da (`EARLY_GAP`). Başka kural ölçümsüz eklenmedi (zarar riski); K5 sonuçlarına göre.
+- [x] K10 (#7) ✅ müzik ayıklama zaten yalnız podcast/film'deydi; ek: boş RAM ya da sanal bellek < 4 GB ise atlanır (`Diarizer._low_memory`). Kullanıcıda şu an sanal bellek 3.8 GB boş → sayfa dosyası büyütülene kadar atlanacak.
 - [ ] K11 (#8) Ses kütüphanesi: 0.6–0.7 arası belirsiz eşleşmede ad verme; eşik düzeltmelerle ölçülsün.
 
 ## Son durum

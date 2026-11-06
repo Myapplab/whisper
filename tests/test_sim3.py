@@ -249,3 +249,15 @@ def test_td_falls_back_to_total_without_long_turns():
 def test_interjection_inside_long_turn_survives():
     out = merge.exclusive_turns([[0, 30, "TD"], [12, 14, "R"], [29, 31, "R2"]])
     assert out == [[0, 12, "TD"], [12, 14, "R"], [14, 30, "TD"], [30, 31, "R2"]]
+
+
+# ---- K10: bellek azken müzik ayıklama atlanır
+def test_vocals_skipped_when_memory_low(tmp_path, monkeypatch):
+    from test_stability import _Pipe, _fake_diarizer, _wav
+    monkeypatch.setattr("stt.util.memory_status", lambda: {"ram_free": 7.7, "commit_free": 2.0})
+    d = _fake_diarizer(_Pipe([]), cpu_pipe=None)
+    d.agc, called = False, []
+    d._vocals = lambda a: called.append(1) or a
+    d.wait_memory = lambda *a, **k: None
+    d.run(_wav(tmp_path), vocals=True)
+    assert not called
