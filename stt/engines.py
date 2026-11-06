@@ -683,6 +683,11 @@ class Diarizer:
             log.info("[%s] müzik ayıklandı (%.0f sn ses, %.1f sn)", self.device, len(x) / SR, time.time() - t0)
             return out
         except Exception as e:  # noqa: BLE001
+            msg = str(e).lower()
+            if ("cuda" in msg or "cublas" in msg or "cudnn" in msg) and "out of memory" not in msg:
+                # ekran kartı bağlamı bozuldu: bu süreçte pyannote da düşer. Hemen bildir; ana süreç yeni
+                # süreçte müzik ayıklamasız tekrar dener
+                raise RuntimeError(f"müzik ayıklama sırasında ekran kartı hatası: {str(e)[:200]}") from e
             log.warning("Müzik ayıklanamadı (%s); konuşmacı ayırma özgün sesle yapılıyor", str(e)[:200])
             try:
                 torch.cuda.empty_cache()

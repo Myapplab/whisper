@@ -939,6 +939,19 @@ class Pipeline:
                 self.idle.discard("diar")
                 self.dqueued_n = 0
                 self.emit("worker", wid="diar", state="loading")
+                if n < 3 and "out of memory" not in m["error"].lower():
+                    # bozulan CUDA bağlamı yeni süreçte genelde düzelir: konuşmacısız bitirmeden önce tekrar dene.
+                    # Müzik ayıklama sırasında bozulduysa (ya da ikinci deneme) müzik ayıklamadan dene.
+                    retry = dict(task)
+                    if n >= 2 or "müzik ayıklama" in m["error"].lower():
+                        retry["vocals"] = False
+                    self.tasks[tid] = retry
+                    log.warning("Konuşmacı ayırmada ekran kartı hatası; süreç yeniden açıldı, tekrar deneniyor "
+                                "(%d/2%s): %s", n, ", müzik ayıklamasız" if not retry.get("vocals") else "",
+                                job.item.title[:60])
+                    with self.lock:
+                        self.dbacklog.appendleft(retry)
+                    return
             if task["kind"] == "diarize":
                 job.diar_error = diar_hint(m["error"])
                 log.warning("KONUŞMACI AYIRMA YAPILAMADI: %s  -> metin konuşmacısız yazılacak.", job.diar_error)

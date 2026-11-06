@@ -97,3 +97,12 @@ def test_worker_stuck_loading_is_restarted(tmp_path):
     p._loading_since["cuda:1"] = time.time() - 4000
     p._health()
     assert p.pool.respawned == ["cuda:1"]
+
+
+def test_cuda_error_in_music_separation_retries_without_it(tmp_path):
+    p, job, tasks, d, fin = _diar_setup(tmp_path)
+    d["vocals"] = True
+    p._on_msg({"type": "start", "wid": "diar", "tid": d["id"]})
+    p._on_msg({"type": "error", "wid": "diar", "tid": d["id"],
+               "error": "RuntimeError: müzik ayıklama sırasında ekran kartı hatası: CUDA error: unknown error"})
+    assert p.dpool.respawned == ["diar"] and p.dbacklog[0]["vocals"] is False and not job.diar_error

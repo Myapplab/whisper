@@ -91,6 +91,14 @@ def test_diar_gpu_error_restarts_diar_process(tmp_path):
     d = {"id": "u_test:d", "kind": "diarize", "job": job.item.key, "wav": "x"}
     p.tasks[d["id"]] = d
     job.pending.add(d["id"])
-    p._on_msg({"type": "error", "wid": "diar", "tid": d["id"],
-               "error": "RuntimeError: Konuşmacı ayırma ekran kartında başarısız oldu (cudnn); işlemciye geçilmedi."})
-    assert p.dpool.respawned == ["diar"] and "işlemciye geçilmedi" in job.diar_error
+    d["vocals"] = True
+    err = "RuntimeError: Konuşmacı ayırma ekran kartında başarısız oldu (CUDA error: unknown error); işlemciye geçilmedi."
+    p._on_msg({"type": "error", "wid": "diar", "tid": d["id"], "error": err})
+    # 1.8.4: yeni süreçte tekrar denenir (konuşmacısız bitirmeden önce), 2. denemede müzik ayıklamasız
+    assert p.dpool.respawned == ["diar"] and not job.diar_error and p.dbacklog[0]["vocals"] is True
+    p.dbacklog.clear()
+    p._on_msg({"type": "error", "wid": "diar", "tid": d["id"], "error": err})
+    assert p.dbacklog[0]["vocals"] is False
+    p.dbacklog.clear()
+    p._on_msg({"type": "error", "wid": "diar", "tid": d["id"], "error": err})
+    assert p.dpool.respawned == ["diar"] * 3 and "işlemciye geçilmedi" in job.diar_error and not p.dbacklog

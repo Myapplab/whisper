@@ -4,6 +4,11 @@ Kullanıcı iki Claude hesabıyla (iki profil) sırayla çalışır: biri sını
 Ortak hafıza bu dosyadır. **Oturum sonunda güncelle** (Son durum + liste) ve `main`'e push et.
 
 ## Son durum
+- Sürüm 1.8.4: Memphis videosunda ayırma "CUDA error: unknown error" ile düştü, video konuşmacısız bitti. Artık ayırmada
+  ekran kartı hatası olunca süreç yeniden açılıp görev 2 kez daha deneniyor (2.'de müzik ayıklamasız);
+  `_vocals` CUDA hatasını yutmuyor ("müzik ayıklama sırasında ..." ile hemen bildiriyor → müzik ayıklamasız tekrar).
+  3090'da CUDA hataları (invalid device ordinal, cuBLAS failed, unknown error) sık: sürücü / güç / ısı olabilir;
+  sürerse NVIDIA sürücüsü (Studio) güncellemesi ve `nvidia-smi -q -d PERFORMANCE` istensin.
 - Sürüm 1.8.3 (senaryo denemeleri, `tests/test_sim.py`): ayırma süreci bir daha açılmazsa bekleyen ayırmalar hata
   sayılır (`_drop_dead_diar`; eskiden iş + sıralı çalışma yüzünden bütün kuyruk sonsuza dek bekliyordu); işçi
   mesajındaki beklenmedik hata yalnız o videoyu düşürür (`_safe_msg`; eskiden motor duruyordu); model yüklerken
