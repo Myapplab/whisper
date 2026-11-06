@@ -345,7 +345,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
 
   <!-- VERİ SETİ -->
   <section class="panel" id="pDs" aria-labelledby="h-ds">
-    <div class="ph"><h2 id="h-ds">Veri seti</h2><span class="spacer"></span><button class="linkbtn" id="btnCsv" type="button">index.csv</button></div>
+    <div class="ph"><h2 id="h-ds">Veri seti</h2><span class="spacer"></span><button class="linkbtn" id="btnReclass" type="button" title="İşlenmiş videoları metni yeniden çevirmeden güncel FPL fikstürüyle doğru takım / maç klasörüne taşır (GW, skor, maç öncesi/sonrası)">Yeniden sınıflandır</button><button class="linkbtn" id="btnCsv" type="button">index.csv</button></div>
     <div class="pb">
       <div class="stats">
         <div class="stat"><b id="sPress">0</b><span>basın toplantısı</span></div>
@@ -733,6 +733,22 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     $("#btnCsv").hidden = !ds.index_csv; $("#btnCsv").onclick = () => call("open", ds.index_csv);
   }
   const refreshDataset = async () => { const d = await call("dataset"); if (d) renderDataset(d); };
+  $("#btnReclass").onclick = async () => {
+    const b = $("#btnReclass");
+    if (b.disabled) return;
+    b.disabled = true;
+    try {
+      toast("Veri seti denetleniyor…");
+      const r = await call("dataset_reclassify", false);
+      if (!r) return;
+      if (!r.ok) { toast(r.error || "Yapılamadı."); return; }
+      if (!(r.moved || r.updated)) { toast(r.text || "Her kayıt doğru yerinde."); return; }
+      if (!confirm(r.text + "\n\nUygulansın mı? (Metinler yeniden çevrilmez; dosyalar yeni klasörlerine taşınır.)")) return;
+      const r2 = await call("dataset_reclassify", true);
+      if (r2) toast(r2.ok ? (r2.text || "Tamam.").split("\n")[0] : (r2.error || "Yapılamadı."));
+      refreshDataset();
+    } finally { b.disabled = false; }
+  };
 
   // ---------- metin okuyucu
   const spkColor = h => (parseInt((h.match(/(\d+)\s*$/) || [0, 1])[1], 10) - 1) % 6;

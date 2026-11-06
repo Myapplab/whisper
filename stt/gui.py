@@ -892,6 +892,27 @@ class App:
         if self._logpath:
             open_path(str(self._logpath))
 
+    def dataset_reclassify(self, apply: bool = False) -> dict:
+        """Veri seti > "Yeniden sınıflandır": önce deneme turu (ne değişecek), onaylanınca uygula.
+        Kuyrukta iş varken yapılmaz (biten işin çıktısı aynı anda yazılabilir)."""
+        if self._pipe is not None and self._pipe.active() or not self._inbox.empty():
+            return {"ok": False, "error": "Kuyrukta iş varken yapılmaz: işler bitince (ya da Durdur'dan sonra) tekrar "
+                                          "deneyin."}
+        if getattr(self, "_reclassifying", False):
+            return {"ok": False, "error": "Yeniden sınıflandırma zaten sürüyor."}
+        self._reclassifying = True
+        try:
+            from .reclassify import reclassify
+            res = reclassify(Path(self._cfg.out_dir).resolve(), apply=bool(apply), state=self._state())
+            if apply and res.get("ok"):
+                log.info("Veri seti yeniden sınıflandırıldı: %s", res.get("text", "").splitlines()[0] if res.get("text") else "")
+            return res
+        except Exception as e:  # noqa: BLE001
+            log.exception("Yeniden sınıflandırma yapılamadı")
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        finally:
+            self._reclassifying = False
+
     def dataset(self) -> dict:
         root = Path(self._cfg.out_dir).resolve()
         rows = read_jsonl(root / "index.jsonl")

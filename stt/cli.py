@@ -7,6 +7,7 @@
   stt durum
   stt kanal <kanal/liste linki> [--konu basin|roportaj|hepsi] [--kelime "a,b"] [--haric "women"] [--sadece-liste]
   stt serve [--port 8765]          (yerel API: haber sitesi / haber radarı için)
+  stt yeniden-siniflandir [--dene] (işlenmiş videoları güncel FPL fikstürüyle doğru takım / maç klasörüne taşı)
 """
 from __future__ import annotations
 
@@ -21,7 +22,9 @@ from .util import log, setup_logging
 SUBCOMMANDS = {"izle": "watch", "watch": "watch", "kontrol": "doctor", "doctor": "doctor", "check": "doctor",
                "olc": "bench", "ölç": "bench", "bench": "bench", "durum": "status", "status": "status",
                "kanal": "channel", "channel": "channel", "liste": "channel", "serve": "serve", "api": "serve",
-               "egit": "train", "eğit": "train", "train": "train"}
+               "egit": "train", "eğit": "train", "train": "train",
+               "yeniden-siniflandir": "reclassify", "yeniden-sınıflandır": "reclassify", "siniflandir": "reclassify",
+               "sınıflandır": "reclassify", "reclassify": "reclassify"}
 
 
 def _common(p: argparse.ArgumentParser) -> None:
@@ -211,6 +214,23 @@ def main(argv: list[str] | None = None) -> int:
         print("SONUC: " + _json.dumps(res, ensure_ascii=False), flush=True)
         return 0
 
+    if sub == "reclassify":
+        p = argparse.ArgumentParser(
+            prog="stt yeniden-siniflandir",
+            description="İşlenmiş videoları metni yeniden çevirmeden güncel kurallar ve FPL fikstürüyle doğru lig / "
+                        "takım / maç klasörüne taşı (mac.json, index.csv de yenilenir). Uygulamada kuyruk boşken "
+                        "çalıştırın.")
+        p.add_argument("-o", "--out", dest="out_dir")
+        p.add_argument("--dene", "--dry-run", dest="dry", action="store_true", help="yalnız göster, hiçbir şeyi değiştirme")
+        a = p.parse_args(argv[1:])
+        setup_logging()
+        if a.out_dir:
+            cfg.out_dir = Path(a.out_dir)
+        from .reclassify import reclassify
+        res = reclassify(Path(cfg.out_dir), apply=not a.dry)
+        print(res.get("text") or res.get("error") or "")
+        return 0 if res.get("ok") else 1
+
     if sub == "status":
         p = argparse.ArgumentParser(prog="stt durum")
         p.add_argument("-o", "--out", dest="out_dir")
@@ -301,7 +321,7 @@ def main(argv: list[str] | None = None) -> int:
 
     p = argparse.ArgumentParser(
         prog="stt", description=f"stt {__version__} - link/video/ses -> metin (faster-whisper, çoklu GPU)",
-        epilog="Alt komutlar: stt izle KLASOR | stt kontrol | stt olc [KLASOR] | stt durum")
+        epilog="Alt komutlar: stt izle KLASOR | stt kontrol | stt olc [KLASOR] | stt durum | stt yeniden-siniflandir")
     p.add_argument("girdiler", nargs="*", help="link, dosya, klasör ya da .txt link listesi")
     p.add_argument("--izle", "--watch", dest="watch", help="izleme klasörü")
     _common(p)

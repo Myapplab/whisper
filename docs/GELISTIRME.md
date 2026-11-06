@@ -32,7 +32,8 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   soru-cevap) | `herkes` (podcast/film: `Konuşmacı 1..N` ilk konuşma sırasına göre, `[dk] Konuşmacı N:` diyalog).
   `auto`: `match.looks_like_presser` (başlık/açıklamada press conference / basın toplantısı / mətbuat konfransı…
   ya da `MANAGER_HINTS`'te bilinen TD; `find_manager` "Golden State" gibi her büyük harfli diziyi aday sayar, ona
-  güvenme). `herkes` çıktıları `<out>/Podcast ve Film/<başlık>/`, FPL/mac.json yok, index `league="Podcast ve Film"`.
+  güvenme; 1.9.8'den beri kulüp kanalı + sözlükte rakip de evet, özet/antrenman/kadın takımı hariç).
+  `herkes` çıktıları `<out>/Podcast ve Film/<başlık>/`, FPL/mac.json yok, index `league="Podcast ve Film"`.
   GUI'de "Konuşmacıları ayır" altında tür seçimi + "Kişi sayısı" (pyannote min=max). Eski (biçim kaydı olmayan)
   soru-cevap çıktısı podcast'e benziyorsa link tekrar eklenince yeniden işlenir (`_redo_reason`). Kullanıcı
   YouTube podcast'inde "sesleri ayırmıyor" demişti: sebep herkesin TD/Muhabir diye iki etikete inmesiydi.
@@ -49,6 +50,12 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   Maç + GW, FPL API fikstürlerinden (fantasy.premierleague.com/api/bootstrap-static, /fixtures) eşleşir
   (`stt/dataset.py`), önbellek `<out>/.stt/fpl_cache.json`.
 - Takım/TD adı başlık + YouTube kanal adından (`stt/match.py`; Türkçe/Azerice kalıplar dahil).
+- **Eşleştirme (1.9.8, `docs/TARAMA_2026-11-06.md` A):** ortak sözcük olan takım adları (derby, nice, Sporting,
+  sabah, om) yalnız niteleyiciyle ya da başka takıma bağlıyken; hoca → takım (`match.PL_MANAGERS`, yalnız
+  `MANAGER_SEASON` tarihli videoda ve tarafsız kanalda); maç öncesi/sonrası başlıktan (`dataset.phase_hint`, saat
+  bilinmiyorsa `presser_time` "yalnız gün"); tanınmayan rakipte rakipsiz ±3 gün, sözlükteki PL dışı rakip PL maçına
+  yazılmaz; açıklamadaki kupa PL'yi ezmez. Eski çıktılar "Veri seti > Yeniden sınıflandır" / `stt
+  yeniden-siniflandir` (`stt/reclassify.py`) ile metin yeniden çevrilmeden taşınır; mac.json skoru da yenilenir.
 - FPL: `presser.py` (kullanıcının FPL reposu) → `inputs/pressers/GWxx/TAKIM.txt` yazılır ve
   `python3 presser.py <dosya>` çalışır; PL maçı bulunursa GW/takım kodu otomatik.
 - Atlama: dosya SHA-256 / normalize link / `extractor:id`; sürdürme: biten parçalar `<out>/.stt/is/<key>/`.
@@ -162,8 +169,11 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   gerçek konuşmacı ayırma (kullanıcıda "ayırmıyor" şikâyeti vardı; `stt kontrol` artık modeli
   yükleyip dener — sonucunu kullanıcıdan iste), FPL API ile gerçek eşleşme, gerçek WER (large-v3).
 - Yerel dosyalarda kanal adı yok → başlıkta yalnızca "Everton vs Coventry City" varsa TD'nin takımı
-  bilinemez (Lampard → Everton'a düştü). Fikir: GUI'de takımı elle düzeltme, ya da TD→takım eşleştirmesi.
-- `MANAGER_HINTS` / `TEAMS` (`stt/match.py`) elle tutulan listeler; sezon değişince güncellenmeli.
+  bilinemez (Lampard → Everton'a düştü). 1.9.8: TD→takım eşleştirmesi (`PL_MANAGERS`) bunu çözüyor; listede
+  olmayan hocada sorun sürer (fikir: GUI'de takımı elle düzeltme).
+- Elle tutulan listeler, **her sezon başında** (ve hoca değişince) güncellenmeli: `match.PL_MANAGERS` +
+  `MANAGER_SEASON` (tarih aralığını da kaydır), `match.TEAMS`, `dataset.PL_FALLBACK` (FPL'ye ulaşılamazsa),
+  `fpl.TEAM_NAMES`. Son güncelleme 2026-11-06 (2026-27; web aramasıyla doğrulandı).
 - setup.exe imzasız; paylaşım için kod imzalama (ör. Azure Trusted Signing) gerekir.
 - Kullanıcı ileride uygulamayı paylaşmak istiyor (tek kurulum dosyası).
 

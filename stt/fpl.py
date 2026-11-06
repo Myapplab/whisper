@@ -15,6 +15,7 @@ TEAM_NAMES = {
     "MUN": "Manchester United", "NEW": "Newcastle", "NFO": "Nottingham Forest", "SHU": "Sheffield United",
     "SOU": "Southampton", "SUN": "Sunderland", "TOT": "Tottenham", "WHU": "West Ham", "WOL": "Wolves",
     "LUT": "Luton", "WAT": "Watford", "NOR": "Norwich", "MID": "Middlesbrough", "COV": "Coventry",
+    "HUL": "Hull City",
 }
 
 

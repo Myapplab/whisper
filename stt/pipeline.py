@@ -18,12 +18,13 @@ from .merge import apply_labels, assign_speakers, label_speakers, label_speakers
 from .outputs import to_txt, write_all
 from .sources import Item
 from .state import State
-from .dataset import classify, fpl_data, presser_base_name, target_dir, update_index, write_match_json
+from .dataset import MAX_PATH, classify, fpl_data, index_row, out_paths, update_index, write_match_json  # noqa: F401
 from .match import looks_like_presser, parse_match
 from .util import fmt_clock, keep_awake, log, text_hash
 from .workers import WorkerPool
 
-MAX_PATH = 250  # Windows yol sınırı (260) altında kalmak için
+FPL_MEM_S = 1800     # FPL fikstür verisi bellekte en çok bu kadar tutulur (erteleme / skor için yeniden okunur)
+FPL_RETRY_S = 600    # FPL'ye ulaşılamadıysa bu kadar sonra tekrar denenir
 
 
 @dataclass
@@ -192,7 +193,8 @@ class Pipeline:
         self.pool: WorkerPool | None = None
         self.devices: list[str] = []
         self._fpl = None
-        self._fpl_loaded = False
+        self._fpl_at = 0.0                   # FPL verisinin okunduğu an
+        self._fpl_retry_at = 0.0             # FPL'ye ulaşılamadıysa bir sonraki deneme
         self.events = None                   # isteğe bağlı: GUI için olay geri çağırma fonksiyonu
         self.results: list[Job] = []
         self._pending_futs = 0
@@ -1195,30 +1197,26 @@ class Pipeline:
                        out_dir=prev["out_dir"], info=info)
 
     def fpl(self) -> dict | None:
-        if not self._fpl_loaded:
-            self._fpl_loaded = True
-            self._fpl = fpl_data(self.out_root / ".stt")
+        """FPL fikstür verisi. Eskiden oturumda bir kez yükleniyordu: açılışta FPL'ye ulaşılamazsa günlerce açık
+        kalan uygulamada her video GW'siz yazılıyordu; erteleme / skor da hiç yenilenmiyordu. Artık ulaşılamazsa
+        FPL_RETRY_S sonra tekrar denenir, bellekteki veri FPL_MEM_S'de bir yeniden okunur (6 saatlik disk önbelleği)."""
+        now = time.time()
+        if self._fpl is not None and now - self._fpl_at < FPL_MEM_S:
+            return self._fpl
+        if self._fpl is None and now < self._fpl_retry_at:
+            return None
+        data = fpl_data(self.out_root / ".stt")
+        if data is not None:
+            self._fpl, self._fpl_at = data, now
+        elif self._fpl is None:
+            self._fpl_retry_at = now + FPL_RETRY_S
+        else:
+            self._fpl_at = now  # yenilenemedi: eldeki veriyle devam, yarım saat sonra yine dene
         return self._fpl
 
     def _out_paths(self, job: Job, meta: dict) -> tuple[Path, str]:
-        info, item = job.info, job.item
-        title = info.get("title") or item.title or "kayit"
-        d = target_dir(self.out_root, meta, title)
-        base = presser_base_name(meta, title)
-        # Windows 260 karakter yol sınırı: en uzun dosya "<base> - ozet.md.tmp"
-        budget = MAX_PATH - len(str(d)) - len(" - ozet.md.tmp") - 12  # 12: olası " [abcdef]" eki
-        if budget < 20:  # klasör adı çok uzun (ör. video başlığı): kısalt
-            d = d.parent / d.name[:max(20, len(d.name) - (20 - budget))].rstrip(" .-")
-            budget = MAX_PATH - len(str(d)) - len(" - ozet.md.tmp") - 12
-        if len(base) > budget:
-            base = base[:max(20, budget)].rstrip(" .-")
-        d.mkdir(parents=True, exist_ok=True)
-        marker = d / f".{base}.key"
-        if marker.exists() and marker.read_text().strip() != item.key:
-            base = f"{base} [{item.key[2:8]}]"
-            marker = d / f".{base}.key"
-        marker.write_text(item.key)
-        return d, base
+        title = job.info.get("title") or job.item.title or "kayit"
+        return out_paths(self.out_root, meta, title, job.item.key)
 
     def _voice_names(self, job: Job, dj: dict, speakers: dict, mode: str, td_label: str) -> str:
         """Konuşmacı imzalarını sakla; ses kütüphanesinde tanınan kişilere adlarını ver. Döner: TD etiketi."""
@@ -1316,6 +1314,8 @@ class Pipeline:
             "speaker_mode": mode if speakers else None,
             "diarization_error": job.diar_error or None, "speaker_source": speaker_source,
             "speakers": speakers, "source_info": {k: v for k, v in info.items() if k != "description"},
+            # açıklamanın başı: yeniden sınıflandırma (stt yeniden-siniflandir) rakip / kupa adını buradan da okur
+            "description_head": (str(info.get("description") or "")[:400]) or None,
             "segments": [{k: s.get(k) for k in ("id", "start", "end", "speaker", "speaker_id", "text", "words",
                                                 "avg_logprob", "no_speech_prob") if k in s or k in ("speaker",)}
                          for s in segments],
@@ -1342,19 +1342,7 @@ class Pipeline:
                 log.warning("Haber taslağı yazılamadı: %s", e)
         if meta.get("team") and not meta.get("general"):
             write_match_json(out, meta)
-        n_q = 0
-        if speakers and mode == "basin":
-            from .outputs import qa_blocks
-            n_q = sum(1 for h, _, _ in qa_blocks(doc["segments"], doc.get("td_label")) if h.startswith("Soru"))
-        update_index(self.out_root, {
-            **{k: meta.get(k) for k in ("presser_date", "phase", "team", "opponent", "competition", "gw",
-                                        "match_date", "home", "away", "manager")},
-            "key": job.item.key,
-            "league": "Podcast ve Film" if meta.get("general") else "Premier League" if meta.get("is_pl") else "Diger",
-            "language": doc["language"], "duration_s": doc["duration_s"], "questions": n_q,
-            "words": sum(len(s["text"].split()) for s in doc["segments"]), "diarized": bool(speakers),
-            "url": doc.get("webpage_url") or doc["source"],
-            "txt": str(paths["txt"].relative_to(self.out_root)), "json": str(paths["json"].relative_to(self.out_root))})
+        update_index(self.out_root, index_row(self.out_root, job.item.key, meta, doc, paths))
         job.out_dir, job.result = out, doc
         fpl_res = None
         if doc.get("fpl"):

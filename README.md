@@ -22,6 +22,8 @@ Masaüstündeki **STT** simgesine çift tıklayın (terminal açılmaz).
 - **Durdur:** sıradaki ve çalışan bütün işleri durdurur; biten parçalar saklanır, aynı linki tekrar eklerseniz
   kaldığı yerden devam eder.
 - **Veri seti:** Premier League › takım › maç ağacı, basın toplantısı/takım/maç sayıları, `index.csv`.
+  *Yeniden sınıflandır*: işlenmiş videoları metni yeniden çevirmeden güncel FPL fikstürüyle doğru takım / maç
+  klasörüne taşır (GW, skor, maç öncesi/sonrası); önce ne değişeceğini gösterir, onaylayınca uygular.
 - **Ayarlar:** veri seti klasörü, HuggingFace token, FPL repo klasörü, çerez tarayıcısı, ekran kartı kullanımı
   (*Önerilen*: monitörün bağlı olmadığı kart — bilgisayar akıcı kalır; *Hepsi*: en hızlı).
 - **Kontrol:** ffmpeg, deno, ekran kartları, model ve konuşmacı modelini denetler; sorunları kırmızıyla
@@ -102,12 +104,21 @@ cikti\
 
 - Takım, YouTube kanal adından (ör. "Arsenal") ya da başlıktan bulunur; teknik direktör başlıktan.
 - **Maç ve GW** FPL'nin herkese açık fikstür verisinden otomatik eşleştirilir: takımın, basın
-  toplantısı tarihinden 2 gün önce ile 6 gün sonrası arasındaki maçı. Maçtan önce ise
-  `mac-oncesi`, sonra ise `mac-sonrasi`.
+  toplantısı tarihinden 2 gün önce ile 6 gün sonrası arasındaki maçı. Başlık "Post-Match / reacts / 2-1 / maç
+  sonrası" diyorsa yalnız oynanmış, "Pre-Match / previews / pre-Chelsea / öncesi" diyorsa yalnız oynanacak maç;
+  başlık bir şey demiyorsa maçtan önce ise `mac-oncesi`, sonra ise `mac-sonrasi`.
 - Rakip PL takımı değilse (Şampiyonlar Ligi vb.) turnuva başlıktan okunur, tarih = yayın tarihi.
+  Açıklamadaki kupa adı, o rakiple PL maçı varsa PL'yi ezmez.
+- Tarafsız kanallarda (Sky, BBC...) takım hocadan bulunur ("Enzo Maresca press conference | Arsenal" →
+  Manchester City). Hoca listesi sezonluk (`stt/match.py` `PL_MANAGERS`, 2026-27).
 - `FPL presser.py` açıksa ve FPL repo ayarlıysa GW ve takım kodu (ARS…) otomatik verilir.
 - `index.csv` sütunları: key, presser_date, phase, league, team, opponent, competition, gw,
-  match_date, home, away, manager, language, duration_s, questions, words, diarized, url, txt, json.
+  match_date, home, away, manager, language, duration_s, questions, words, diarized, url, txt, json,
+  fixture_id, kickoff_utc, is_home, fpl_short, opponent_short, score (ev-deplasman), speaker_role ("hoca" ya da
+  boş), speaker_source, diar_model, title. Yollar `/` ile.
+- Eski kayıtları yeni kurallarla düzeltmek: *Veri seti › Yeniden sınıflandır* ya da `stt yeniden-siniflandir`
+  (`--dene`: yalnız göster). FPL'ye ulaşılamazsa çalışmaz; eski sezonun ve *Podcast ve Film*'in kayıtlarına
+  dokunmaz.
 - Yerel dosyalarda kanal adı olmadığı için takım dosya adından tahmin edilir. Dosya adında yalnızca
   "Everton vs Coventry City" yazıyorsa teknik direktörün hangi takımda olduğu bilinemez;
   YouTube linki vermek ya da dosya adına takımı yazmak en güvenlisi.
