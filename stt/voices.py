@@ -19,6 +19,10 @@ GENERIC = re.compile(r"^\s*(konuşmacı|konusmaci|speaker|kişi|kisi)\s*(\d+|\?)
 MAX_PER_NAME = 30
 
 
+MARGIN = 0.05  # en iyi iki aday arasındaki en az benzerlik farkı
+SURE = 0.15    # eşiğin bu kadar üstündeyse fark aranmaz
+
+
 def is_generic(label: str | None, extra=()) -> bool:
     """'Konuşmacı 2', 'Muhabir', 'Teknik direktör' gibi kişi adı olmayan etiketler kütüphaneye girmez."""
     lab = (label or "").strip()
@@ -140,11 +144,19 @@ class VoiceLibrary:
             for n, c in cents.items():
                 pairs.append((float(u @ c), spk, n))
         pairs.sort(reverse=True)
+        # belirsiz eşleşme: iki kişiye neredeyse eşit benziyorsa (fark < MARGIN) ve eşiğin çok üstünde değilse ad
+        # verme; yanlış kişinin adıyla yazmaktansa "Konuşmacı N" kalsın
+        sims: dict = {}
+        for sim, spk, n in pairs:
+            sims.setdefault(spk, []).append(sim)
         got, used = {}, set()
         for sim, spk, n in pairs:
             if sim < threshold:
                 break
             if spk in got or n in used:
+                continue
+            second = sims[spk][1] if len(sims[spk]) > 1 else -1.0
+            if sim - second < MARGIN and sim < threshold + SURE:
                 continue
             got[spk] = (n, sim)
             used.add(n)

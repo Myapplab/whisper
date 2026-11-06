@@ -6,6 +6,9 @@ Ortak hafıza bu dosyadır. **Oturum sonunda güncelle** (Son durum + liste) ve 
 ## ŞU ANKİ İŞ: konuşmacı ayırma iyileştirme (adım adım; her adım ayrı push)
 Kullanıcı istedi: DiariZen + "acımasız eleştiri"nin 10 maddesinin hepsi. Kural: bir adım bitince push et, burada ✅ yap,
 sıradakine geç. Kullanım biterse diğer profil ilk ✅ olmayan adımdan devam eder.
+**SIRADAKİ (1.9.1 sonrası):** K6c (Ayarlar'a konuşmacı motoru seçimi + 'DiariZen'i kur' düğmesi; şimdilik
+PowerShell: `C:\stt\.venv\Scripts\python.exe -m stt diarizen-kur`, sonra stt.toml'a `diar_engine = "diarizen"`),
+K6b kullanıcıda kurulum denemesi, K6d + K9 + K4-açık: kullanıcı 3-5 video düzeltince K5 ölçümüyle karar.
 - [x] K1 (#10) ✅ (doctor: sürüm 3.x uyarısı; yedek model uyarısı zaten vardı) Kontrol: pyannote < 4 ise "community-1 çalışmıyor, eski 3.1 kullanılıyor" uyarısı + düzeltme yolu.
 - [x] K2 (#4) ✅ ZATEN VARDI (pipeline `_diarize_task`: min_speakers en az 2) Basın modunda en az 2 konuşmacı otomatik (`min_speakers`), kullanıcı sayı girerse o geçerli.
 - [x] K3 (#9) ✅ (gui.html: sarı "Bitti · konuşmacısız"; index'te diarized zaten vardı) Konuşmacısız biten iş görünür olsun: kartta sarı "Bitti · konuşmacısız" + index'te diarized=false.
@@ -23,7 +26,7 @@ sıradakine geç. Kullanım biterse diğer profil ilk ✅ olmayan adımdan devam
 - [x] K8 (#5) ✅ `merge.exclusive_turns`: başka turun tamamen içindeki ≥1 sn söz kazanır (daha kısası "hı hı"). pyannote 4 zaten örtüşmesiz veriyor; bu kural 3.x ve DiariZen çıktısı için.
 - [~] K9 (#6) kısmen: sessizlik sonrası erken ilk kelime 1.8.6'da (`EARLY_GAP`). Başka kural ölçümsüz eklenmedi (zarar riski); K5 sonuçlarına göre.
 - [x] K10 (#7) ✅ müzik ayıklama zaten yalnız podcast/film'deydi; ek: boş RAM ya da sanal bellek < 4 GB ise atlanır (`Diarizer._low_memory`). Kullanıcıda şu an sanal bellek 3.8 GB boş → sayfa dosyası büyütülene kadar atlanacak.
-- [ ] K11 (#8) Ses kütüphanesi: 0.6–0.7 arası belirsiz eşleşmede ad verme; eşik düzeltmelerle ölçülsün.
+- [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
 - Sürüm 1.8.7: kullanıcı ekranı: 38 dk podcast'te ayırma "CUDA error: out of memory" ile düştü, aynı anda Chrome

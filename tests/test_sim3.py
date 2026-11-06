@@ -261,3 +261,19 @@ def test_vocals_skipped_when_memory_low(tmp_path, monkeypatch):
     d.wait_memory = lambda *a, **k: None
     d.run(_wav(tmp_path), vocals=True)
     assert not called
+
+
+# ---- K11: iki kişiye neredeyse eşit benzeyen ses adlandırılmaz
+def test_ambiguous_voice_gets_no_name(tmp_path):
+    import numpy as np
+
+    from stt.voices import VoiceLibrary
+    lib = VoiceLibrary(tmp_path)
+    a, b = np.zeros(8), np.zeros(8)
+    a[0], b[1] = 1.0, 1.0
+    lib.add("Arteta", a, "m", "k1", "S0")
+    lib.add("Slot", b, "m", "k2", "S0")
+    mid = np.array([1.0, 0.95, 0.3, 0, 0, 0, 0, 0])  # ikisine de ~0.68
+    assert lib.identify({"X": mid}, "m", 0.6) == {}
+    near = np.array([1.0, 0.1, 0, 0, 0, 0, 0, 0])
+    assert lib.identify({"X": near}, "m", 0.6)["X"][0] == "Arteta"
