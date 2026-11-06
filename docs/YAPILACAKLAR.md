@@ -4,6 +4,15 @@ Kullanıcı iki Claude hesabıyla (iki profil) sırayla çalışır: biri sını
 Ortak hafıza bu dosyadır. **Oturum sonunda güncelle** (Son durum + liste) ve `main`'e push et.
 
 ## Son durum
+- Sürüm 1.8.6 (senaryo turu 3, `tests/test_sim3.py`, 164 test): metin birleştirmede dakikalar arayla söylenen aynı
+  cümle artık tek 10 dk'lık segmente dönmüyor (`merge.REPEAT_GAP`); tekrar döngüsü kelimelerden de atılıyor (konuşmacı
+  bölününce geri geliyordu); sessizlikten sonra erken zamanlanan ilk kelime sonraki konuşmacıya (`EARLY_GAP`);
+  bilinen Whisper uydurmaları atılıyor (`merge.is_hallucination`: Amara.org / Altyazı M.K. her zaman,
+  "thanks for watching" yalnız düşük güvende); SRT altyazıları üst üste binmiyor; Windows yasak adları (CON, NUL...)
+  `safe_filename`'de; dosya kilidinde (virüs tarayıcı) `util.replace_retry`; hatalı ayar (port "abc"/70000, takip
+  aralığı 0/NaN) uygulamayı açılmaz yapmıyor (`config._set/_num`); https'siz / youtube-nocookie / `/v/` linkleri aynı
+  video; BOM'lu index.jsonl okunuyor; iş sürerken Windows uykuya geçmiyor (`util.keep_awake`, ekran kapanabilir).
+  Windows'ta denenmedi: gece kuyruğunda bilgisayarın uyumadığı, günlükte uyarı olmadığı doğrulansın.
 - Sürüm 1.8.5 (senaryo turu 2): "Tekrar dene"de atlanan parça ve başarısız ayırma yeniden yapılır
   (`pipeline._finished`; eskiden boş/hata dosyası "bitti" sayılıyordu); atlanan bölüm kartta gösterilir, linki
   yeniden ekleyince video yeniden işlenir (`_redo_reason`); canlı yayın sürerken sıralı çalışma kapalı (canlı metin
