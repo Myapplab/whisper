@@ -166,7 +166,7 @@ def worker_main(wid: str, device: str, engine_cfg: dict, task_q, result_q, share
                 load_lock=None):
     if shared_cache is None:  # ayrı süreç
         if engine_cfg.get("low_priority", True) or engine_cfg.get("helper"):
-            lower_priority(idle=bool(engine_cfg.get("helper")))
+            lower_priority()  # yardımcı en düşük önceliğe model yüklendikten SONRA iner (ortak yükleme kilidi beklemesin)
         os.environ.setdefault("PYTHONUTF8", "1")
         if sys.stdout is None or sys.stderr is None:  # pythonw (uygulama) altında
             # UTF-8 şart: Windows'un varsayılanı (cp1252) 'ş' gibi harfleri yazamıyor; pyannote/uyarılar
@@ -192,6 +192,8 @@ def worker_main(wid: str, device: str, engine_cfg: dict, task_q, result_q, share
         run_device = isolate_gpu(device)
     try:
         _init(device, engine_cfg, cache, load_lock, run_device)
+        if shared_cache is None and engine_cfg.get("helper"):
+            lower_priority(idle=True)
         result_q.put({"type": "ready", "wid": wid})
         while True:
             task = task_q.get()
@@ -275,32 +277,42 @@ class WorkerPool:
                                                           self.result_q, None, self.load_lock),
                                 name=f"stt-{name}", daemon=True)
 
-    def respawn(self, name: str) -> bool:
-        """Çöken / takılan işçiyi yeniden başlat (yalnızca süreç havuzunda)."""
+    def respawn(self, name: str, idle: bool = False) -> bool:
+        """Çöken / takılan işçiyi yeniden başlat (yalnızca süreç havuzunda). idle: işçi boşta (görev beklerken)."""
         if self.threads or name not in self.workers:
             return False
-        old = self.workers[name]
-        if old.is_alive():
-            old.terminate()
-            old.join(5)
-            if old.is_alive():
-                old.kill()
-                old.join(2)
+        self.stop(name, idle)
         self.workers[name] = self._new_proc(name)
         self.workers[name].start()
         return True
 
-    def stop(self, name: str) -> None:
-        """Tek işçiyi kapat, yeniden açma (yardımcı kart başka programa yer bıraksın: model belleği boşalır)."""
+    def stop(self, name: str, idle: bool = False) -> None:
+        """Tek işçiyi kapat, yeniden açma (ör. yardımcı kart başka programa yer bıraksın: model belleği boşalır).
+
+        Boştaki işçi ``task_q.get()`` içinde kuyruğun okuma kilidini TUTARAK bekler; o anda öldürülürse kilit hiç
+        bırakılmaz (Windows'ta da) ve yeni süreç bir daha görev alamaz, iş sonsuza dek bekler. Bu yüzden boştaki
+        işçiye kapanma işareti (None) gönderilir; yalnız tek işçili havuzda (işareti başkası almasın). Çalışan
+        (görevdeki) işçi kilidi tutmaz: doğrudan kapatılır."""
         if self.threads or name not in self.workers:
             return
         w = self.workers[name]
+        sent = False
+        if w.is_alive() and idle and len(self.workers) == 1:
+            try:
+                self.task_q.put(None)
+                sent = True
+                w.join(15)
+            except Exception:  # noqa: BLE001
+                pass
         if w.is_alive():
             w.terminate()
             w.join(5)
             if w.is_alive():
                 w.kill()
                 w.join(2)
+            if sent:  # işçi meğer görevdeydi: kapanma işareti kuyrukta kalmasın (yeni süreç hemen kapanırdı)
+                for t in self.drain():
+                    self.task_q.put(t)
 
     def drain(self) -> list:
         """Kuyrukta alınmamış görevleri geri ver (işçi bir daha açılmayacaksa görev kaybolmasın)."""

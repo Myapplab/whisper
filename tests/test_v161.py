@@ -83,9 +83,11 @@ def test_diar_gpu_error_restarts_diar_process(tmp_path):
     class DP:
         workers = {"diar": None}
         respawned = []
+        idle = []
 
-        def respawn(self, n):
+        def respawn(self, n, idle=False):
             self.respawned.append(n)
+            self.idle.append(idle)
             return True
     p.dpool = DP()
     d = {"id": "u_test:d", "kind": "diarize", "job": job.item.key, "wav": "x"}
@@ -102,3 +104,6 @@ def test_diar_gpu_error_restarts_diar_process(tmp_path):
     p.dbacklog.clear()
     p._on_msg({"type": "error", "wid": "diar", "tid": d["id"], "error": err})
     assert p.dpool.respawned == ["diar"] * 3 and "işlemciye geçilmedi" in job.diar_error and not p.dbacklog
+    # 1.9.9: hata sonrası süreç boşta (görev bekliyor): kapanma işaretiyle kapatılır, yoksa kuyruk kilidi
+    # ölü süreçte kalıyor, yeni ayırma süreci bir daha görev alamıyordu
+    assert p.dpool.idle == [True] * 3

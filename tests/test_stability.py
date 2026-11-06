@@ -56,8 +56,9 @@ class FakePool:
     def alive(self):
         return [n for n in self.workers if n not in self.dead]
 
-    def respawn(self, n):
+    def respawn(self, n, idle=False):
         self.respawned.append(n)
+        self.respawn_idle = getattr(self, "respawn_idle", []) + [idle]
         self.dead.discard(n)
         return True
 

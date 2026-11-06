@@ -17,8 +17,9 @@ class FakeHelperPool(FakePool):
         self.stopped: list = []
         self.queue_left: list = []
 
-    def stop(self, n):
+    def stop(self, n, idle=False):
         self.stopped.append(n)
+        self.stop_idle = getattr(self, "stop_idle", []) + [idle]
         self.dead.add(n)
 
     def drain(self):
@@ -258,3 +259,120 @@ def test_worker_caps_batch_on_helper(monkeypatch):
            "condition_on_previous_text": True}
     w._init("cuda:0", cfg, {})
     assert seen["batch"] == 4                       # 10 GB kart normalde 8: yardımcıda 4
+
+
+# ---------------------------------------------------------------- inceleme bulguları (1.9.9)
+def _wait(pool, typ, t=20.0):
+    end = time.time() + t
+    while time.time() < end:
+        m = pool.get(0.2)
+        if m and m["type"] == typ:
+            return m
+    return None
+
+
+def test_real_queue_idle_worker_stop_keeps_queue_usable():
+    """Boştaki işçi task_q.get() içinde kuyruk kilidini tutar; öldürülürse yeni süreç bir daha görev alamıyordu.
+    Kapanma işaretiyle kapatılınca (stop idle=True) yeniden açılan süreç görev alır. Gerçek süreçlerle."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent))
+    import _stub_worker
+    from stt.workers import WorkerPool
+
+    class P(WorkerPool):
+        def _new_proc(self, name):
+            return self.ctx.Process(target=_stub_worker.loop, args=(name, self._spec[name], self._ecfg, self.task_q,
+                                                                    self.result_q, None, self.load_lock), daemon=True)
+    hp = P(["cuda:0"], {"helper": True})
+    try:
+        hp.start()
+        assert _wait(hp, "ready")
+        hp.put({"id": "t1"})
+        assert _wait(hp, "done")
+        time.sleep(0.5)                      # işçi boşta: get() içinde
+        hp.stop("cuda:0", idle=True)
+        assert not hp.workers["cuda:0"].is_alive()
+        hp.respawn("cuda:0")
+        assert _wait(hp, "ready")
+        hp.put({"id": "t2"})
+        m = _wait(hp, "done")
+        assert m and m["tid"] == "t2"
+    finally:
+        for w in hp.workers.values():
+            if w.is_alive():
+                w.kill()
+
+
+def test_helper_starts_off_and_opens_only_on_surplus(tmp_path):
+    p, job, tasks = _pipe(tmp_path, n=1)
+    p._h_parked["cuda:0"] = "kapalı"         # start(): model baştan yüklenmez
+    _ready(p, "cuda:1")
+    p._dispatch()
+    p._dispatch()
+    assert p.hpool.respawned == [] and p.loads == []          # ana kart yetişiyor: açılmaz, ölçülmez
+    p.backlog.extend({**tasks[0], "id": f"x{i}"} for i in range(3))
+    for t in list(p.backlog):
+        p.tasks[t["id"]] = t
+        job.pending.add(t["id"])
+    p.load = {"util": 5, "used_mb": 2000.0, "total_mb": 10240.0}
+    p._dispatch()
+    p._dispatch()
+    assert p.hpool.respawned == ["cuda:0"]                    # iş fazlası + kart boş: açılır
+    assert p.hpool.put_q == []
+    _ready(p, "cuda:0")
+    p._dispatch()
+    p._dispatch()
+    assert len(p.hpool.put_q) == 1
+
+
+def test_helper_closed_after_idle_minutes(tmp_path):
+    p, job, tasks = _pipe(tmp_path, n=1)
+    _ready(p, "cuda:1", "cuda:0")
+    p._dispatch()
+    assert p.hpool.stopped == []
+    p._h_last["cuda:0"] = time.time() - 10_000
+    p._dispatch()
+    assert p.hpool.stopped == ["cuda:0"] and p.hpool.stop_idle == [True] and "cuda:0" in p._h_parked
+    p._health()
+    assert p.hpool.respawned == []
+
+
+def test_helper_oom_during_task_requeues_without_losing_chunk(tmp_path):
+    p, job, tasks = _pipe(tmp_path, n=6)
+    _ready(p, "cuda:1", "cuda:0")
+    p._dispatch()
+    p._dispatch()
+    t = p.hpool.put_q[0]
+    p._on_msg({"type": "start", "wid": "cuda:0", "tid": t["id"]})
+    p._on_msg({"type": "error", "wid": "cuda:0", "tid": t["id"], "error": "RuntimeError: CUDA failed with error out of memory"})
+    assert p.backlog[0]["id"] == t["id"] and t["id"] not in job.attempts       # deneme sayılmadı
+    assert "cuda:0" in p._h_parked and p.hpool.stop_idle == [True]
+    assert not job.info.get("skipped_chunks")
+
+
+def test_helper_load_oom_parks_instead_of_restart_loop(tmp_path):
+    p, job, tasks = _pipe(tmp_path, n=6)
+    _ready(p, "cuda:1")
+    p._on_msg({"type": "fatal", "wid": "cuda:0", "error": "RuntimeError: CUDA failed with error out of memory",
+               "retryable": True})
+    assert "cuda:0" in p._h_parked and "cuda:0" not in p.fatal
+    assert p.hpool.stop_idle == [False]          # süreç kendisi kapanıyor: kapanma işareti kuyruğa konmaz
+    p.hpool.dead.add("cuda:0")
+    p._health()
+    assert p.hpool.respawned == [] and p.restarts.get("cuda:0", 0) == 0
+
+
+def test_stale_probe_not_used_later(tmp_path):
+    p, job, tasks = _pipe(tmp_path, n=6)
+    _ready(p, "cuda:1", "cuda:0")
+    p._h_probe["cuda:0"] = (time.time() - 3600, {"util": 0, "used_mb": 0.0, "total_mb": 10240.0})
+    p.load = {"util": 95, "used_mb": 4000.0, "total_mb": 10240.0}   # şimdi oyun açık
+    p._dispatch()
+    p._dispatch()
+    assert p.hpool.put_q == [] and p.loads == [0]
+
+
+def test_only_one_helper_card():
+    info = {0: {"name": "RTX 3080", "gb": 10, "display": True}, 1: {"name": "RTX 3090", "gb": 24, "display": False},
+            2: {"name": "RTX 3060", "gb": 12, "display": True}}
+    assert helper_devices("yardim", info) == ["cuda:2"]      # tek işçili havuz (kapanma işareti ona gider)

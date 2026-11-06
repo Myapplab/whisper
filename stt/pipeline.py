@@ -29,6 +29,8 @@ HELPER_SPECS = ("yardim", "yardım", "helper")   # monitörsüz kart(lar) tam + 
 HELPER_RECHECK_S = 30.0  # yardımcı kart meşgulse bu kadar sonra yeniden ölçülür
 HELPER_PARK_S = 120.0    # bu kadar süre meşgul kalırsa yardımcı işçi kapatılır (model belleği o programa kalır)
 HELPER_NEED_GB = 5.0     # kapatılmış yardımcının yeniden açılması için (eşiğin üstünde) gereken boş bellek
+HELPER_IDLE_PARK_S = 300.0  # bu kadar süre iş fazlası olmazsa yardımcı kapatılır (model belleği karta geri döner)
+HELPER_OFF = "kapalı · gerekince açılır"
 
 
 @dataclass
@@ -193,7 +195,11 @@ def helper_devices(spec: str, info: dict | None) -> list[str]:
         return []
     from .engines import choose_gpus
     main = set(choose_gpus(len(info), info, "auto"))
-    return [f"cuda:{i}" for i in sorted(info) if i not in main]
+    rest = [i for i in sorted(info) if i not in main]
+    if not rest:
+        return []
+    # tek yardımcı (belleği en büyük): tek işçili havuz, kapanma işareti yalnız ona gider (WorkerPool.stop)
+    return [f"cuda:{max(rest, key=lambda i: (info[i].get('gb', 0), -i))}"]
 
 
 def auto_spec(spec: str | None) -> bool:
@@ -237,6 +243,7 @@ class Pipeline:
         self._h_parked: dict[str, str] = {}      # kapatılmış yardımcı -> sebep (kart başka programda)
         self._h_note: dict[str, str] = {}        # arayüze son bildirilen bekleme sebebi
         self._h_gone: set[str] = set()           # bir daha açılmayacak yardımcılar (görevleri geri alındı)
+        self._h_last: dict[str, float] = {}      # yardımcı -> son görev / hazır olma zamanı (boşta kapatma için)
         self._ecfg: dict = {}
         self.idle: set[str] = set()          # boşta olduğunu bildiren işçiler
         self.queued_n = 0                    # işçi kuyruğuna konup henüz alınmamış görev sayısı
@@ -304,8 +311,10 @@ class Pipeline:
                 self.hpool = WorkerPool(self.helper_devices, {**ecfg, "helper": True},
                                         load_lock=getattr(self.pool, "load_lock", None))
         self.pool.start()
-        if self.hpool is not None:
-            self.hpool.start()
+        for wid in (self.hpool.workers if self.hpool is not None else ()):
+            # yardımcı baştan açılmaz: model, iş fazlası çıkınca (ve kart boşsa) yüklenir; o zamana dek bellek karta kalır
+            self._h_parked[wid] = HELPER_OFF
+            self._h_note[wid] = HELPER_OFF
         self._ecfg = ecfg
 
     def _start_diar_pool(self) -> None:
@@ -1006,13 +1015,21 @@ class Pipeline:
             return  # kuyruktaki görev henüz alınmadı: ikinci görev verilmez
         surplus = sum(1 for t in self.backlog
                       if (self.jobs.get(t["job"]) is not None and self.jobs[t["job"]].status == "run"))
+        now = time.time()
         if surplus - takers <= 0:  # ana kart yetişiyor: yardımcı boşta kalır (masaüstü, YouTube için)
             for wid in list(hp.workers):
                 self._h_busy_since.pop(wid, None)
-                if wid not in self._h_parked:
+                self._h_probe.pop(wid, None)  # eski ölçümle sonradan görev verilmesin
+                if wid in self._h_parked:
+                    continue
+                if wid in self.idle and wid not in self.inflight \
+                        and now - self._h_last.get(wid, now) >= HELPER_IDLE_PARK_S:
+                    self._park_helper(wid, HELPER_OFF)
+                    log.info("[%s] yardımcı kart %d dakikadır gerekmedi: kapatıldı (bellek boşaldı)", wid,
+                             HELPER_IDLE_PARK_S // 60)
+                else:
                     self._helper_note(wid, "")
             return
-        now = time.time()
         for wid in list(hp.workers):
             parked = wid in self._h_parked
             if wid in self.fatal or now < self._h_ready.get(wid, 0.0):
@@ -1020,7 +1037,7 @@ class Pipeline:
             if not parked and wid not in self.idle:
                 continue
             pr = self._h_probe.get(wid)
-            if pr is None or pr[0] < self._h_ready.get(wid, 0.0):
+            if pr is None or pr[0] < max(self._h_ready.get(wid, 0.0), now - HELPER_RECHECK_S):
                 self._probe_helper(wid)  # dinlenme bitti: kartı şimdi ölç (sonuç sonraki turda)
                 continue
             reason = self._helper_reason(pr[1], parked)
@@ -1031,13 +1048,11 @@ class Pipeline:
                 if not parked and now - since >= HELPER_PARK_S and wid not in self.inflight:
                     log.warning("[%s] yardımcı kart %.0f dakikadır bekliyor (%s): işçi kapatılıyor (bellek o programa "
                                 "kalsın), kart boşalınca yeniden açılacak", wid, (now - since) / 60, reason)
-                    self._h_parked[wid] = reason
-                    self.idle.discard(wid)
-                    hp.stop(wid)
-                    reason = "kapatıldı, kart boşalınca açılacak: " + reason
+                    self._park_helper(wid, reason)
                 elif parked:
-                    reason = "kapatıldı, kart boşalınca açılacak: " + reason
-                self._helper_note(wid, reason)
+                    self._helper_note(wid, "kapalı, kart boşalınca açılacak: " + reason)
+                else:
+                    self._helper_note(wid, reason)
                 continue
             self._h_busy_since.pop(wid, None)
             self._h_probe.pop(wid, None)  # her görev için yeni ölçüm
@@ -1059,6 +1074,19 @@ class Pipeline:
                 break
             return  # tek görev: alınınca (start) sıradaki yardımcı / görev
 
+    def _park_helper(self, wid: str, reason: str, graceful: bool = True) -> None:
+        """Yardımcı süreci kapat (model belleği karta geri döner); ``_health`` onu çöktü sanıp açmaz.
+        graceful: süreç boşta görev bekliyor -> kapanma işaretiyle (kuyruk kilidi bırakılsın, bkz. WorkerPool.stop).
+        Kendiliğinden kapanan süreçte (model yüklenemedi) işaret gönderilmez: kuyrukta kalıp yeni süreci kapatırdı."""
+        self._h_parked[wid] = reason
+        self._h_ready[wid] = time.time() + HELPER_RECHECK_S
+        self._h_probe.pop(wid, None)
+        self._h_busy_since.pop(wid, None)
+        self.idle.discard(wid)
+        if self.hpool is not None:
+            self.hpool.stop(wid, idle=graceful)
+        self._helper_note(wid, reason if reason == HELPER_OFF else "kapalı, kart boşalınca açılacak: " + reason)
+
     def _helper_gone(self, wid: str) -> None:
         """Yardımcı bir daha açılmayacak: kuyruğunda bekleyen görev ana kartlara geri döner."""
         if self.hpool is None:
@@ -1077,10 +1105,19 @@ class Pipeline:
         if typ == "ready":
             self.idle.add(wid)
             self.ready_workers.add(wid)
+            if self._is_helper(wid):
+                self._h_last[wid] = time.time()
             self.emit("worker", wid=wid, state="idle")
             return
         if typ == "fatal":
             hint = worker_hint(m["error"])
+            if self._is_helper(wid) and m.get("retryable"):
+                # yardımcı kartta model yüklenirken bellek yetmedi (oyun / başka program): yeniden açma döngüsüne
+                # girmesin (6 denemeden sonra oturum boyu kaybolurdu); kart boşalınca açılır
+                log.warning("[%s] yardımcı kartta model yüklenemedi (%s); kart boşalınca tekrar denenecek", wid,
+                            m["error"][:160])
+                self._park_helper(wid, "model yüklenemedi (kartta yer yok)", graceful=False)
+                return
             if m.get("retryable") and self.restarts.get(wid, 0) < self.cfg.worker_restarts:
                 # RAM/GPU bir anlığına yetmedi ya da sürücü sıfırlandı: süreç biter, _health biraz sonra açar
                 log.warning("[%s] işçi açılamadı (%s); biraz sonra tekrar denenecek", wid, m["error"][:160])
@@ -1126,6 +1163,7 @@ class Pipeline:
         self.idle.add(wid)
         if self._is_helper(wid):  # yardımcı kart dinlenir (kart serinler, ölçüm yalnız başka programları görür)
             self._h_ready[wid] = time.time() + self.cfg.helper_rest_s
+            self._h_last[wid] = time.time()
         self.emit("worker", wid=wid, state="idle")
         task = self.tasks.get(tid)
         if not task:
@@ -1138,6 +1176,14 @@ class Pipeline:
                 json.dumps(m["payload"], ensure_ascii=False), encoding="utf-8")
             return
         if not job or job.status != "run":
+            return
+        if typ == "error" and self._is_helper(wid) and task["kind"] == "transcribe" and is_oom(m["error"]):
+            # başka program (oyun) görev sırasında kartın belleğini aldı: parça kaybolmasın (deneme sayılmaz),
+            # ana karta / sonraya kalır; yardımcı kapanır, bellek o programa kalır
+            log.warning("[%s] yardımcı kartta bellek yetmedi (başka program?): parça yeniden sırada", wid)
+            with self.lock:
+                self.backlog.appendleft(task)
+            self._park_helper(wid, "görev sırasında kartta bellek yetmedi")
             return
         if typ == "error":
             n = job.attempts.get(tid, 0) + 1
@@ -1192,7 +1238,7 @@ class Pipeline:
                 with self.lock:
                     self.ddelayed.append((time.time() + wait, retry))
                 if self.dpool is not None and "diar" in self.dpool.workers:
-                    self.dpool.respawn("diar")
+                    self.dpool.respawn("diar", idle=True)  # boşta: kuyruk kilidi bırakılsın (yoksa ayırma takılır)
                     self.idle.discard("diar")
                     self.dqueued_n = 0
                     self.emit("worker", wid="diar", state="loading")
@@ -1200,7 +1246,7 @@ class Pipeline:
             if task["kind"] == "diarize" and self.dpool is not None and "diar" in self.dpool.workers \
                     and any(x in m["error"].lower() for x in ("cuda", "cudnn", "cublas", "ekran kart")):
                 # ekran kartı hatası: süreci kapat, sonraki video temiz bir CUDA ile başlasın (CPU'ya düşmesin)
-                self.dpool.respawn("diar")
+                self.dpool.respawn("diar", idle=True)
                 self.idle.discard("diar")
                 self.dqueued_n = 0
                 self.emit("worker", wid="diar", state="loading")

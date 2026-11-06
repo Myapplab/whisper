@@ -255,8 +255,9 @@ class App:
                     i = int(d.split(":")[1])
                     used.add(i)
                     g = gi.get(i, {"name": d, "gb": 0})
+                    note = self._pipe._h_note.get(d) or ""  # baştan kapalı: iş fazlası çıkınca açılır
                     devs.append({"wid": d, "name": g["name"], "gb": round(g["gb"]), "display": bool(g.get("display")),
-                                 "helper": True})
+                                 "helper": True, "state": "paused" if note else None, "note": note})
                 spare = [{"name": g["name"], "gb": round(g["gb"]), "display": bool(g.get("display"))}
                          for i, g in sorted(gi.items()) if i not in used and self._pipe.devices
                          and self._pipe.devices[0] != "api"]

@@ -167,6 +167,7 @@ def test_diar_cuda_oom_is_retried_later_then_memory_hint(tmp_path):
         p._on_msg({"type": "start", "wid": "diar", "tid": d["id"]})
         p._on_msg({"type": "error", "wid": "diar", "tid": d["id"], "error": err})
         assert not job.diar_error and len(p.ddelayed) == 1 and "diar" in p.dpool.respawned
+        assert p.dpool.respawn_idle[-1] is True   # 1.9.9: boştaki süreç kapanma işaretiyle (kuyruk kilidi)
         _, retry = p.ddelayed.pop()
         assert retry["vocals"] is (k == 1)
     p._on_msg({"type": "start", "wid": "diar", "tid": d["id"]})

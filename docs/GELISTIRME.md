@@ -27,7 +27,15 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   görevden sonra `helper_rest_s` (2 sn) dinlenme, sonra `engines.gpu_load` (nvidia-smi, arka plan iş parçacığı)
   ölçümü: kart başka programla %`helper_busy_pct` (50) üstü meşgulse ya da `helper_min_free_gb` (1.5) altı boş bellek
   varsa 30 sn bekler; 2 dk sürerse yardımcı süreç kapatılır (`_h_parked`, model belleği boşalır), kart boşalınca
-  (+5 GB) yeniden açılır. Yardımcıda toplu boyut ≤ `display_batch` (4), süreç IDLE önceliğinde. Konuşmacı ayırma
+  (+5 GB) yeniden açılır. Yardımcı baştan KAPALI açılır (model ilk iş fazlasında yüklenir), 5 dk iş fazlası olmazsa
+  yine kapanır; görev sırasında bellek yetmezse (oyun) parça deneme sayılmadan sıraya döner, yardımcı kapanır;
+  model yüklenirken bellek yetmezse yeniden açma döngüsü yerine kapalı bekler. Yardımcıda toplu boyut ≤
+  `display_batch` (4), süreç model yüklendikten sonra IDLE önceliğinde (ortak yükleme kilidinde 3090'ı bekletmesin).
+  Yalnız TEK yardımcı kart (en büyüğü). **Kuyruk kilidi hatası (eskiden de vardı):** boştaki işçi `task_q.get()`
+  içinde kilidi tutarak bekler; `terminate()` edilirse kilit hiç bırakılmaz, yeniden açılan süreç bir daha görev
+  alamaz (iş sonsuza dek bekler). Konuşmacı ayırma süreci bellek / CUDA hatasından sonra tam böyle yeniden açılıyordu.
+  Artık `WorkerPool.stop/respawn(idle=True)` tek işçili havuzda kapanma işareti (None) gönderir
+  (`test_real_queue_idle_worker_stop_keeps_queue_usable`, gerçek süreçlerle). Konuşmacı ayırma
   yardımcıya GİTMEZ (`_diar_device` yalnız ana kartlar). Yardımcı kalıcı düşerse kuyruğundaki görev ana karta döner
   (`_helper_gone`). Arayüz: kart şeridinde "yardımcı" etiketi, "bekliyor · sebep". Windows'ta / gerçek kartlarda DENENMEDİ.
 - **Konuşmacı ayırma ayrı süreçte** (`Pipeline.dpool`, wid `diar`, ilk ayırma görevinde açılır, belleği en büyük
