@@ -7,8 +7,8 @@ Ortak hafıza bu dosyadır. **Oturum sonunda güncelle** (Son durum + liste) ve 
 Kullanıcı istedi: DiariZen + "acımasız eleştiri"nin 10 maddesinin hepsi. Kural: bir adım bitince push et, burada ✅ yap,
 sıradakine geç. Kullanım biterse diğer profil ilk ✅ olmayan adımdan devam eder.
 - [x] K1 (#10) ✅ (doctor: sürüm 3.x uyarısı; yedek model uyarısı zaten vardı) Kontrol: pyannote < 4 ise "community-1 çalışmıyor, eski 3.1 kullanılıyor" uyarısı + düzeltme yolu.
-- [ ] K2 (#4) Basın modunda en az 2 konuşmacı otomatik (`min_speakers`), kullanıcı sayı girerse o geçerli.
-- [ ] K3 (#9) Konuşmacısız biten iş görünür olsun: kartta sarı "Bitti · konuşmacısız" + index'te diarized=false.
+- [x] K2 (#4) ✅ ZATEN VARDI (pipeline `_diarize_task`: min_speakers en az 2) Basın modunda en az 2 konuşmacı otomatik (`min_speakers`), kullanıcı sayı girerse o geçerli.
+- [x] K3 (#9) ✅ (gui.html: sarı "Bitti · konuşmacısız"; index'te diarized zaten vardı) Konuşmacısız biten iş görünür olsun: kartta sarı "Bitti · konuşmacısız" + index'te diarized=false.
 - [ ] K4 (#3) Kısa soru yutulmasın: cümle içi değişimde "?" ile biten kısa muhabir parçası korunur (önce simülasyon).
 - [ ] K5 (#1) `stt olc`: düzeltilmiş videolarda TAM akışın (ayırma + kelime eşleme) hatası; günlüğe + "Kontrol"e.
 - [ ] K6 DiariZen (BUT-FIT/diarizen-wavlm-large-s80-md, CC BY-NC): kendi pyannote çatalını ister → AYRI venv

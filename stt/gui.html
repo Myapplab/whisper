@@ -631,9 +631,10 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
       if (j.duration) tags.push(el("span", { class: "mono" }, fmtDur(j.duration)));
       if (j.speakers) tags.push(el("span", {}, j.speakers + " konuşmacı"));
       const liveOn = j.live && j.liveOn;
+      const noSpk = j.kind === "ok" && !!j.diar_error;  // metin var ama konuşmacılar yok: veri setinde fark edilsin
       const canStop = !liveOn && j.uid && (j.kind === "busy" || j.status === "Sırada");
       const card = el("div", { class: "job" + (j.kind === "ok" ? " done" : "") },
-        el("div", { class: "top" }, el("div", { class: "t" }, j.title), el("span", { class: "pill " + (liveOn ? "live" : (j.kind || "")) }, liveOn ? "● CANLI" : j.status)),
+        el("div", { class: "top" }, el("div", { class: "t" }, j.title), el("span", { class: "pill " + (liveOn ? "live" : (noSpk ? "warn" : (j.kind || ""))), title: noSpk ? "Konuşmacılar ayrılamadı; linki tekrar ekleyince yeniden denenir" : "" }, liveOn ? "● CANLI" : j.status + (noSpk ? " · konuşmacısız" : ""))),
         j.source && j.source !== j.title ? el("div", { class: "src", title: j.source }, j.source) : null,
         (j.kind === "busy" || j.kind === "ok") && !liveOn ? el("div", { class: "bar" }, el("i", { style: "width:" + pct + "%" })) : null,
         j.lines && j.lines.length ? el("div", { class: "livebox" }, j.lines.slice(-40).join("\n")) : null,
