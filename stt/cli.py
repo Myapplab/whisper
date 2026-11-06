@@ -95,7 +95,8 @@ def _apply(cfg: Config, a: argparse.Namespace) -> Config:
 def _run_pipeline(cfg: Config, items=None, watch_dir: Path | None = None) -> int:
     from .pipeline import Pipeline
 
-    if cfg.diarize and not cfg.hf_token:
+    from .diarizen import token_free
+    if cfg.diarize and not cfg.hf_token and not token_free(cfg):
         log.warning("Konuşmacı ayırma için HF token yok (--hf-token, HF_TOKEN ya da stt.toml); "
                     "konuşmacı ayırma OLMADAN devam ediliyor.")
         cfg.diarize = False

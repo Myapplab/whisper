@@ -59,6 +59,12 @@ def installed() -> bool:
     return python().exists() and (VENV / "stt_ok").exists() and (ROOT / "diarizen").is_dir()
 
 
+def token_free(cfg) -> bool:
+    """DiariZen seçili ve kurulu: konuşmacı ayırma HF token'sız da yapılır (DiariZen modelleri herkese açık;
+    token yalnız DiariZen hata verirse devreye giren pyannote yedeği için gerekir)."""
+    return str(getattr(cfg, "diar_engine", "") or "").lower() == "diarizen" and installed()
+
+
 def _run(cmd: list, progress, what: str, timeout: float = 3600, cwd=None) -> None:
     progress(what)
     log.info("[diarizen kurulum] %s", what)
@@ -132,7 +138,8 @@ def install(progress=lambda text: None) -> dict:
     return {"ok": True, "minutes": round((time.time() - t0) / 60, 1)}
 
 
-def run(wav: str, min_speakers=None, max_speakers=None, timeout: float = 4 * 3600, beat=None) -> list[list]:
+def run(wav: str, min_speakers=None, max_speakers=None, timeout: float = 4 * 3600, beat=None,
+        token: str | None = None) -> list[list]:
     """Ayrı süreçte DiariZen. Ekran kartı seçimi ortamdan gelir (ayırma işçisi CUDA_VISIBLE_DEVICES ile tek kart görür;
     DiariZen hep cuda:0 kullanır = o kart). Döner: [[başla, bitir, konuşmacı], ...]."""
     if not installed():
@@ -145,6 +152,8 @@ def run(wav: str, min_speakers=None, max_speakers=None, timeout: float = 4 * 360
                 "max_speakers": max_speakers}
         env = {**os.environ, "PYTHONIOENCODING": "utf-8", "HF_HUB_DISABLE_XET": "1"}
         env.pop("PYTHONPATH", None)
+        if token and not env.get("HF_TOKEN"):  # stt.toml'daki token (DiariZen modelleri herkese açık; olur da gerekirse)
+            env["HF_TOKEN"] = token
         p = subprocess.Popen([str(python()), str(script), json.dumps(args)], cwd=str(ROOT), env=env,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
                              errors="replace", **popen_kw(low_priority=True))

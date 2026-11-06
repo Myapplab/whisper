@@ -523,7 +523,8 @@ class App:
             self._item_opts(it, opts)
             self._enqueue(it)
         warn = None
-        if opts.get("diarize") and not self._cfg.hf_token:
+        from .diarizen import token_free
+        if opts.get("diarize") and not self._cfg.hf_token and not token_free(self._cfg):
             warn = "Konuşmacı ayırma için HuggingFace token gerekli (Ayarlar). Bu işler konuşmacısız yazılacak."
         if opts.get("news") and not self.llm().available():
             warn = "Haber taslağı için Ayarlar > Yapay zekâ bölümünde bir API anahtarı girin."

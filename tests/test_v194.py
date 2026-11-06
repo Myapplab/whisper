@@ -137,3 +137,72 @@ def test_openai_engine_takes_key_from_settings(monkeypatch):
     assert OpenAIEngine("gpt-transcribe", api_key="sk-x").client.api_key == "sk-x"
     monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
     assert OpenAIEngine("gpt-transcribe").client.api_key == "sk-env"
+
+
+def _fake_torch(monkeypatch):
+    """torch kurulu olmayan test ortamı için Diarizer.__init__'in kullandığı kadarı."""
+    import sys
+    import types
+    frac = []
+    t = types.ModuleType("torch")
+    t.backends = types.SimpleNamespace(cudnn=types.SimpleNamespace(benchmark=True, enabled=True))
+    t.set_num_threads = lambda n: None
+    t.cuda = types.SimpleNamespace(is_available=lambda: True, empty_cache=lambda: None,
+                                   set_per_process_memory_fraction=lambda f, i: frac.append((f, i)))
+    t.device = lambda s: ("device", s)
+    monkeypatch.setitem(sys.modules, "torch", t)
+    import stt.engines as e
+    monkeypatch.setattr(e, "setup_cuda_dlls", lambda: None)
+    return frac
+
+
+class _LoadedPipe:
+    def __init__(self):
+        self.moved = []
+
+    def to(self, dev):
+        self.moved.append(dev)
+        return self
+
+
+def test_diarizen_does_not_load_pyannote_or_need_token(tmp_path, monkeypatch):
+    import pytest
+
+    from stt import diarizen
+    from stt.engines import Diarizer
+    frac = _fake_torch(monkeypatch)
+    loads = []
+    monkeypatch.setattr(Diarizer, "_load", lambda self: loads.append(1) or _LoadedPipe())
+    d = Diarizer("m", None, "cuda:1", gpu_frac=0.9, engine="diarizen")  # token yok: hata vermez
+    assert d.pipe is None and loads == [] and d.device == "cuda:1" and frac == [(0.9, 1)]
+    # DiariZen hata verirse yedek pyannote ister: token yoksa açık mesaj
+    monkeypatch.setattr(diarizen, "installed", lambda: True)
+    monkeypatch.setattr(diarizen, "run", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("çöktü")))
+    from test_stability import _wav
+    with pytest.raises(RuntimeError, match="yedek pyannote için HF token"):
+        d.run(_wav(tmp_path))
+    assert loads == []
+    # pyannote seçiliyse eskisi gibi: token şart, model hemen yüklenip karta taşınır
+    with pytest.raises(RuntimeError, match="HF token gerekli"):
+        Diarizer("m", None, "cuda:1")
+    d2 = Diarizer("m", "hf_x", "cuda:1")
+    assert loads == [1] and d2.pipe.moved == [("device", "cuda:1")]
+    # DiariZen + token: yedek gerekince bir kez yüklenir, karta taşınır
+    d3 = Diarizer("m", "hf_x", "cuda:1", engine="diarizen")
+    assert d3.pipe is None and loads == [1]
+    p = d3._ensure_pipe()
+    assert loads == [1, 1] and p.moved == [("device", "cuda:1")] and d3._ensure_pipe() is p
+
+
+def test_no_token_warning_when_diarizen_is_ready(tmp_path, monkeypatch):
+    from stt import diarizen
+    app, _ = _settings_app(tmp_path, monkeypatch)
+    r = app.start("https://www.youtube.com/watch?v=abcdefghijk", [], {"diarize": True})
+    assert "HuggingFace token" in (r["warning"] or "")
+    app._cfg.diar_engine = "diarizen"
+    monkeypatch.setattr(diarizen, "installed", lambda: False)  # seçili ama kurulu değil: token yine gerekir
+    assert not diarizen.token_free(app._cfg)
+    monkeypatch.setattr(diarizen, "installed", lambda: True)
+    assert diarizen.token_free(app._cfg)
+    r = app.start("https://www.youtube.com/watch?v=bcdefghijkl", [], {"diarize": True})
+    assert "HuggingFace token" not in (r["warning"] or "")

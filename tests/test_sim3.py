@@ -217,16 +217,24 @@ def test_diarizen_used_and_falls_back(tmp_path, monkeypatch):
 
     from stt import diarizen
     monkeypatch.setattr(diarizen, "installed", lambda: True)
-    monkeypatch.setattr(diarizen, "run", lambda wav, a, b, beat=None: [[0, 1, "dz0"], [1, 2, "dz1"]])
+    got = {}
+
+    def fake_run(wav, a, b, beat=None, token=None):
+        got["token"] = token
+        return [[0, 1, "dz0"], [1, 2, "dz1"]]
+    monkeypatch.setattr(diarizen, "run", fake_run)
     pipe = _Pipe([])
     d = _fake_diarizer(pipe, cpu_pipe=None)
     d.engine = "diarizen"
+    d.pyannote_model = "m"
     assert [t[2] for t in d.run(_wav(tmp_path))] == ["dz0", "dz1"] and pipe.calls == 0
+    assert d.model_used == diarizen.MODEL and got["token"] == "t"  # çıktıya DiariZen yazılır; token geçer
 
     def boom(*a, **k):
         raise RuntimeError("DiariZen hata verdi")
     monkeypatch.setattr(diarizen, "run", boom)
     assert [t[2] for t in d.run(_wav(tmp_path))] == ["SPEAKER_00", "SPEAKER_01"] and pipe.calls == 1
+    assert d.model_used == "m"  # yedek pyannote ayırdı
 
 
 # ---- K7: tek uzun açılış konuşması yapan basın sözcüsü TD sayılmasın

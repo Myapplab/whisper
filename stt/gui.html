@@ -515,7 +515,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
   function updateNote() {
     $("#diarSub").hidden = !$("#optDiar").checked;
     const n = $("#newNote"); const msgs = [];
-    if ($("#optDiar").checked && !state.settings.hf_token_set) msgs.push("Konuşmacı ayırma için Ayarlar'dan HuggingFace token girin.");
+    if ($("#optDiar").checked && !state.settings.hf_token_set && !dzTokenFree(state.settings)) msgs.push("Konuşmacı ayırma için Ayarlar'dan HuggingFace token girin.");
     if ($("#optFpl").checked && !state.settings.fpl_ok) msgs.push("FPL için Ayarlar'dan presser.py'nin olduğu klasörü seçin.");
     n.textContent = msgs.join(" "); n.hidden = !msgs.length;
   }
@@ -861,7 +861,9 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     $("#sApiState").textContent = s.api_port ? "Açık: http://127.0.0.1:" + s.api_port + "/api/status" : "";
     showLlmFields();
     $("#chAiRow").hidden = !(u.ready); $("#optNews").closest("label").hidden = !(u.ready);
-    $("#sHf").value = ""; keyState("#sHfState", s.hf_token_set, "hf_token", "Token yok: konuşmacı ayırma yapılamaz.");
+    $("#sHf").value = ""; keyState("#sHfState", s.hf_token_set, "hf_token", dzTokenFree(s)
+      ? "Token yok: DiariZen token istemez, ama DiariZen hata verirse pyannote yedeği çalışmaz."
+      : "Token yok: konuşmacı ayırma yapılamaz.");
     $("#sFplState").textContent = s.fpl_repo ? (s.fpl_ok ? "presser.py bulundu." : "Bu klasörde presser.py yok.") : "";
     updateNote();
   }
@@ -869,6 +871,8 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
   $("#sOutPick").onclick = async () => { const r = await call("pick_folder"); if (r) $("#sOut").value = r; };
   $("#sFplPick").onclick = async () => { const r = await call("pick_folder"); if (r) $("#sFpl").value = r; };
   function showLlmFields() { const v = $("#sLlm").value; $("#fGem").hidden = v !== "gemini"; $("#fCla").hidden = v !== "claude"; $("#fOai").hidden = v !== "openai"; }
+  // DiariZen seçili ve kurulu: konuşmacı ayırma HF token'sız da yapılır (pyannote yalnız yedek)
+  function dzTokenFree(s) { return !!s && s.diar_engine === "diarizen" && !!s.diarizen_installed; }
   // kayıtlı anahtarın durumu + "Sil" (stt.toml'dan çıkar). Windows ortam değişkeninden geleni uygulama silemez.
   function keyState(sel, isSet, name, emptyText) {
     const sp = $(sel), env = (state.settings.secret_env || {})[name];

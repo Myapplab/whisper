@@ -498,7 +498,11 @@ class Diarizer:
     ram_pct = 70
     cpu_ok = False  # işlemciye (CPU) geçilmez: kullanıcıda fan çok dönüyor, i3'te çok yavaş
     v4 = False           # pyannote.audio 4.x (community-1 modeli, örtüşmesiz çıktı)
-    model_used = None    # gerçekten yüklenen model (yeni model olmazsa eskisine düşülür)
+    model_used = None    # son ayırmayı yapan model (pyannote'ta yeni model olmazsa eskisi; DiariZen'de onun adı)
+    pyannote_model = None  # yüklenen pyannote modeli (DiariZen seçiliyse yalnız yedek gerekince yüklenir)
+    pipe = None
+    token = None
+    _cuda = None
     last_emb = None      # son ayırmadaki konuşmacı ses imzaları
     _sep = None          # müzik ayıklama modeli (HDemucs), ilk gerekince yüklenir
     _beat_fn = None      # "hâlâ çalışıyorum" sinyali (işçi -> ana süreç; takılma denetimi)
@@ -509,12 +513,12 @@ class Diarizer:
         setup_cuda_dlls()
         import torch
 
-        if not token:
+        self.engine = (engine or "pyannote").lower()  # "diarizen": ayrı ortamda DiariZen (stt/diarizen.py)
+        if not token and self.engine != "diarizen":  # DiariZen modelleri token istemez; pyannote yalnız yedek
             raise RuntimeError("Konuşmacı ayırma için HF token gerekli (--hf-token ya da HF_TOKEN)")
         self.torch = torch
         self.model, self.token = model, token
         self.agc = agc
-        self.engine = (engine or "pyannote").lower()  # "diarizen": ayrı ortamda DiariZen (stt/diarizen.py)
         self.tuned = params or {}  # eğitilmiş ayarlar (stt/tune.py): {model: {"params": {...}}}
         self.batch, self.ram_pct, self.cpu_ok = max(1, int(batch or 8)), ram_pct, cpu_ok
         torch.backends.cudnn.benchmark = False
@@ -528,8 +532,9 @@ class Diarizer:
                                "NVIDIA sürücüsünü güncelleyin ya da kurulumu tekrar çalıştırın.")
         if kind != "cuda" and not cpu_ok:
             raise RuntimeError("Konuşmacı ayırma için uygun ekran kartı yok; işlemcide (CPU) yapılmıyor.")
-        self.pipe = self._load()
+        self.pipe = None
         self.device = "cpu"
+        self._cuda = f"cuda:{idx}" if kind == "cuda" else None
         if kind == "cuda":
             if gpu_frac:  # ekran kartı belleğinin en çok bu oranı (ör. 3090 %90, monitörlü 3080 %70)
                 try:
@@ -537,8 +542,23 @@ class Diarizer:
                     log.info("[%s] konuşmacı ayırma ekran kartı belleği sınırı: %%%d", device, round(gpu_frac * 100))
                 except Exception:  # noqa: BLE001
                     log.debug("bellek sınırı konamadı", exc_info=True)
-            self.pipe.to(torch.device(f"cuda:{idx}"))
             self.device = device
+        if self.engine != "diarizen":
+            # DiariZen'de pyannote yalnız DiariZen hata verirse yüklenir (eskiden hep yükleniyor, ekran kartı
+            # belleğini boşuna tutuyor ve HF token istiyordu)
+            self._ensure_pipe()
+
+    def _ensure_pipe(self):
+        """pyannote'u (ilk gerekince) yükle; kart seçiliyse karta taşı. Döner: pipeline."""
+        if self.pipe is None:
+            if not self.token:
+                raise RuntimeError("DiariZen başarısız oldu; yedek pyannote için HF token gerekli "
+                                   "(Ayarlar > HuggingFace token)")
+            pipe = self._load()
+            if self._cuda and str(self.device).startswith("cuda"):
+                pipe.to(self.torch.device(self._cuda))
+            self.pipe = pipe
+        return self.pipe
 
     def _load(self):
         try:
@@ -552,6 +572,7 @@ class Diarizer:
                         FALLBACK_DIAR_MODEL, self.model)
             pipe = self._load_model(FALLBACK_DIAR_MODEL)
             self.model_used = FALLBACK_DIAR_MODEL
+        self.pyannote_model = self.model_used
         log.info("Konuşmacı modeli: %s", self.model_used)
         return pipe
 
@@ -748,9 +769,11 @@ class Diarizer:
                     w.setsampwidth(2)
                     w.setframerate(SR)
                     w.writeframes((np.clip(audio, -1, 1) * 32767).astype("<i2").tobytes())
-                turns = diarizen.run(str(wav), min_speakers, max_speakers, beat=lambda f=False: self._beat(f))
+                turns = diarizen.run(str(wav), min_speakers, max_speakers, beat=lambda f=False: self._beat(f),
+                                     token=self.token)
             log.info("[%s] konuşmacı ayırma (DiariZen) %.1fs, %d konuşmacı", self.device, time.time() - t,
                      len({x[2] for x in turns}))
+            self.model_used = diarizen.MODEL  # çıktıya hangi motorun ayırdığı yazılsın (K5 ölçümü için)
             return turns
         except Exception as e:  # noqa: BLE001
             log.warning("DiariZen başarısız (%s); pyannote ile yapılıyor", str(e)[:300])
@@ -789,6 +812,8 @@ class Diarizer:
             turns = self._diarizen(audio, min_speakers, max_speakers)
             if turns is not None:
                 return turns
+        self._ensure_pipe()  # DiariZen'de yedek: pyannote ancak şimdi yüklenir
+        self.model_used = self.pyannote_model or self.model_used
         try:
             turns = self._run_lowmem(audio, kw)
         except RuntimeError as e:
