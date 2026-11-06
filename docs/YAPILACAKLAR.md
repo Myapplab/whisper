@@ -19,7 +19,7 @@ sıradakine geç. Kullanım biterse diğer profil ilk ✅ olmayan adımdan devam
       min/max konuşmacı `pipe.min_speakers/max_speakers` özniteliğiyle (DiariZen __call__ bunları config'ten okuyor;
       gerçekten etkili mi doğrulanmadı). SIRADAKİ: K6b kullanıcıda kurulum denemesi (günlükte "[diarizen kurulum]"),
       K6c Ayarlar'a "Konuşmacı motoru" seçimi + "DiariZen'i kur" düğmesi, K6d K5 ölçümüyle community-1 karşılaştırması.
-- [ ] K7 (#2) TD seçimi: ses kütüphanesi > soru sonrası uzun cevap veren > toplam süre.
+- [x] K7 (#2) ✅ `merge._td_guess`: uzun (≥5 sn) turların toplamı, tek uzun turu olan yarı puan (açılış yapan sözcü); ses kütüphanesi zaten önce geliyordu. Tercüman durumu çözülmedi (dil bilgisi gerekir).
 - [ ] K8 (#5) Örtüşme: sözü kesen kısa muhabir turu "uzun kazanır" kuralında silinmesin (3.x yolu).
 - [ ] K9 (#6) Kelime zamanı kayması: kelime için en yakın tur yerine segment içi tutarlılık (K4 testleriyle).
 - [ ] K10 (#7) Müzik ayıklama yalnız film/podcast'te ve bellek yeterse; bellek az → atla (günlüğe yaz).

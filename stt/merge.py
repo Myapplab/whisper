@@ -300,9 +300,32 @@ def label_speakers(turns: list[list], td_label: str, reporter_label: str) -> dic
         tot[spk] += max(0.0, e - s)
     if not tot:
         return {}
-    td = max(tot, key=tot.get)
+    td = _td_guess(turns, tot)
     return {spk: {"label": td_label if spk == td else reporter_label, "seconds": round(sec, 1)}
             for spk, sec in sorted(tot.items(), key=lambda kv: -kv[1])}
+
+
+TD_LONG_TURN = 5.0  # sn: "cevap" sayılan tur
+
+
+def _td_guess(turns: list[list], tot: dict) -> str:
+    """Teknik direktör tahmini: toplam süre değil, uzun cevapların toplamı. Açılışta tek uzun konuşma yapan basın
+    sözcüsü (ya da tek uzun soru soran muhabir) en çok konuşan çıksa da hoca birçok uzun cevap verir.
+    Tek uzun turu olan konuşmacının puanı yarıya iner. Hiç uzun tur yoksa en çok konuşan."""
+    merged: list[list] = []
+    for s, e, spk in sorted(turns, key=lambda t: t[0]):
+        if merged and merged[-1][2] == spk and s - merged[-1][1] < 1.0:
+            merged[-1][1] = max(merged[-1][1], e)
+        else:
+            merged.append([s, e, spk])
+    longs: dict[str, list[float]] = defaultdict(list)
+    for s, e, spk in merged:
+        if e - s >= TD_LONG_TURN:
+            longs[spk].append(e - s)
+    score = {spk: sum(v) * (1.0 if len(v) >= 2 else 0.5) for spk, v in longs.items()}
+    if not score:
+        return max(tot, key=tot.get)
+    return max(score, key=lambda k: (score[k], tot.get(k, 0)))
 
 
 def label_speakers_all(turns: list[list], prefix: str = "Konuşmacı") -> dict[str, dict]:

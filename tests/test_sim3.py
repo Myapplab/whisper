@@ -227,3 +227,19 @@ def test_diarizen_used_and_falls_back(tmp_path, monkeypatch):
         raise RuntimeError("DiariZen hata verdi")
     monkeypatch.setattr(diarizen, "run", boom)
     assert [t[2] for t in d.run(_wav(tmp_path))] == ["SPEAKER_00", "SPEAKER_01"] and pipe.calls == 1
+
+
+# ---- K7: tek uzun açılış konuşması yapan basın sözcüsü TD sayılmasın
+def test_td_is_many_long_answers_not_one_long_intro():
+    turns = [[0, 70, "PR"]]  # sözcü 70 sn açılış
+    t = 70.0
+    for _ in range(4):  # 4 soru-cevap: soru 6 sn, cevap 15 sn
+        turns += [[t, t + 6, "R"], [t + 6, t + 21, "TD"]]
+        t += 21
+    lab = merge.label_speakers(turns, "Hoca", "Muhabir")
+    assert lab["TD"]["label"] == "Hoca" and lab["PR"]["label"] == "Muhabir"
+
+
+def test_td_falls_back_to_total_without_long_turns():
+    lab = merge.label_speakers([[0, 3, "A"], [3, 4, "B"], [4, 7, "A"]], "Hoca", "Muhabir")
+    assert lab["A"]["label"] == "Hoca"
