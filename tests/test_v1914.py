@@ -1,4 +1,6 @@
 """1.9.14: oynatma listesi seçimi, ekran sürücüsü çökmesi teşhisi, hızlandırma, kanal basın toplantısı bulucu."""
+import threading
+import time
 from pathlib import Path
 
 from stt.config import Config
@@ -421,3 +423,143 @@ def test_prepare_does_not_download_while_full(tmp_path, monkeypatch):
     j.status = "done"
     th.join(5)
     assert called == ["u_1"]
+
+
+# ---------------------------------------------------------------- bağımsız inceleme bulguları (1.9.14)
+def _blocker(p, pl, tmp_path, key="u_block"):
+    from stt.pipeline import Job
+    from stt.sources import Item
+    it = Item("url", "https://x/block", key=key)
+    j = Job(it, tmp_path / "wb", status="run")
+    t = {"id": f"{key}:t:0000", "kind": "transcribe", "job": key}
+    p.tasks[t["id"]] = t
+    j.pending = {t["id"]}
+    p.jobs[key] = j
+    return j
+
+
+def test_duplicate_copy_not_reprocessed_after_wait(tmp_path, monkeypatch):
+    """Same video queued twice: copy B passes the done-check BEFORE waiting; copy A finishes while B waits;
+    B then re-downloads/re-transcribes A's video (old code: B was 'duplicate' immediately)."""
+    import stt.pipeline as pl
+    from stt.pipeline import Pipeline
+    from stt.sources import Item
+    monkeypatch.setattr(pl, "PREP_AHEAD", 1)
+    p = Pipeline(Config(out_dir=tmp_path))
+    a = _blocker(p, pl, tmp_path, key="u_dup")          # copy A: transcribing (counts as 'ahead')
+    called = []
+    monkeypatch.setattr(pl, "prepare_audio", lambda item, work, cfg: called.append(item.key) or
+                        (_ for _ in ()).throw(pl.SkipItem("stop here")))
+    b = Item("url", "https://x/dup", key="u_dup")
+    b.extra["uid"] = "b"
+    th = threading.Thread(target=p._prepare, args=(b,), daemon=True)
+    th.start()
+    time.sleep(1.5)
+    assert called == []
+    # A finishes normally
+    out = tmp_path / "out_a"
+    out.mkdir()
+    p.state.set("u_dup", source="https://x/dup", status="done", out_dir=str(out))
+    a.status = "done"
+    th.join(5)
+    assert called == [], "kopya B, A biterken yeniden indirildi"
+
+
+def test_live_stream_not_stuck_behind_prep_wait(tmp_path, monkeypatch):
+    """prep_workers=2: two normal items block both prep threads in _wait_prep_turn; a live stream added after
+    them never reaches _prepare (its 'no wait' branch is inside the busy thread pool)."""
+    import stt.pipeline as pl
+    from stt.pipeline import Pipeline
+    from stt.sources import Item
+    monkeypatch.setattr(pl, "PREP_AHEAD", 1)
+    p = Pipeline(Config(out_dir=tmp_path))
+    _blocker(p, pl, tmp_path)
+    started = []
+    monkeypatch.setattr(p, "_start_live", lambda item, job, info: started.append(item.source))
+    monkeypatch.setattr(pl, "prepare_audio", lambda item, work, cfg: (_ for _ in ()).throw(pl.SkipItem("x")))
+    for i in range(2):
+        p.submit(Item("url", f"https://x/v{i}"))
+    live = Item("url", "https://x/live")
+    live.extra["live"] = True
+    p.submit(live)
+    end = time.time() + 3
+    while not started and time.time() < end:
+        time.sleep(0.05)
+    try:
+        assert started == ["https://x/live"], "live stream did not start within 3 s"
+    finally:
+        p.cancel_all()
+        p.prep.shutdown(wait=True)
+
+
+def test_close_releases_waiting_prep_thread(tmp_path, monkeypatch):
+    """CLI: Ctrl+C -> pipe.close() (pools closed, jobs still 'run'); a prep thread waiting in _wait_prep_turn never
+    leaves, and the interpreter joins ThreadPoolExecutor threads at exit -> process hangs."""
+    import stt.pipeline as pl
+    from stt.pipeline import Pipeline
+    from stt.sources import Item
+    monkeypatch.setattr(pl, "PREP_AHEAD", 1)
+    p = Pipeline(Config(out_dir=tmp_path))
+    _blocker(p, pl, tmp_path)
+    p.submit(Item("url", "https://x/v0"))
+    time.sleep(1.2)
+    p.close()
+    end = time.time() + 3
+    while time.time() < end and [t for t in threading.enumerate() if t.name.startswith("hazirlik")]:
+        time.sleep(0.05)
+    alive = [t for t in threading.enumerate() if t.name.startswith("hazirlik")]
+    try:
+        assert not alive, f"prep thread still waiting after close(): {alive}"
+    finally:
+        p.cancel_all()
+
+
+def test_cloudflare_without_curl_cffi_says_update():
+    """yt-dlp generic extractor, impersonation dependency missing (or incompatible curl_cffi -> impersonate_target()
+    now returns None): old text said 'install curl_cffi (press Update)'; new text says impersonation was TRIED."""
+    from stt.fetch import explain_error, ytdlp_error_summary
+    raw = ('ERROR: [generic] Got HTTP Error 403 caused by Cloudflare anti-bot challenge; see  '
+           'https://github.com/yt-dlp/yt-dlp#impersonation  for how to install the required impersonation '
+           'dependency, and try again with  --extractor-args "generic:impersonate"')
+    msg = explain_error("İndirilemedi. yt-dlp: " + ytdlp_error_summary([("çerezsiz", raw)]))
+    assert "curl_cffi" in msg.split("(ayrıntı")[0], msg
+
+
+def test_guard_ignores_old_marker_format(tmp_path):
+    """Mark keeps the FIRST helper-open time forever; any later driver event (game TDR with STT closed, or an
+    nvlddmkm Xid from a CUDA fault on the 3090) disables the helper and the notice says it happened 'while used'."""
+    import json, time as _t
+    from stt.gpuguard import helper_crash, parse_events
+    (tmp_path / "yardimci_acik.json").write_text(json.dumps({"first": int(_t.time()) - 5 * 86400,
+                                                            "last": int(_t.time()) - 5 * 86400}))
+    ev = parse_events(json.dumps({"t": int(_t.time()) - 86400, "id": 13, "p": "nvlddmkm",
+                                  "m": "\\Device\\Video5 Graphics Exception: ESR 0x404490=0x80000002"}))
+    assert helper_crash(tmp_path, ev) is None, "event 4 days after last helper use still triggers"
+
+
+def test_guard_window_new_format(tmp_path):
+    """Yalnız yardımcı kartın açık olduğu aralıktaki çökme sayılır; kapanışı yazılmamış aralık (bilgisayar o
+    sırada kapandı) sayılır."""
+    import time as _t
+
+    from stt.gpuguard import helper_crash, mark_helper_closed, mark_helper_open
+    now = int(_t.time())
+    mark_helper_open(tmp_path)
+    mark_helper_closed(tmp_path)
+    assert helper_crash(tmp_path, [{"t": now + 3600, "kind": "driver"}]) is None     # kapandıktan 1 saat sonra
+    assert helper_crash(tmp_path, [{"t": now, "kind": "driver"}])                     # açıkken
+    mark_helper_open(tmp_path)                                                         # yeniden açıldı, kapanmadı
+    assert helper_crash(tmp_path, [{"t": now + 5, "kind": "reset"}])
+
+
+def test_cloudflare_message_with_curl_cffi(tmp_path):
+    from stt.fetch import explain_error
+    m = explain_error('ERROR: [generic] Got HTTP Error 403 caused by Cloudflare anti-bot challenge; try again with  '
+                      '--extractor-args "generic:impersonate"').split("  (ayrıntı")[0]
+    assert "Cloudflare" in m
+
+
+def test_vk_article_not_collection():
+    from stt.channel import is_collection_url
+    assert not is_collection_url("https://vk.com/@arsenal-news")
+    assert is_collection_url("https://vk.com/video/@arsenal")

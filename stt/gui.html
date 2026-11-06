@@ -1124,7 +1124,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
         renderGpus({ state: "ready" });
         // işin kartında ne yapıldığı (eskiden yalnız hazırlanmış iş de "Metne çevriliyor 0/N", ayırma sürerken "3/3")
         const jj = ev.uid && state.jobs.get(ev.uid);
-        if (jj && ev.state === "busy" && jj.kind !== "ok" && !jj.live) {
+        if (jj && ev.state === "busy" && !["ok", "err", "warn"].includes(jj.kind) && !jj.live) {  // durdurulan / hatalı kart geri dönmesin
           if (ev.task === "diarize") { jj.status = "Konuşmacılar ayrılıyor"; jj.kind = "busy"; }
           else if (ev.task === "transcribe") { jj.started = true; jj.status = "Metne çevriliyor " + (jj.done || 0) + "/" + (jj.total || "?"); jj.kind = "busy"; }
           scheduleQueue();
@@ -1143,7 +1143,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     if (ev.title && !/^https?:/.test(ev.title)) j.title = ev.title;
     if (ev.meta && !j.dataset) j.dataset = { manager: ev.meta.manager, home: ev.meta.home, away: ev.meta.away };
     if (STATUS[ev.type]) [j.status, j.kind] = STATUS[ev.type];
-    if (ev.type === "queued" && ev.retry) Object.assign(j, { error: "", diar_error: "", done: 0, total: 0, lines: [] });
+    if (ev.type === "queued" && ev.retry) Object.assign(j, { error: "", diar_error: "", done: 0, total: 0, lines: [], started: false });
     if (ev.type === "retrying") { j.status = "Ağ hatası: " + ev.wait + " sn sonra tekrar"; j.kind = "warn"; }
     if (ev.type === "live") {
       j.live = true;

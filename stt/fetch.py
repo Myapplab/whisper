@@ -198,12 +198,12 @@ def explain_error(msg: str) -> str:
         (("video unavailable", "this content isn't available", "has been removed", "http error 404"),
          "Video bulunamadı ya da kaldırılmış."),
         (("live event will begin", "premieres in", "is_upcoming"), "Yayın henüz başlamadı."),
-        (("cloudflare", "anti-bot challenge"),
-         "Site bot koruması (Cloudflare) kullanıyor; tarayıcı taklidi ve gizli tarayıcı denendi. Video tarayıcınızda "
-         "açılıyorsa Ayarlar'da o tarayıcıyı çerez kaynağı seçip tekrar deneyin."),
         (("impersonate target", "impersonation dependenc", "dependencies required to support this target"),
          "Bu site (ör. Dailymotion) tarayıcı taklidi istiyor ama gerekli kütüphane (curl_cffi) kurulu değil ya da "
          "uyumsuz. Uygulamada Güncelle'ye basın; güncel sürüm bu kütüphaneyi kendisi kurar."),
+        (("cloudflare", "anti-bot challenge"),
+         "Site bot koruması (Cloudflare) kullanıyor; tarayıcı taklidi ve gizli tarayıcı denendi. Video tarayıcınızda "
+         "açılıyorsa Ayarlar'da o tarayıcıyı çerez kaynağı seçip tekrar deneyin."),
         (("unable to extract", "unable to download webpage", "no video formats found",
           "expected string or bytes-like object"),
          "Site videoyu vermedi (site değişmiş ya da koruma var). STT yt-dlp'yi günde bir kez kendisi günceller; "

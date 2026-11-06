@@ -280,6 +280,7 @@ class Pipeline:
         self._respawn_due: dict[str, float] = {}  # işçi -> yeniden başlatma zamanı (geri çekilme)
         self._loading_since: dict[str, float] = {}  # işçi -> model yüklemeye başladığı an (takılma denetimi)
         self._llm = None
+        self._closing = False
 
     # ---------------------------------------------------------- başlatma
     def start(self):
@@ -492,7 +493,10 @@ class Pipeline:
             log.debug("kuyruk kaydı yazılamadı", exc_info=True)
         self.emit("queued", item)
         self._pending_futs += 1
-        self.prep.submit(self._prepare_safe, item)
+        if item.extra.get("live"):  # canlı yayın sıra beklemesin (hazırlık iş parçacıkları sırada bekliyor olabilir)
+            threading.Thread(target=self._prepare_safe, args=(item,), name="canli-hazirlik", daemon=True).start()
+        else:
+            self.prep.submit(self._prepare_safe, item)
 
     def _prepare_safe(self, item: Item):
         try:
@@ -550,10 +554,10 @@ class Pipeline:
         100 videonun hepsi saatlerce önden indiriliyor, VAD'den geçiriliyor (i3'te GPU işçileriyle yarış, fan; diskte
         100 x ses.wav; arayüzde 100 kart birden "Metne çevriliyor 0/N"). Sonuç değişmez. Döner: False = durduruldu."""
         while not self._pending_ahead_ok():
-            if self._cancelled(item):
+            if self._cancelled(item) or self._closing:
                 return False
             time.sleep(1.0)
-        return not self._cancelled(item)
+        return not (self._cancelled(item) or self._closing)
 
     def _pending_ahead_ok(self) -> bool:
         return self._prep_ahead() < PREP_AHEAD
@@ -609,6 +613,15 @@ class Pipeline:
         if item.kind == "file" and not item.key:
             item.key = self.state.file_key(item.source, item.compute_key)
         item.compute_key()
+        if not item.extra.get("live"):
+            # sıra beklemesi işlenmiş / kopya denetiminden ÖNCE (inceleme: beklerken öbür kopya bitince bu kopya
+            # "duplicate" sayılmıyor, video baştan işleniyordu). Daha önce işlenmiş olan beklemeden atlanır.
+            p0 = self.state.get(item.key) if not cfg.force else None
+            done_before = not cfg.force and self.state.is_done(item.key) \
+                and not (p0 and p0["status"] == "done" and self._redo_reason(item, p0))
+            if not done_before and not self._wait_prep_turn(item):
+                self.emit("failed", item, error="Durduruldu.", cancelled=True)
+                return
         prev = self.state.get(item.key) if not (cfg.force or item.extra.get("live")) else None
         why = self._redo_reason(item, prev)
         if item.extra.get("live"):
@@ -625,9 +638,6 @@ class Pipeline:
                 self.results.append(job)
             self.emit("skipped", item, status="done_before", out_dir=prev["out_dir"] if prev else None,
                       json=(prev.get("info") or {}).get("json") if prev else None)
-            return
-        if not item.extra.get("live") and not self._wait_prep_turn(item):
-            self.emit("failed", item, error="Durduruldu.", cancelled=True)
             return
         with self.lock:
             if item.key in self.jobs and self.jobs[item.key].status in ("queued", "prep", "run", "finalize"):
@@ -1239,6 +1249,7 @@ class Pipeline:
         pool = self.hdpool if wid == HELPER_DIAR else self.hpool
         if pool is not None:
             pool.stop(wid, idle=graceful)
+        self._mark_helper_closed()
         self._helper_note(wid, reason if reason == HELPER_OFF else "kapalı, kart boşalınca açılacak: " + reason)
 
     def _helper_diar_dispatch(self) -> None:
@@ -1352,6 +1363,12 @@ class Pipeline:
     def _mark_helper(self) -> None:
         from .gpuguard import mark_helper_open
         mark_helper_open(self.out_root / ".stt")
+
+    def _mark_helper_closed(self) -> None:
+        if self.hpool is None or self._w_on() or self._d_on():
+            return
+        from .gpuguard import mark_helper_closed
+        mark_helper_closed(self.out_root / ".stt")
 
     def _open_hdiar(self, frac: float | None) -> None:
         """Yardımcı kartta konuşmacı ayırma işçisini aç (model ilk görevde yüklenir)."""
@@ -2067,6 +2084,12 @@ class Pipeline:
 
     def kill(self) -> None:
         """Uygulama kapanıyor: canlı kayıtları ve işçi süreçlerini HEMEN durdur (beklemeden)."""
+        if self.hpool is not None:  # uygulama düzgün kapandı: yardımcı kartın açık aralığı kapansın
+            try:
+                from .gpuguard import mark_helper_closed
+                mark_helper_closed(self.out_root / ".stt")
+            except Exception:  # noqa: BLE001
+                pass
         for job in list(self.jobs.values()):
             if job.recorder is not None:
                 job.recorder.stop("uygulama kapandı")
@@ -2080,6 +2103,13 @@ class Pipeline:
                 w.join(3)
 
     def close(self):
+        self._closing = True  # sıra bekleyen hazırlık iş parçacıkları çıksın (komut satırı kapanışta asılı kalmasın)
+        if self.hpool is not None:  # düzgün kapanış: yardımcı kartın açık aralığı kapansın (ekran koruması)
+            try:
+                from .gpuguard import mark_helper_closed
+                mark_helper_closed(self.out_root / ".stt")
+            except Exception:  # noqa: BLE001
+                pass
         self.prep.shutdown(wait=False, cancel_futures=True)
         self.fin.shutdown(wait=True)
         for pool in self._pools():

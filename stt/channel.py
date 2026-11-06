@@ -72,8 +72,10 @@ def is_collection_url(url: str) -> bool:
         return bool(re.match(r"^/(channels/|showcase/|album/|user\d+(/|$))", path))
     if host in ("ok.ru",):
         return "/video/c" in path or "/videos" in path   # listelenemez: list_videos açık mesaj verir
-    if host.endswith("vkvideo.ru") or host.endswith("vk.com") or host == "vk.ru":
-        return bool(re.match(r"^/(@[^/]+/?$|video/@[^/]+|playlist/)", path))
+    if host.endswith("vkvideo.ru"):
+        return bool(re.match(r"^/(@[^/]+/?$|playlist/)", path))
+    if host.endswith("vk.com") or host == "vk.ru":  # vk.com/@ad bir makale sayfası; video kanalı /video/@ad
+        return bool(re.match(r"^/(video/@[^/]+|video/playlist/|playlist/)", path))
     if host.endswith("rutube.ru"):
         return bool(re.match(r"^/(channel/|u/|plst/|video/person/)", path))
     if host.endswith("twitch.tv"):

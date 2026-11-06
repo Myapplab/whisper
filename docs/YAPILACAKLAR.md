@@ -38,7 +38,7 @@ E.2 (C5) ve aşağıdaki K5 planı. **(1.9.5'ten kalan):** kullanıcı Güncelle
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
-- 1.9.14 (Claude; kullanıcının 6 isteği; 534 test; iki araştırma ajanı + bağımsız inceleme; rapor
+- 1.9.14 (Claude; kullanıcının 6 isteği; 542 test; iki araştırma ajanı + bağımsız inceleme (4 hata + 4 küçük, hepsi testle düzeltildi: sıra beklerken kopya video yeniden işleniyordu, canlı yayın uzun kuyrukta başlamıyordu, komut satırı kapanışta asılı kalıyordu, ekran koruması STT kapalıyken olan çökmeyi sayıyordu -> artık yalnız yardımcının açık olduğu aralıklar); rapor
   **`docs/TARAMA_2026-11-07.md`**): (1) oynatma listesinde işlenmemişlerin hepsi seçili (konu süzgeci yok);
   "manager's preview" basın toplantısı sayılır. (2) **Ekran kararması** (2 kez, "HDMI sinyali yok"): Kontrol'de
   "Ekran sürücüsü" satırı (Windows olay günlüğü), yardımcı kart açıkken sürücü çöktüyse yardımcı kendiliğinden kapanır

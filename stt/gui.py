@@ -675,9 +675,9 @@ class App:
         except Exception as e:  # noqa: BLE001
             from .fetch import explain_error
             return {"ok": False, "error": explain_error(str(e))}
-        use_ai = bool(opts.get("ai")) and self.llm().available()
         topic = opts.get("topic") or "basin"
         playlist = is_playlist_url(url)
+        use_ai = bool(opts.get("ai")) and not playlist and self.llm().available()  # liste zaten kullanıcının seçimi
         # oynatma listesi kullanıcının seçtiği videolardır: konu süzgeci yok (yalnız "geçerse alma" ve özel kelimeler);
         # işlenmemişlerin hepsi seçili gelir (eskiden "MANAGER'S PREVIEW" gibi başlıklar tek tek işaretleniyordu)
         sel_topic = "hepsi" if playlist else topic

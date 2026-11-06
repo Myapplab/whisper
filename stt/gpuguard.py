@@ -105,31 +105,51 @@ def _mark_path(state_dir: Path) -> Path:
     return Path(state_dir) / "yardimci_acik.json"
 
 
-def mark_helper_open(state_dir: Path) -> None:
-    """Yardımcı kart (monitörlü) iş için açıldı: zamanı yaz (sürücü çökerse ilişki kurulabilsin)."""
+def _read_windows(state_dir: Path) -> list[list]:
+    try:
+        data = json.loads(_mark_path(state_dir).read_text(encoding="utf-8"))
+        wins = data.get("windows") if isinstance(data, dict) else None
+        return [w for w in wins if isinstance(w, list) and len(w) == 2] if isinstance(wins, list) else []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _write_windows(state_dir: Path, wins: list[list]) -> None:
     try:
         p = _mark_path(state_dir)
         p.parent.mkdir(parents=True, exist_ok=True)
-        old = {}
-        try:
-            old = json.loads(p.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001
-            pass
-        p.write_text(json.dumps({"first": old.get("first") or int(time.time()), "last": int(time.time())}),
-                     encoding="utf-8")
+        p.write_text(json.dumps({"windows": wins[-50:]}), encoding="utf-8")
     except OSError:
         log.debug("yardımcı kart zamanı yazılamadı", exc_info=True)
 
 
+def mark_helper_open(state_dir: Path) -> None:
+    """Yardımcı kart (monitörlü) iş için açıldı: [açılış, kapanış] aralığı başlar (kapanış boş = hâlâ açık).
+    Yalnız bu aralıklardaki çökmeler sayılır (inceleme: STT kapalıyken oyunun çökerttiği sürücü de sayılıyordu)."""
+    wins = _read_windows(state_dir)
+    if wins and wins[-1][1] is None:
+        return  # zaten açık
+    wins.append([int(time.time()), None])
+    _write_windows(state_dir, wins)
+
+
+def mark_helper_closed(state_dir: Path) -> None:
+    """Yardımcı kartta açık işçi kalmadı (ya da uygulama düzgün kapandı): açık aralığı kapat. Bilgisayar donup
+    kapanırsa bu yazılmaz: aralık açık kalır ve sonraki açılıştaki çökme / beklenmedik kapanma sayılır."""
+    wins = _read_windows(state_dir)
+    if wins and wins[-1][1] is None:
+        wins[-1][1] = int(time.time())
+        _write_windows(state_dir, wins)
+
+
 def helper_crash(state_dir: Path, events: list[dict]) -> dict | None:
-    """Yardımcı kart ilk açıldıktan sonra ekran sürücüsü çöktüyse / bilgisayar kapandıysa o olay (en yenisi)."""
-    try:
-        mark = json.loads(_mark_path(state_dir).read_text(encoding="utf-8"))
-        since = int(mark.get("first") or 0)
-    except Exception:  # noqa: BLE001
+    """Yardımcı kart açıkken (bir aralığın içinde, 2 dk pay) olan son ekran sürücüsü çökmesi / beklenmedik kapanma.
+    Kapanışı yazılmamış aralık (bilgisayar o sırada kapandı) uygulamanın bir sonraki açılışına dek sayılır."""
+    wins = _read_windows(state_dir)
+    if not wins:
         return None
-    hits = [e for e in events if e["t"] >= since - 60]
-    return hits[-1] if hits else None
+    hits = [e for e in events for a, b in wins if a - 60 <= e["t"] <= (b if b is not None else time.time()) + 120]
+    return max(hits, key=lambda e: e["t"]) if hits else None
 
 
 def clear_mark(state_dir: Path) -> None:
