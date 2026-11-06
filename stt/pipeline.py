@@ -714,9 +714,35 @@ class Pipeline:
         self._health()
         self._dispatch()
 
+    def _shared_gpu(self) -> set:
+        """Konuşmacı ayırmayla AYNI kartta çalışan metin işçileri. Bu kartta ikisi aynı anda çalışmaz
+        (aynı anda çalışınca metin işçisi 'invalid device ordinal' ile hep düşüyordu): sırayla."""
+        if not self.pool or getattr(self.pool, "threads", False):
+            return set()
+        ddev = (getattr(self.dpool, "devices", None) or [None])[0] if self.dpool is not None else None
+        if ddev is None and self.dbacklog:
+            ddev = self._diar_device()
+        if not ddev or not ddev.startswith("cuda"):
+            return set()
+        spec = getattr(self.pool, "_spec", {}) or {}
+        return {n for n, d in spec.items() if d == ddev}
+
+    def _diar_turn(self) -> bool:
+        """Sıradaki konuşmacı ayırmanın işinde metin çevirisi bitti mi? Öyleyse yeni metin görevi verilmez,
+        ayırma araya girer (iş çabuk biter; metin işleri sonra devam eder)."""
+        for t in self.dbacklog:
+            job = self.jobs.get(t["job"])
+            if job and job.status == "run" and not any(
+                    (self.tasks.get(x) or {}).get("kind") == "transcribe" for x in job.pending):
+                return True
+        return False
+
     def _dispatch(self):
         with self.lock:
             main = set(self.pool.workers) if self.pool else set()
+            shared = self._shared_gpu()
+            if shared and ("diar" in self.inflight or self.dqueued_n > 0 or self._diar_turn()):
+                main -= shared  # kart konuşmacı ayırmada (ya da sırası geldi): metin görevi verilmez
             while len(self.idle & main) - self.queued_n > 0 and self.backlog:
                 t = self.backlog.popleft()
                 job = self.jobs.get(t["job"])
@@ -734,6 +760,9 @@ class Pipeline:
             if self.dbacklog and self.dpool is None:
                 self._start_diar_pool()
             didle = 1 if "diar" in self.idle else 0
+            if shared and (self.queued_n > 0 or any(w in self.inflight for w in shared)
+                           or (self.backlog and not self._diar_turn())):
+                didle = 0  # kartta metin çevirisi sürüyor: ayırma bekler
             while didle - self.dqueued_n > 0 and self.dbacklog:
                 t = self.dbacklog.popleft()
                 job = self.jobs.get(t["job"])

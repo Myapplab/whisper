@@ -4,6 +4,10 @@ Kullanıcı iki Claude hesabıyla (iki profil) sırayla çalışır: biri sını
 Ortak hafıza bu dosyadır. **Oturum sonunda güncelle** (Son durum + liste) ve `main`'e push et.
 
 ## Son durum
+- Sürüm 1.7.3: 1.7.2'de metin işçisi yeniden açılsa da t:0000 üç kez `invalid device ordinal` verdi (konuşmacı
+  ayırma + müzik ayıklama aynı anda 3090'daydı). Artık aynı kartta sırayla: `Pipeline._shared_gpu/_diar_turn`
+  (işin metni bitince ayırma araya girer, o sırada metin görevi verilmez). Kök neden kesin değil; tekrar ederse
+  `pip list` (ctranslate2/numpy/torch) ve günlükteki `(stt-diar)` satırları istensin.
 - Sürüm 1.7.2 (`main`): metin işçisinde ekran kartı hatası (invalid device ordinal, cuBLAS failed; `workers.gpu_fault`)
   olunca işçi kendini kapatıyor, `_health` temiz açıyor, parça 3 kez deneniyor (eskiden 2. hatada iş başarısızdı).
   Güncelleme denetimi commit SHA ile (GitHub API): raw.githubusercontent dal adresi 5 dk önbellekteydi, yeni sürüm

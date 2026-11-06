@@ -79,3 +79,28 @@ def test_gpu_fault_requeues_and_worker_restarts(tmp_path):
     p.pool.dead.add("a")
     p._health()
     assert p.pool.respawned == ["a"]
+
+
+def test_diar_and_transcribe_take_turns_on_same_gpu(tmp_path):
+    from test_stability import FakePool
+    p = _pipe(tmp_path, ("cuda:1",))
+    p.pool._spec = {"cuda:1": "cuda:1"}
+    job, tasks = _job(p, tmp_path, n=2)
+    d = {"id": "u_test:d", "kind": "diarize", "job": job.item.key}
+    p.tasks[d["id"]] = d
+    job.pending.add(d["id"])
+    p.dbacklog.append(d)
+    p.dpool = FakePool(["diar"])
+    p.dpool.devices = ["cuda:1"]
+    p._on_msg({"type": "ready", "wid": "cuda:1"})
+    p._on_msg({"type": "ready", "wid": "diar"})
+    p._dispatch()
+    assert [t["kind"] for t in p.pool.put_q] == ["transcribe"] and p.dpool.put_q == []  # aynı anda değil
+    for t in tasks:
+        p._on_msg({"type": "start", "wid": "cuda:1", "tid": t["id"]})
+        p._dispatch()
+        assert p.dpool.put_q == []
+        p._on_msg({"type": "done", "wid": "cuda:1", "tid": t["id"], "elapsed": 1.0,
+                   "payload": {"segments": [], "language": "en"}})
+        p._dispatch()
+    assert [t["kind"] for t in p.dpool.put_q] == ["diarize"]  # metin bitti: sıra ayırmada
