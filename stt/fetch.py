@@ -79,8 +79,8 @@ def http_input_args(src: str, headers: dict | None, live: bool = False) -> list[
     if not src.startswith("http"):
         return []
     out = ["-headers", header_arg(headers)] if headers else []
-    if headers or live:
-        out += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10", "-rw_timeout", "30000000"]
+    # her http girdisinde: bağlantı 30 sn ses vermezse ffmpeg hata versin (eskiden başlıksız linkte sonsuza dek takılabilirdi)
+    out += ["-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10", "-rw_timeout", "30000000"]
     return out
 
 
@@ -92,8 +92,12 @@ def to_wav16k(src: str, dst: Path, headers: dict | None = None) -> Path:
            "-i", src, "-vn", "-sn", "-dn", "-map", "0:a:0?", "-ac", "1", "-ar", "16000",
            "-c:a", "pcm_s16le", "-f", "wav", str(tmp)]
     # düşük öncelik: dönüştürme sırasında bilgisayar akıcı kalsın
-    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                       **popen_kw(low_priority=True))
+    try:  # 3 saatlik film bile birkaç dakikada çevrilir; 2 saat = takıldı
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                           timeout=7200, **popen_kw(low_priority=True))
+    except subprocess.TimeoutExpired:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError("Ses dönüştürme 2 saatte bitmedi (ffmpeg takıldı); tekrar deneyin") from None
     if r.returncode != 0 or not tmp.exists() or tmp.stat().st_size <= 44:
         tmp.unlink(missing_ok=True)
         err = (r.stderr or "").strip()[-800:]

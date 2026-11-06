@@ -1,2 +1,2 @@
 """stt - basın toplantısı / video / ses dosyası metne çevirme aracı."""
-__version__ = "1.8.2"
+__version__ = "1.8.3"

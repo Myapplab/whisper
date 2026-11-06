@@ -178,6 +178,7 @@ class Pipeline:
         self.worker_errors: dict[str, str] = {}
         self.failed_reason: str | None = None  # tüm işçiler başlatılamadıysa sebep (GUI motoru hata durumuna alır)
         self._respawn_due: dict[str, float] = {}  # işçi -> yeniden başlatma zamanı (geri çekilme)
+        self._loading_since: dict[str, float] = {}  # işçi -> model yüklemeye başladığı an (takılma denetimi)
         self._llm = None
 
     # ---------------------------------------------------------- başlatma
@@ -711,10 +712,52 @@ class Pipeline:
         for i, pool in enumerate(self._pools()):
             msg = pool.get(timeout if i == 0 else 0.01)
             while msg is not None:
-                self._on_msg(msg)
+                self._safe_msg(msg)
                 msg = pool.get(0.01)
-        self._health()
-        self._dispatch()
+        for step in (self._health, self._dispatch):
+            try:
+                step()
+            except Exception:  # noqa: BLE001  (tek bir hata bütün motoru durdurmasın)
+                log.exception("Motor adımı hata verdi (%s); devam ediliyor", step.__name__)
+
+    def _safe_msg(self, msg: dict) -> None:
+        """İşçi mesajını işle; beklenmedik hata (disk dolu, bozuk veri...) yalnız o videoyu düşürür.
+        Eskiden hata pump'tan çıkıyor, motor duruyor, kuyruktaki her şey bekliyordu."""
+        try:
+            self._on_msg(msg)
+        except Exception as e:  # noqa: BLE001
+            log.exception("İşçi mesajı işlenemedi (%s)", msg.get("type"))
+            task = self.tasks.get(msg.get("tid") or "") or {}
+            job = self.jobs.get(task.get("job", ""))
+            if job and job.status == "run":
+                job.status, job.error = "failed", f"İç hata: {type(e).__name__}: {e}"
+                self.emit("failed", job.item, error=job.error)
+                self.state.set(job.item.key, source=job.item.source, status="failed", title=job.item.title,
+                               error=job.error)
+                with self.lock:
+                    self.results.append(job)
+
+    def _drop_dead_diar(self) -> None:
+        """Konuşmacı ayırma süreci bir daha açılmayacaksa (üst üste çöktü / açılamadı) bekleyen ayırma görevleri
+        hata sayılır: videolar konuşmacısız biter. Yoksa iş sonsuza dek bitmez ve (aynı kartta sırayla çalışma
+        yüzünden) öbür videoların metin çevirisi de dururdu."""
+        if self.dpool is None or "diar" not in self.dpool.workers or "diar" in self.dpool.alive():
+            return
+        if "diar" not in self.fatal and self.restarts.get("diar", 0) < self.cfg.worker_restarts:
+            return
+        with self.lock:
+            waiting = list(self.dbacklog) + [t for _, t in self.ddelayed]
+            self.dbacklog.clear()
+            self.ddelayed.clear()
+        self.dqueued_n = 0
+        for t in waiting:
+            job = self.jobs.get(t["job"])
+            if not job or job.status != "run":
+                continue
+            job.attempts[t["id"]] = 9  # tekrar kuyruğa girmesin
+            self._on_msg({"type": "error", "wid": "diar", "tid": t["id"],
+                          "error": "Konuşmacı ayırma süreci açılamadı (üst üste durdu); ayrıntı günlükte"})
+        self.idle.discard("diar")
 
     def _shared_gpu(self) -> set:
         """Konuşmacı ayırmayla AYNI kartta çalışan metin işçileri. Bu kartta ikisi aynı anda çalışmaz
@@ -937,7 +980,7 @@ class Pipeline:
         job.pending.discard(tid)
         self._maybe_finalize(job)
 
-    def _task_timeout(self, task: dict) -> float:
+    def _task_timeout(self, task: dict, wid: str | None = None) -> float:
         """Takılma sınırı (sn): GPU kilitlenir / indirme donarsa işçi yeniden başlatılır.
         Konuşmacı ayırma ilerledikçe sinyal gönderir; süre SON SİNYALDEN sayılır (eskiden 3 x video süresiydi,
         takılan iş saatlerce bekliyordu)."""
@@ -945,7 +988,11 @@ class Pipeline:
             job = self.jobs.get(task.get("job", ""))
             dur = (job.info.get("duration_s", 0) if job else 0) or 3600
             return max(900.0, 0.25 * dur)
-        return max(900.0, 8 * (task.get("end", 0) - task.get("start", 0)))
+        dur = task.get("end", 0) - task.get("start", 0)
+        dev = (getattr(self.pool, "_spec", None) or {}).get(wid, "") if self.pool else ""
+        if str(dev).startswith("cuda"):  # ekran kartı 20-40x hızlı: 5 dk'lık parça ~10 sn; 40 dk beklemeye gerek yok
+            return max(300.0, 3 * dur)
+        return max(900.0, 8 * dur)
 
     def _requeue(self, wid: str, tid: str, why: str) -> None:
         task = self.tasks.get(tid)
@@ -969,7 +1016,7 @@ class Pipeline:
         for wid, (tid, t0) in list(self.inflight.items()):  # takılan görev: işçiyi yeniden başlat
             task = self.tasks.get(tid) or {}
             pool = self._pool_of(wid)
-            if task and now - t0 > self._task_timeout(task) and wid in pool.alive():
+            if task and now - t0 > self._task_timeout(task, wid) and wid in pool.alive():
                 log.error("[%s] görev %.0f dakikadır bitmedi (GPU takıldı?); işçi yeniden başlatılıyor", wid,
                           (now - t0) / 60)
                 pool.respawn(wid)
@@ -978,6 +1025,20 @@ class Pipeline:
                 self._requeue(wid, tid, "işçi takıldı")
                 self.idle.discard(wid)
                 self.emit("worker", wid=wid, state="loading")
+        for pool in self._pools():  # model yüklerken takılan işçi (görev yok, hazır da değil)
+            if pool.threads:
+                continue
+            for wid in pool.alive():
+                if wid in self.idle or wid in self.inflight or wid in self.fatal:
+                    self._loading_since.pop(wid, None)
+                    continue
+                t0 = self._loading_since.setdefault(wid, now)
+                if now - t0 > 1800:
+                    log.error("[%s] işçi 30 dakikadır hazır olmadı (model yüklenirken takıldı?); yeniden başlatılıyor", wid)
+                    self._loading_since.pop(wid, None)
+                    self.restarts[wid] = self.restarts.get(wid, 0) + 1
+                    pool.respawn(wid)
+                    self.emit("worker", wid=wid, state="loading")
         main_alive: set = set()
         for pool in self._pools():
             alive = set(pool.alive())
@@ -1004,6 +1065,7 @@ class Pipeline:
                     alive.add(wid)  # yeniden başlatılmayı bekliyor: işler başarısız sayılmasın
             if pool is self.pool:
                 main_alive = alive
+        self._drop_dead_diar()
         alive = main_alive
         if not alive and self.active():
             why = next(iter(self.worker_errors.values()), "") or "GPU/model hatası"
