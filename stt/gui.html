@@ -315,7 +315,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
           <button type="button" data-v="az" aria-pressed="false">AZ</button>
         </div>
       </div>
-      <label class="toggle"><input type="checkbox" id="optDiar"><span>Konuşmacıları ayır<small>Kim konuşuyor, ayrı ayrı yazar (HuggingFace token gerekir)</small></span></label>
+      <label class="toggle"><input type="checkbox" id="optDiar"><span>Konuşmacıları ayır<small>Kim konuşuyor, ayrı ayrı yazar (HuggingFace token gerekir). Kapalıyken yalnız metne çevrilir: çok daha hızlı. Konuşmacıları sonra isterseniz, bu açıkken videoyu tekrar başlatın (video baştan işlenir). Seçiminiz hatırlanır.</small></span></label>
       <div class="sub" id="diarSub">
         <div class="seg" id="spkMode" role="group" aria-label="Video türü">
           <button type="button" data-v="auto" aria-pressed="true">Otomatik</button>
@@ -512,7 +512,9 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
   });
   $("#btnFiles").onclick = async () => { const r = await call("pick_files"); if (r && r.length) { state.files.push(...r); renderChips(); } };
   $("#btnFolder").onclick = async () => { const r = await call("pick_folder"); if (r) { state.files.push(r); renderChips(); } };
-  $("#optDiar").onchange = updateNote;
+  $("#optDiar").onchange = () => {  // seçim hatırlanır (konuşmacısız çevirme modu açılışta kendiliğinden geri dönmesin)
+    updateNote(); call("save_settings", { ui_diarize: $("#optDiar").checked });
+  };
   $("#spkMode").addEventListener("click", e => {
     const b = e.target.closest("button"); if (!b) return;
     state.spkMode = b.dataset.v;
@@ -1189,7 +1191,8 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     $("#sVer").textContent = "STT " + h.version;
     for (const b of $("#lang").children) b.setAttribute("aria-pressed", String(b.dataset.v === (h.settings.lang || "auto")));
     state.lang = h.settings.lang || "auto";
-    $("#optDiar").checked = !!h.settings.diarize || !!h.settings.hf_token_set;
+    const ud = h.settings.ui_diarize;
+    $("#optDiar").checked = ud === null || ud === undefined ? (!!h.settings.diarize || !!h.settings.hf_token_set) : !!ud;
     $("#optFpl").checked = !!h.settings.fpl_ok && !!h.settings.fpl_auto;
     updateNote();
     onEvent({ type: "engine", ...h.engine });

@@ -516,3 +516,37 @@ def test_shrink_regrows_after_half_hour(tmp_path):
     assert p._helper_check("cuda:0", free9, parked=True) == ("", 4)
     p._h_shrunk_at["cuda:0"] = time.time() - 4000
     assert p._helper_check("cuda:0", free9, parked=True) == ("", 8)
+
+
+def test_diarizen_install_skips_pesq():
+    """Kullanıcıda DiariZen kurulumu "pesq" derlemesinde düştü (Windows'ta C derleyicisi yok); pesq yalnız ölçümde."""
+    from stt.diarizen import needed_requirements
+    req = ("einops\nflit\nnumpy==1.26.4\nonnxruntime-gpu\nopenpyxl # for saving results to excel\npesq\n"
+           "pre-commit\npystoi\npyyaml\njupyterlab\naccelerate==1.6.0\nPESQ>=0.0.4\n")
+    out = needed_requirements(req)
+    lines = [x.split("#")[0].strip().lower() for x in out.splitlines()]
+    assert not any(x.startswith(("pesq", "pystoi", "jupyterlab", "pre-commit")) for x in lines)
+    assert "numpy==1.26.4" in lines and "accelerate==1.6.0" in lines and "onnxruntime-gpu" in lines
+
+
+def test_diarize_choice_remembered(tmp_path, monkeypatch):
+    """Konuşmacısız çevirme: arayüzdeki seçim kaydedilir (eskiden her açılışta token varsa yeniden açılıyordu)."""
+    import threading
+
+    import stt.gui as gui
+    toml = tmp_path / "stt.toml"
+    orig = gui.save_settings
+    monkeypatch.setattr(gui, "save_settings", lambda upd: orig(upd, toml))
+    monkeypatch.setattr(gui, "load_config", lambda: Config(out_dir=tmp_path, ui_diarize=False))
+    app = gui.App.__new__(gui.App)
+    app._cfg = Config(out_dir=tmp_path)
+    app._pipe = None
+    app._gpus = {}
+    app._llm = None
+    app._restart = threading.Event()
+    app._start_api = lambda: None
+    monkeypatch.setattr(gui.App, "llm", lambda self: type("L", (), {"key": lambda s, x: None,
+                                                                     "status": lambda s: {}})())
+    r = app.save_settings({"ui_diarize": False})
+    assert "ui_diarize = false" in toml.read_text(encoding="utf-8")
+    assert r["ui_diarize"] is False and not app._restart.is_set()   # motor yeniden başlamaz

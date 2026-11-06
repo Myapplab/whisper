@@ -38,6 +38,16 @@ E.2 (C5) ve aşağıdaki K5 planı. **(1.9.5'ten kalan):** kullanıcı Güncelle
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
+- 1.9.12 (Claude; 495 test): (1) **DiariZen kurulumu Windows'ta "pesq" derlemesinde düşüyordu** (C derleyicisi yok).
+  DiariZen kaynağı indirilip tarandı: pesq / pystoi hiç import edilmiyor (yalnız eğitim/ölçüm). `diarizen.SKIP_REQS`
+  (pesq, pystoi, jupyterlab, pre-commit) çıkarılıp `requirements-stt.txt` ile kuruluyor. Windows'ta DENENMEDİ; başka
+  derleme isteyen paket çıkarsa günlükteki "[diarizen kurulum]" satırı istensin. (2) **Konuşmacısız çevirme:**
+  "Konuşmacıları ayır" anahtarı zaten vardı ama her açılışta token varsa yeniden açılıyordu; seçim artık hatırlanıyor
+  (`ui_diarize`), açıklaması yazıldı. (3) Kullanıcının ekranı: 4 video "Metne çevriliyor 3/3" = metin bitti, konuşmacı
+  ayırma bekliyor → **darboğaz konuşmacı ayırma**, yardımcı 3080 doğru olarak boşta. SIRADAKİ: konuşmacı ayırmanın
+  ikinci işçisi 3080'de (kullanıcı iki kez istedi). Tasarım notu: 3080 aynı anda tek rol (metin YA DA ayırma; ikisi
+  belleğe sığmaz, aynı kartta da sırayla çalışmak zorunda); "diar" tek işçi varsayımı pipeline'da çok yerde
+  (dqueued_n, inflight["diar"], cancel, _drop_dead_diar, _on_msg hata yolları).
 - 1.9.11 (Claude; kullanıcı istedi; 493 test; bağımsız inceleme 1 hata buldu, düzeltildi: başka program yüzünden toplu boyut kalıcı küçülüyordu): yardımcı kart (3080) artık "hafif" değil: kullanıcının önerisiyle kartta YouTube /
   sekmeler için **ayrılan bellek** (Ayarlar > "Yardımcı kartta YouTube / tarayıcı için boş bırakılacak bellek",
   varsayılan 2 GB, kaydedince hemen geçerli) dışında kalan bellek ve güç işe verilir: toplu boyut kalan yere göre

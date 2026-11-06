@@ -365,6 +365,7 @@ class App:
                 "fpl_repo": str(c.fpl_repo or ""), "fpl_ok": bool(c.fpl_repo and (Path(c.fpl_repo) / "presser.py").is_file()),
                 "cookies_browser": c.cookies_browser or "none", "cookies_file": c.cookies_file or "",
                 "lang": c.lang or "auto", "diarize": bool(c.diarize), "fpl_auto": bool(c.fpl_auto),
+                "ui_diarize": c.ui_diarize,
                 "gpus": g if g in ("auto", "all", "yardim") else str(c.gpus), "gpu_cards": cards,
                 "helper_reserve_gb": c.helper_reserve_gb,
                 "browser_capture": bool(c.browser_capture), "ui_gpu": bool(c.ui_gpu),
@@ -394,7 +395,7 @@ class App:
             upd["cookies_file"] = (s.get("cookies_file") or "").replace("\\", "/")
         if s.get("cookies_browser"):
             upd["cookies_browser"] = s["cookies_browser"]
-        for k in ("diarize", "fpl_auto", "browser_capture", "ui_gpu", "llm_news", "llm_qa"):
+        for k in ("diarize", "ui_diarize", "fpl_auto", "browser_capture", "ui_gpu", "llm_news", "llm_qa"):
             if k in s:
                 upd[k] = bool(s[k])
         if s.get("lang"):

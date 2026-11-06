@@ -50,6 +50,7 @@ class Config:
     chunk_min: float = 5.0               # hedef parça uzunluğu (dakika)
     # konuşmacı ayırma
     diarize: bool = False
+    ui_diarize: bool | None = None       # arayüzdeki "Konuşmacıları ayır" seçimi (hatırlanır); boş = token varsa açık
     hf_token: str | None = None
     diar_model: str = "pyannote/speaker-diarization-community-1"  # olmazsa 3.1'e düşülür
     diar_engine: str = "pyannote"        # pyannote | diarizen (ayrı ortam: python -m stt diarizen-kur; CC BY-NC)

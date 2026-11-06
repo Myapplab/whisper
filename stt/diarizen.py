@@ -30,6 +30,10 @@ ROOT = TOOL_DIR / "diarizen"
 VENV = TOOL_DIR / ".venv-diarizen"
 ZIP_URL = "https://codeload.github.com/BUTSpeechFIT/DiariZen/zip/refs/heads/main"
 PY310_URL = "https://www.python.org/ftp/python/3.10.11/python-3.10.11-amd64.exe"
+# requirements.txt'de olup konuşmacı ayırmada hiç kullanılmayanlar (yalnız eğitim / ölçüm / geliştirme). pesq C
+# derlemesi ister: Windows'ta Visual Studio Build Tools yoksa kurulum "pesq ... building" hatasıyla duruyordu
+# (kullanıcıda 1.9.x). Kaynakta pesq / pystoi hiç import edilmiyor (2026-11 denetlendi).
+SKIP_REQS = {"pesq", "pystoi", "jupyterlab", "pre-commit"}
 TORCH = ["torch==2.1.1", "torchvision==0.16.1", "torchaudio==2.1.1", "--index-url",
          "https://download.pytorch.org/whl/cu121"]
 
@@ -102,6 +106,18 @@ def _python310(progress) -> str:
     return str(exe)
 
 
+def needed_requirements(text: str) -> str:
+    """requirements.txt'den çalışma için gerekmeyen (ve derleme isteyen) paketleri çıkar."""
+    import re
+    out = []
+    for line in text.splitlines():
+        name = re.split(r"[\s#<>=!~\[;]", line.strip(), maxsplit=1)[0].lower().replace("_", "-")
+        if name in SKIP_REQS:
+            continue
+        out.append(line)
+    return "\n".join(out) + "\n"
+
+
 def install(progress=lambda text: None) -> dict:
     """Ayrı ortamı kur (~4 GB iner, 10-30 dk). Tekrar çalıştırmak güvenli."""
     t0 = time.time()
@@ -126,7 +142,9 @@ def install(progress=lambda text: None) -> dict:
     shutil.move(str(src), str(ROOT))
     shutil.rmtree(tmp, ignore_errors=True)
     cons = ["-c", "constraints.txt"] if (ROOT / "constraints.txt").exists() else []
-    _run([py, "-m", "pip", "install", "-q", "-r", "requirements.txt", *cons], progress,
+    (ROOT / "requirements-stt.txt").write_text(
+        needed_requirements((ROOT / "requirements.txt").read_text(encoding="utf-8")), encoding="utf-8")
+    _run([py, "-m", "pip", "install", "-q", "-r", "requirements-stt.txt", *cons], progress,
          "DiariZen kütüphaneleri kuruluyor", cwd=ROOT)
     _run([py, "-m", "pip", "install", "-q", "-e", "."], progress, "DiariZen kuruluyor", cwd=ROOT)
     _run([py, "-m", "pip", "install", "-q", "-e", ".", *(["-c", "../constraints.txt"] if cons else [])], progress,
