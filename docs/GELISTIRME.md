@@ -53,8 +53,9 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
 - **Eşleştirme (1.9.8, `docs/TARAMA_2026-11-06.md` A):** ortak sözcük olan takım adları (derby, nice, Sporting,
   sabah, om) yalnız niteleyiciyle ya da başka takıma bağlıyken; hoca → takım (`match.PL_MANAGERS`, yalnız
   `MANAGER_SEASON` tarihli videoda ve tarafsız kanalda); maç öncesi/sonrası başlıktan (`dataset.phase_hint`, saat
-  bilinmiyorsa `presser_time` "yalnız gün"); tanınmayan rakipte rakipsiz ±3 gün, sözlükteki PL dışı rakip PL maçına
-  yazılmaz; açıklamadaki kupa PL'yi ezmez. Eski çıktılar "Veri seti > Yeniden sınıflandır" / `stt
+  bilinmiyorsa `presser_time` "yalnız gün"); sözlükte olmayan rakipte rakipsiz ±3 gün yalnız maçın rakibi o adla
+  örtüşürse (`_same_club`; Wycombe = kupa maçı), sözlükteki PL dışı rakip PL maçına yazılmaz; açıklamadaki kupa PL'yi
+  ezmez. Kulüp kanalı kuralı yalnız kulübün kendi kanalında (`match.club_of_channel`). Eski çıktılar "Veri seti > Yeniden sınıflandır" / `stt
   yeniden-siniflandir` (`stt/reclassify.py`) ile metin yeniden çevrilmeden taşınır; mac.json skoru da yenilenir.
 - FPL: `presser.py` (kullanıcının FPL reposu) → `inputs/pressers/GWxx/TAKIM.txt` yazılır ve
   `python3 presser.py <dosya>` çalışır; PL maçı bulunursa GW/takım kodu otomatik.

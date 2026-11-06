@@ -13,7 +13,8 @@ Ortak hafıza bu dosyadır. **Oturum sonunda güncelle** (Son durum + liste) ve 
 ## ŞU ANKİ İŞ: konuşmacı ayırma iyileştirme (adım adım; her adım ayrı push)
 Kullanıcı istedi: DiariZen + "acımasız eleştiri"nin 10 maddesinin hepsi. Kural: bir adım bitince push et, burada ✅ yap,
 sıradakine geç. Kullanım biterse diğer profil ilk ✅ olmayan adımdan devam eder.
-**SIRADAKİ (1.9.5 sonrası):** kullanıcı Güncelle'ye basıp 3-5 basın toplantısını düzeltecek, "Kontrol" ekranını paylaşacak. Gelince: K5 ölçümüyle K4-açık (merge eşikleri) + agc A/B ("Kontrol" ayara göre ayrı doğruluk gösterir) + K6b/K6d (DiariZen) + SUPlime denemesi. İlk eğitimde günlükte "Ses imzaları düzeltilmiş satırlardan yenilendi" satırı istensin (gerçek modelle denenmedi).
+**SIRADAKİ (1.9.8 sonrası):** kullanıcı Güncelle → "Veri seti > Yeniden sınıflandır" ekran görüntüsü; sonra rapor
+E.2 (C5) ve aşağıdaki K5 planı. **(1.9.5'ten kalan):** kullanıcı Güncelle'ye basıp 3-5 basın toplantısını düzeltecek, "Kontrol" ekranını paylaşacak. Gelince: K5 ölçümüyle K4-açık (merge eşikleri) + agc A/B ("Kontrol" ayara göre ayrı doğruluk gösterir) + K6b/K6d (DiariZen) + SUPlime denemesi. İlk eğitimde günlükte "Ses imzaları düzeltilmiş satırlardan yenilendi" satırı istensin (gerçek modelle denenmedi).
 - [x] K1 (#10) ✅ (doctor: sürüm 3.x uyarısı; yedek model uyarısı zaten vardı) Kontrol: pyannote < 4 ise "community-1 çalışmıyor, eski 3.1 kullanılıyor" uyarısı + düzeltme yolu.
 - [x] K2 (#4) ✅ ZATEN VARDI (pipeline `_diarize_task`: min_speakers en az 2) Basın modunda en az 2 konuşmacı otomatik (`min_speakers`), kullanıcı sayı girerse o geçerli.
       ✅ 1.9.4 DÜZELTİLDİ: kod 2'yi her modda uyguluyordu (tek kişilik videoda pyannote 4 VBx kişiyi ikiye bölüyordu)
@@ -37,6 +38,37 @@ sıradakine geç. Kullanım biterse diğer profil ilk ✅ olmayan adımdan devam
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
+- 1.9.8 (Claude; `docs/TARAMA_2026-11-06.md` A bölümü = veri seti eşleştirmesi; 369 test): kullanıcı "A bölümünü
+  yap" dedi. Rapordaki başlık örneklerinin hepsi `tests/test_v198.py`'de; ayrıca iki bağımsız inceleme ajanı
+  (ilki 12 sorun buldu, hepsi düzeltildi; en ciddisi: yeniden sınıflandırma Windows'ta yalnız harf büyüklüğü değişen
+  dosya adında yeni yazdığı dosyayı silebiliyordu). Yapılanlar:
+  (1) `match.py`: "derby / nice / Sporting / sabah / Zira / om" tek başına takım değil (niteleyiciyle ya da başka
+  takıma bağlıyken: "Leeds v Derby", "Qarabağ - Sabah", "Sporting will be..."); NBA bağlamında "Spurs" Tottenham
+  değil; "Arteta on Saka's fitness" rakip değil; McKenna, O'Neil, "ERIK TEN HAG", "SLOT'S", Türkçe ekler; aynı
+  soyadlı başka kişi (Andreas Pereira, Nuno Mendes, Derrick Rose) hoca değil; ev-deplasman sırası yalnız "A vs B /
+  A - B / A 2-1 B"de; "Manchester Utd", "Sheffield Utd", tireli adlar. **Hoca listesi 2026-27'ye göre yenilendi**
+  (web aramasıyla doğrulandı, 2026-11-06'da sezonda görevden alınan yoktu): Arteta, Emery, Rose (Bournemouth),
+  Andrews, Hürzeler, Xabi Alonso (Chelsea), Lampard (Coventry), Sage (Palace), Moyes, Arbeloa (Fulham), Jakirović
+  (Hull), O'Neil (Ipswich), Farke, Iraola (Liverpool), Maresca (Man City), Carrick (Man Utd), Jaissle (Newcastle),
+  Glasner (Forest), Le Bris, De Zerbi (Spurs). Hoca → takım yalnız tarafsız kanalda ve 2026-07-01..2027-06-30
+  tarihli videoda. Kulübün kendi kanalı + başlıkta tanınan rakip → otomatikte basın toplantısı (taraftar / gazete /
+  podcast kanalı, özet, canlı yayın, forma tanıtımı hariç).
+  (2) `dataset.py`: maç öncesi / sonrası başlıktan (`phase_hint`): "Post-Match / reacts / Arsenal 2-1 Chelsea"
+  yalnız oynanmış maça, "Pre-Match / previews / pre-Chelsea" yalnız oynanacak maça; yalnız gün bilinen tarihte maç
+  günü = maç sonrası. Sözlükte olmayan rakip (Wycombe) = kupa maçı, PL haftasına yazılmaz ("Manchester" gibi
+  örtüşen ad o maçı bulur); açıklamadaki kupa adı o rakiple PL maçını ezmez. Yedek PL listesi 2026-27 (Coventry,
+  Ipswich, Hull çıktı; Wolves, Burnley, West Ham düştü). FPL'ye ulaşılamazsa 10 dk sonra tekrar (eskiden oturumda
+  bir kez → günlerce GW'siz). index'e fixture_id, kickoff_utc, is_home, fpl_short, opponent_short, score,
+  speaker_role, speaker_source, diar_model, title; yollar "/" ile.
+  (3) Yeni **"Veri seti > Yeniden sınıflandır"** (`stt yeniden-siniflandir [--dene]`, `stt/reclassify.py`): metni
+  yeniden çevirmeden eski çıktıları doğru klasöre taşır, mac.json (GW, skor), index, durum kaydı, koleksiyonlar
+  yenilenir. Önce ne değişeceğini gösterir, onayla uygular. FPL yoksa çalışmaz; eski sezona, Podcast ve Film'e ve
+  mac.json'da "ek_bilgiler" dolu klasöre dokunmaz. Arayüz Chromium'da (köprüyle) denendi.
+  DENENMEDİ: Windows / WebView2, gerçek FPL verisi (bu ortamdan erişim kapalı; testler sahte fikstürle), gerçek
+  kullanıcı veri seti. KULLANICIDAN: Güncelle → Veri seti → "Yeniden sınıflandır" → çıkan pencerenin ekran görüntüsü
+  (uygulamadan önce). AÇIK KALAN: A-E'deki yapılandırılmış sakatlık/kadro JSON'u (E.4); yeni GW bulunan eski
+  kayıtlar için FPL presser.py otomatik çalıştırılmıyor. SIRADAKİ (rapor E sırası): C5 (K5 ölçümünden önce), sonra
+  kullanıcının düzelttiği toplantılarla eşik/agc/DiariZen; B1, B2, B3, D1, D4, D6, D7.
 - 2026-11-06 (kod değişmedi, sürüm aynı 1.9.7): kullanıcı istedi → uçtan uca hata taraması + hedefe (FPL veri seti)
   göre geliştirme planı: **`docs/TARAMA_2026-11-06.md`** (Claude çekirdeği okudu, 3 inceleme ajanı kalan modülleri;
   bulgular kodla doğrulandı, Windows'ta denenmedi). En kritik alan `match.py`/`dataset.py`: "derby"/"nice" takım
