@@ -72,7 +72,8 @@ class Config:
     llm_model: str | None = None         # boş = sağlayıcının ucuz/hızlı modeli
     gemini_api_key: str | None = None
     anthropic_api_key: str | None = None
-    llm_budget_usd: float = 5.0          # aylık harcama sınırı (tahmini); aşılınca yapay zekâ adımları atlanır
+    openai_api_key: str | None = None    # yapay zekâ (openai) ve OpenAI yedek motoru; OPENAI_API_KEY de okunur
+    llm_budget_usd: float = 5.0         # aylık harcama sınırı (tahmini); aşılınca yapay zekâ adımları atlanır
     llm_news: bool = False               # her metin için haber taslağı + alıntılar (haber.md)
     llm_qa: bool = True                  # konuşmacı ayrılamazsa soru-cevabı yapay zekâyla ayır
     # dış programlar (haber sitesi / haber radarı)
@@ -112,9 +113,24 @@ ENV_MAP = {
     "GOOGLE_API_KEY": "gemini_api_key",
     "GEMINI_API_KEY": "gemini_api_key",   # sonra gelen önceliklidir
     "ANTHROPIC_API_KEY": "anthropic_api_key",
+    "OPENAI_API_KEY": "openai_api_key",
     "STT_API_PORT": "api_port",
     "STT_LLM": "llm_provider",
 }
+
+
+SECRETS = ("hf_token", "gemini_api_key", "anthropic_api_key", "openai_api_key", "api_token")  # arayüzden silinebilir
+
+
+def env_secrets() -> dict[str, str]:
+    """Ortam değişkeninden gelen anahtarlar: {ayar adı: değişken adı}. Bunlar stt.toml'dan silinse de geçerli kalır
+    (ortam değişkeni önceliklidir), arayüz "buradan silinemez" der."""
+    out: dict[str, str] = {}
+    for env, attr in ENV_MAP.items():
+        val = os.environ.get(env, "").strip()
+        if attr in SECRETS and val and not (val.startswith("%") and val.endswith("%")):
+            out[attr] = env
+    return out
 
 
 def config_files() -> list[Path]:
@@ -206,7 +222,8 @@ def normalize(cfg: Config) -> Config:
     cfg.split_min = _num(cfg.split_min, 8.0, 0.5)
     cfg.live_chunk_s = _num(cfg.live_chunk_s, 20.0, 5.0)
     cfg.llm_budget_usd = _num(cfg.llm_budget_usd, 5.0, 0.0)
-    for k in ("gemini_api_key", "anthropic_api_key", "hf_token", "api_token", "webhook_url", "llm_model"):
+    for k in ("gemini_api_key", "anthropic_api_key", "openai_api_key", "hf_token", "api_token", "webhook_url",
+              "llm_model"):
         v = getattr(cfg, k)
         if isinstance(v, str) and not v.strip():
             setattr(cfg, k, None)

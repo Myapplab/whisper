@@ -17,7 +17,7 @@ import tomllib
 from pathlib import Path
 
 from . import __version__
-from .config import TOOL_DIR, Config, load_config
+from .config import SECRETS, TOOL_DIR, Config, env_secrets, load_config
 from .dataset import GENERAL_DIR
 from .sources import expand_inputs, is_url
 from .util import console_python, log, read_jsonl
@@ -359,15 +359,19 @@ class App:
                 "llm_budget_usd": c.llm_budget_usd, "llm_news": bool(c.llm_news), "llm_qa": bool(c.llm_qa),
                 "llm": llm.status(), "api_port": c.api_port or 0, "api_token_set": bool(c.api_token),
                 "webhook_url": c.webhook_url or "", "follow_interval_h": c.follow_interval_h,
-                "diar_engine": c.diar_engine or "pyannote", "diarizen_installed": _diarizen_installed()}
+                "diar_engine": c.diar_engine or "pyannote", "diarizen_installed": _diarizen_installed(),
+                "secret_env": env_secrets()}  # {ayar: ortam değişkeni}: bunlar arayüzden silinemez
 
     def save_settings(self, s: dict) -> dict:
         upd: dict = {}
         if s.get("out_dir"):
             upd["out_dir"] = s["out_dir"].replace("\\", "/")
-        for k in ("hf_token", "gemini_api_key", "anthropic_api_key", "api_token"):
+        for k in SECRETS:
             if s.get(k):  # boş = mevcut anahtar kalsın
                 upd[k] = str(s[k]).strip()
+        for k in s.get("clear") or []:  # "Sil" düğmesi: stt.toml'dan çıkar (ortam değişkenindeki kalır)
+            if k in SECRETS:
+                upd[k] = ""
         if "fpl_repo" in s:
             upd["fpl_repo"] = (s.get("fpl_repo") or "").replace("\\", "/")
         if "cookies_file" in s:

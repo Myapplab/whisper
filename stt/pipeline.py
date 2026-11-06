@@ -216,6 +216,7 @@ class Pipeline:
         ecfg = {"engine": cfg.engine, "compute_type": cfg.compute_type, "beam_size": cfg.beam_size,
                 "batch_size": cfg.batch_size,
                 "condition_on_previous_text": cfg.condition_on_previous_text, "openai_model": cfg.openai_model,
+                "openai_api_key": cfg.openai_api_key,
                 "diar_model": cfg.diar_model, "diar_engine": cfg.diar_engine, "hf_token": cfg.hf_token, "languages": cfg.languages,
                 "agc": cfg.agc, "vad_threshold": cfg.vad_threshold, "isolate_gpu": cfg.isolate_gpu,
                 "gpu_limit_pct": cfg.gpu_limit_pct, "display_gpu_limit_pct": cfg.display_gpu_limit_pct,

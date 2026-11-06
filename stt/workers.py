@@ -120,7 +120,7 @@ def _init(device: str, engine_cfg: dict, cache: dict, load_lock=None, run_device
         with cache.setdefault("_init_lock", threading.Lock()):
             if "engine" not in cache:
                 from .engines import OpenAIEngine
-                cache["engine"] = OpenAIEngine(engine_cfg["openai_model"])
+                cache["engine"] = OpenAIEngine(engine_cfg["openai_model"], engine_cfg.get("openai_api_key"))
     else:
         from .engines import WhisperEngine, parse_device
         _, idx = parse_device(device)

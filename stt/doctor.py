@@ -223,8 +223,8 @@ def run_doctor(cfg, deep: bool = False) -> int:
 
     try:
         import openai
-        add(OK if os.environ.get("OPENAI_API_KEY") else WARN, "openai",
-            f"{openai.__version__}; OPENAI_API_KEY " + ("var" if os.environ.get("OPENAI_API_KEY") else "YOK"))
+        okey = bool(getattr(cfg, "openai_api_key", None) or os.environ.get("OPENAI_API_KEY"))
+        add(OK if okey else WARN, "openai", f"{openai.__version__}; OpenAI anahtarı " + ("var" if okey else "YOK"))
     except Exception:  # noqa: BLE001
         add(WARN, "openai", "paket yok (yedek motor kullanılamaz)")
 

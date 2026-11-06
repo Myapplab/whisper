@@ -402,14 +402,15 @@ class WhisperEngine:
 
 
 class OpenAIEngine:
-    """Yedek motor. OPENAI_API_KEY ortam değişkeninden okunur."""
+    """Yedek motor. Anahtar: Ayarlar'daki OpenAI anahtarı (stt.toml ``openai_api_key``) ya da OPENAI_API_KEY."""
 
-    def __init__(self, model: str):
+    def __init__(self, model: str, api_key: str | None = None):
         from openai import OpenAI
 
-        if not os.environ.get("OPENAI_API_KEY"):
-            raise RuntimeError("OPENAI_API_KEY ortam değişkeni tanımlı değil")
-        self.client = OpenAI(max_retries=6, timeout=600)
+        key = api_key or os.environ.get("OPENAI_API_KEY")
+        if not key:
+            raise RuntimeError("OpenAI API anahtarı yok (Ayarlar > Yapay zekâ > OpenAI ya da OPENAI_API_KEY)")
+        self.client = OpenAI(api_key=key, max_retries=6, timeout=600)
         self.model = model
         self.verbose_ok: bool | None = None if model != "whisper-1" else True
         self.device = "openai"

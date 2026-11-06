@@ -400,7 +400,8 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
         <select id="sLlm"><option value="none">Kullanma</option><option value="gemini">Google Gemini</option><option value="claude">Anthropic Claude</option><option value="openai">OpenAI</option></select></div>
       <div class="field" id="fGem"><label for="sGemKey">Gemini API anahtarı</label><input type="password" id="sGemKey" placeholder="AIza…  (boş = mevcut kalsın)"><span class="hint" id="sGemState"></span></div>
       <div class="field" id="fCla"><label for="sClaKey">Claude API anahtarı</label><input type="password" id="sClaKey" placeholder="sk-ant-…  (boş = mevcut kalsın)"><span class="hint" id="sClaState"></span></div>
-      <div class="field"><label for="sLlmModel">Model (boş = otomatik: Gemini'de en yeni Flash, Claude'da Haiku 5.5)</label><input type="text" id="sLlmModel" placeholder="ör. claude-sonnet-5-5"></div>
+      <div class="field" id="fOai"><label for="sOaiKey">OpenAI API anahtarı</label><input type="password" id="sOaiKey" placeholder="sk-…  (boş = mevcut kalsın)"><span class="hint" id="sOaiState"></span></div>
+      <div class="field"><label for="sLlmModel">Model (boş = otomatik: Gemini'de en yeni Flash, Claude'da Haiku 5.5, OpenAI'de gpt-5-mini)</label><input type="text" id="sLlmModel" placeholder="ör. claude-sonnet-5-5"></div>
       <div class="field"><label for="sBudget">Aylık harcama sınırı ($, tahmini)</label><input type="text" id="sBudget" inputmode="decimal"><span class="hint" id="sLlmUse"></span></div>
       <label class="toggle"><input type="checkbox" id="sLlmNews"><span>Her metin için haber taslağı yaz<small>“- haber.md”: başlık, haber, özet, alıntılar</small></span></label>
       <label class="toggle"><input type="checkbox" id="sLlmQa"><span>Konuşmacılar ayrılamazsa soru-cevabı yapay zekâyla ayır</span></label>
@@ -410,7 +411,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
       <div class="row"><label class="hint">Kontrol aralığı <input type="text" id="sFollowH" style="width:60px" class="txt"> saat</label><span class="spacer"></span><button class="btn small" id="sFollowNow" type="button">Şimdi kontrol et</button></div>
       <div class="sec">Dış programlar (haber sitesi / haber radarı)</div>
       <div class="field"><label for="sApiPort">Yerel API portu (0 = kapalı, ör. 8765)</label><input type="text" id="sApiPort" inputmode="numeric"><span class="hint" id="sApiState"></span></div>
-      <div class="field"><label for="sApiTok">API anahtarı (isteğe bağlı)</label><input type="password" id="sApiTok" placeholder="boş = mevcut kalsın"></div>
+      <div class="field"><label for="sApiTok">API anahtarı (isteğe bağlı)</label><input type="password" id="sApiTok" placeholder="boş = mevcut kalsın"><span class="hint" id="sApiTokState"></span></div>
       <div class="field"><label for="sHook">Webhook adresi (her biten iş JSON olarak gönderilir)</label><input type="text" id="sHook" placeholder="https://…"></div>
       <div class="sec">Sürüm</div>
       <div class="field">
@@ -849,27 +850,39 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     $("#sDiarEng").value = s.diar_engine || "pyannote";
     $("#sDzState").textContent = s.diarizen_installed ? "DiariZen kurulu ✓" : "DiariZen kurulu değil";
     $("#sLlm").value = s.llm_provider || "none"; $("#sLlmModel").value = s.llm_model || ""; $("#sBudget").value = s.llm_budget_usd ?? 5;
-    $("#sGemKey").value = ""; $("#sClaKey").value = ""; $("#sApiTok").value = "";
-    $("#sGemState").textContent = s.gemini_key_set ? "Anahtar kayıtlı." : "aistudio.google.com › Get API key";
-    $("#sClaState").textContent = s.anthropic_key_set ? "Anahtar kayıtlı." : "console.anthropic.com › API Keys";
+    $("#sGemKey").value = ""; $("#sClaKey").value = ""; $("#sOaiKey").value = ""; $("#sApiTok").value = "";
+    keyState("#sGemState", s.gemini_key_set, "gemini_api_key", "aistudio.google.com › Get API key");
+    keyState("#sClaState", s.anthropic_key_set, "anthropic_api_key", "console.anthropic.com › API Keys");
+    keyState("#sOaiState", s.openai_key_set, "openai_api_key", "platform.openai.com › API keys");
+    keyState("#sApiTokState", s.api_token_set, "api_token", "");
     $("#sLlmNews").checked = !!s.llm_news; $("#sLlmQa").checked = !!s.llm_qa;
     const u = s.llm || {}; $("#sLlmUse").textContent = u.provider ? "Bu ay: ~$" + (u.month_usd || 0).toFixed(3) + " (" + (u.calls || 0) + " çağrı)" + (u.ready ? "" : " — anahtar yok") : "";
     $("#sApiPort").value = s.api_port || 0; $("#sHook").value = s.webhook_url || ""; $("#sFollowH").value = s.follow_interval_h || 6;
     $("#sApiState").textContent = s.api_port ? "Açık: http://127.0.0.1:" + s.api_port + "/api/status" : "";
     showLlmFields();
     $("#chAiRow").hidden = !(u.ready); $("#optNews").closest("label").hidden = !(u.ready);
-    $("#sHf").value = ""; $("#sHfState").textContent = s.hf_token_set ? "Token kayıtlı." : "Token yok: konuşmacı ayırma yapılamaz.";
+    $("#sHf").value = ""; keyState("#sHfState", s.hf_token_set, "hf_token", "Token yok: konuşmacı ayırma yapılamaz.");
     $("#sFplState").textContent = s.fpl_repo ? (s.fpl_ok ? "presser.py bulundu." : "Bu klasörde presser.py yok.") : "";
     updateNote();
   }
   $("#btnSettings").onclick = () => $("#mSettings").classList.add("show");
   $("#sOutPick").onclick = async () => { const r = await call("pick_folder"); if (r) $("#sOut").value = r; };
   $("#sFplPick").onclick = async () => { const r = await call("pick_folder"); if (r) $("#sFpl").value = r; };
-  function showLlmFields() { const v = $("#sLlm").value; $("#fGem").hidden = v !== "gemini"; $("#fCla").hidden = v !== "claude"; }
+  function showLlmFields() { const v = $("#sLlm").value; $("#fGem").hidden = v !== "gemini"; $("#fCla").hidden = v !== "claude"; $("#fOai").hidden = v !== "openai"; }
+  // kayıtlı anahtarın durumu + "Sil" (stt.toml'dan çıkar). Windows ortam değişkeninden geleni uygulama silemez.
+  function keyState(sel, isSet, name, emptyText) {
+    const sp = $(sel), env = (state.settings.secret_env || {})[name];
+    if (!isSet) { sp.replaceChildren(emptyText); return; }
+    if (env) { sp.replaceChildren("Kayıtlı (Windows ortam değişkeni " + env + "; buradan silinemez)."); return; }
+    sp.replaceChildren("Kayıtlı. ", el("button", { class: "linkbtn", type: "button", onclick: async () => {
+      if (!confirm("Kayıtlı anahtar silinsin mi? (Yeniden girmeniz gerekir.)")) return;
+      const r = await saveSettings(true, [name]); if (r) toast("Anahtar silindi.");
+    } }, "Sil"));
+  }
   $("#sLlm").onchange = showLlmFields;
   $("#sCookiePick").onclick = async () => { const r = await call("pick_cookie_file"); if (r) $("#sCookieFile").value = r; };
   $("#sLlmTest").onclick = async () => {
-    await $("#sSave").onclick(true);
+    await saveSettings(true);
     $("#sLlmTestOut").textContent = "Deneniyor…";
     const r = await call("llm_test");
     $("#sLlmTestOut").textContent = r ? (r.ok ? "Çalışıyor ✓ (" + (r.status.model || r.status.provider) + ")" : "Olmadı: " + r.error) : "";
@@ -879,15 +892,19 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     if (r && !r.ok) toast(r.error); else $("#sDzState").textContent = "Kuruluyor… (günlükte ilerleme)";
   };
   $("#sFollowNow").onclick = async () => { toast("Takip edilen kanallar kontrol ediliyor…"); const r = await call("follow_check_now"); if (r) toast(r.count + " yeni video bulundu."); };
-  $("#sSave").onclick = async (keepOpen) => {
+  // keepOpen: pencere açık kalsın (anahtar denemesi / silme); clear: stt.toml'dan silinecek anahtarlar
+  async function saveSettings(keepOpen, clear) {
     const s = await call("save_settings", { out_dir: $("#sOut").value, hf_token: $("#sHf").value, fpl_repo: $("#sFpl").value, cookies_browser: $("#sCookie").value, gpus: $("#sGpu").value,
       cookies_file: $("#sCookieFile").value, browser_capture: $("#sBrowser").checked, ui_gpu: $("#sUiGpu").checked,
       llm_provider: $("#sLlm").value, llm_model: $("#sLlmModel").value, llm_budget_usd: $("#sBudget").value, gemini_api_key: $("#sGemKey").value,
-      anthropic_api_key: $("#sClaKey").value, llm_news: $("#sLlmNews").checked, llm_qa: $("#sLlmQa").checked,
-      api_port: $("#sApiPort").value, api_token: $("#sApiTok").value, webhook_url: $("#sHook").value, follow_interval_h: $("#sFollowH").value, diar_engine: $("#sDiarEng").value });
-    if (keepOpen === true) { if (s) fillSettings(s); return; }
+      anthropic_api_key: $("#sClaKey").value, openai_api_key: $("#sOaiKey").value, llm_news: $("#sLlmNews").checked, llm_qa: $("#sLlmQa").checked,
+      api_port: $("#sApiPort").value, api_token: $("#sApiTok").value, webhook_url: $("#sHook").value, follow_interval_h: $("#sFollowH").value, diar_engine: $("#sDiarEng").value,
+      clear: clear || [] });
+    if (keepOpen === true) { if (s) fillSettings(s); return s; }
     if (s) { fillSettings(s); toast("Ayarlar kaydedildi."); $("#mSettings").classList.remove("show"); refreshDataset(); }
-  };
+    return s;
+  }
+  $("#sSave").onclick = () => saveSettings(false);
   document.querySelectorAll("[data-close]").forEach(b => b.onclick = () => b.closest(".modal").classList.remove("show"));
   document.querySelectorAll(".modal").forEach(m => m.addEventListener("click", e => { if (e.target === m) m.classList.remove("show"); }));
   document.addEventListener("keydown", e => { if (e.key === "Escape") document.querySelectorAll(".modal.show").forEach(m => m.classList.remove("show")); });

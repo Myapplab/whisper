@@ -431,7 +431,8 @@ stt "<link>" --engine openai                         :: varsayılan model: gpt-t
 stt "<link>" --engine openai --openai-model whisper-1
 ```
 
-- API anahtarı yalnızca `OPENAI_API_KEY` ortam değişkeninden okunur.
+- API anahtarı: uygulamada Ayarlar › Yapay zekâ › OpenAI kutusu (`stt.toml` → `openai_api_key`) ya da
+  `OPENAI_API_KEY` ortam değişkeni (ortam değişkeni önceliklidir).
 - Ses VAD ile ~30 saniyelik parçalara bölünür ve 4 parça paralel gönderilir
   (`stt.toml` → `openai_workers`). Önce kelime zamanlı `verbose_json` istenir. Model bunu
   desteklemiyorsa düz metne düşülür; zaman damgaları o zaman parça sınırlarından gelir.

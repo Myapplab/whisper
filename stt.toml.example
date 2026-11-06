@@ -25,7 +25,7 @@ cookies_browser = "auto"           # auto (kurulu tarayıcılar sırayla, Firefo
 # fpl_repo = "D:/kod/fpl"
 # fpl_python = "python3"           # boşsa: python3 -> py -3 -> stt'nin python'u
 
-# OpenAI yedek motor (OPENAI_API_KEY ortam değişkeninden)
+# OpenAI yedek motor (anahtar: openai_api_key ya da OPENAI_API_KEY ortam değişkeni)
 openai_model = "gpt-transcribe"
 openai_workers = 4
 
@@ -48,6 +48,7 @@ chunk_min = 5                      # hedef parça uzunluğu (dakika)
 
 # Yapay zekâ (isteğe bağlı): gemini | claude | openai. Anahtarlar ortam değişkeninden de okunur
 # (GEMINI_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY). Bu dosyayı paylaşmayın.
+# gemini_api_key = "..."  /  anthropic_api_key = "..."  /  openai_api_key = "..."
 # llm_provider = "gemini"
 # llm_model = ""                    # boş: Gemini'de en yeni Flash, Claude'da claude-haiku-5-5
 # llm_budget_usd = 5.0              # aylık sınır (tahmini)

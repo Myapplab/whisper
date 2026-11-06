@@ -4,7 +4,7 @@ Sağlayıcılar:
   gemini  - Google AI Studio anahtarı (GEMINI_API_KEY). Model boşsa hesabın erişebildiği en yeni 'flash' seçilir.
   claude  - Anthropic anahtarı (ANTHROPIC_API_KEY). Varsayılan claude-haiku-5-5 (ucuz, hızlı);
             daha iyi yazım için llm_model = "claude-sonnet-5-5".
-  openai  - OPENAI_API_KEY.
+  openai  - OpenAI anahtarı (Ayarlar ya da OPENAI_API_KEY).
 
 Harcama: her çağrının token sayısı .stt/llm_kullanim.json'a yazılır; aylık tahmini harcama llm_budget_usd'yi
 geçerse yapay zekâ adımları atlanır (metin yine yazılır). Fiyatlar TAHMİNİDİR; kesin tutar sağlayıcı panelindedir.
@@ -91,10 +91,12 @@ class LLM:
 
     # ---------------------------------------------------------- durum
     def key(self, provider: str | None = None) -> str | None:
-        """Sağlayıcının anahtarı. GEMINI_API_KEY / ANTHROPIC_API_KEY ortam değişkenleri config'e zaten okunur."""
+        """Sağlayıcının anahtarı. GEMINI_API_KEY / ANTHROPIC_API_KEY / OPENAI_API_KEY ortam değişkenleri config'e
+        zaten okunur (OpenAI'de config dışından kurulan nesneler için ortam değişkenine de bakılır)."""
         provider = provider or self.provider
         return {"gemini": self.cfg.gemini_api_key, "claude": self.cfg.anthropic_api_key,
-                "openai": os.environ.get("OPENAI_API_KEY")}.get(provider or "")
+                "openai": getattr(self.cfg, "openai_api_key", None) or os.environ.get("OPENAI_API_KEY") or None,
+                }.get(provider or "")
 
     def available(self) -> bool:
         return bool(self.provider and self.key())
@@ -212,7 +214,7 @@ class LLM:
     def _openai(self, system, prompt, max_tokens, want_json):
         from openai import OpenAI
         if self._client is None:
-            self._client = OpenAI(max_retries=3, timeout=600)
+            self._client = OpenAI(api_key=self.key("openai"), max_retries=3, timeout=600)
         model = self._model or OPENAI_DEFAULT
         kw = {}
         if want_json:
