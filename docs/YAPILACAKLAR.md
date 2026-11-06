@@ -38,7 +38,7 @@ E.2 (C5) ve aşağıdaki K5 planı. **(1.9.5'ten kalan):** kullanıcı Güncelle
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
-- 1.9.11 (Claude; kullanıcı istedi): yardımcı kart (3080) artık "hafif" değil: kullanıcının önerisiyle kartta YouTube /
+- 1.9.11 (Claude; kullanıcı istedi; 493 test; bağımsız inceleme 1 hata buldu, düzeltildi: başka program yüzünden toplu boyut kalıcı küçülüyordu): yardımcı kart (3080) artık "hafif" değil: kullanıcının önerisiyle kartta YouTube /
   sekmeler için **ayrılan bellek** (Ayarlar > "Yardımcı kartta YouTube / tarayıcı için boş bırakılacak bellek",
   varsayılan 2 GB, kaydedince hemen geçerli) dışında kalan bellek ve güç işe verilir: toplu boyut kalan yere göre
   (8/4/2), dinlenme ve kullanım-yüzdesi beklemesi yok. Başka programlar belleği alırsa bekler / kapanır, sonra daha

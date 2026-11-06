@@ -42,8 +42,11 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   için bellek ayrılsın, gerisi işe verilsin. `helper_reserve_gb` (Ayarlar'da, varsayılan 2 GB, hemen geçerli).
   Kapalı yardımcı, boş bellek − ayrılan ≥ `HELPER_FOOT_GB[b]` olan en büyük toplu boyutla açılır (8: 6.4, 4: 5.6,
   2: 5.2 GB; faster-whisper README large-v2 fp16 beam 5: tekli 4.5, toplu 8 6.1 GB + pay); sığmazsa bekler. Açıkken
-  boş bellek ayrılanın yarısının altına inerse bekler, 60 sn sürerse kapanır ve sonraki açılış bir küçük toplu
-  boyutla (`_helper_shrink`; görevde / yüklemede bellek yetmeyince de). Kullanım yüzdesi ölçümü ve dinlenme
+  boş bellek ayrılanın yarısının altına inerse bekler, 60 sn sürerse kapanır; kart boşalınca yine sığan en büyük
+  boyutla açılır (başka programın yüzünden küçülmez: inceleme ajanı bu "kalıcı küçülme" hatasını buldu). Kendi payı
+  ilk parçadan sonra ölçülür (`_helper_measure`: açılıştaki boş − şimdiki boş); tahmini 0.5 GB'tan çok aşarsa o boyutun
+  belleği öğrenilir (`_h_foot`), sonraki açılış ona göre (aç-kapa döngüsü yok). Görevde / yüklemede bellek yetmezse
+  bir küçük boyut (`_helper_shrink`). Küçültme ve öğrenilen değerler 30 dk sonra varsayılana döner. Kullanım yüzdesi ölçümü ve dinlenme
   kaldırıldı (`helper_rest_s` = 0; kendi yükümüz ölçüme karışıyordu). nvidia-smi açık yardımcıda en çok 15 sn'de bir.
   GPU hesap gücü GeForce'ta bölünemez (Windows zaman paylaşımı); YouTube videoyu ayrı çözücü birimde (NVDEC) açar.
 - **Konuşmacı ayırma ayrı süreçte** (`Pipeline.dpool`, wid `diar`, ilk ayırma görevinde açılır, belleği en büyük
