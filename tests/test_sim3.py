@@ -196,3 +196,16 @@ def test_short_question_at_sentence_end_is_kept():
 def test_single_word_flicker_in_question_is_smoothed():
     out = _conv([("TD", "Why would we change", 0), ("R", "now?", 0.0)])
     assert [s for s, _ in out] == ["TD"]
+
+
+# ---- K5: ölçüm (düzeltmeden önceki program çıktısı saklanır)
+def test_measure_uses_saved_program_output(tmp_path):
+    from stt.tune import measure
+    from stt.voices import save_reference
+    doc = {"key": "u_x", "title": "Basın", "segments": [
+        {"start": 0, "end": 10, "speaker": "Hoca"}, {"start": 10, "end": 20, "speaker": "Muhabir"}]}
+    hyp = [[0, 15, "S0"], [15, 20, "S1"]]  # program 10-15 arasını yanlış kişiye vermiş
+    save_reference(tmp_path, doc, hyp)
+    save_reference(tmp_path, doc, None)  # ikinci düzeltme ilk program çıktısını silmez
+    m = measure(tmp_path)
+    assert m["videos"] == 1 and 20 < m["error"] < 35

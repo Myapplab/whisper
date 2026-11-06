@@ -246,11 +246,17 @@ def reference_turns(doc: dict) -> list[list]:
     return out
 
 
-def save_reference(state_dir: Path, doc: dict) -> Path:
+def save_reference(state_dir: Path, doc: dict, hyp: list | None = None) -> Path:
+    """Doğru cevabı yaz. ``hyp``: programın düzeltilmeden önceki çıktısı (ölçüm için; ilk düzeltmede saklanır,
+    sonraki düzeltmeler üzerine yazmaz)."""
     p = Path(state_dir) / "duzeltme" / f"{_safe(doc.get('key') or doc.get('title') or 'x')}.json"
-    _write(p, {"key": doc.get("key"), "title": doc.get("title"), "source": doc.get("source"),
-               "duration_s": doc.get("duration_s"), "speaker_mode": doc.get("speaker_mode"),
-               "turns": reference_turns(doc)})
+    old = _read(p, {})
+    data = {"key": doc.get("key"), "title": doc.get("title"), "source": doc.get("source"),
+            "duration_s": doc.get("duration_s"), "speaker_mode": doc.get("speaker_mode"),
+            "turns": reference_turns(doc)}
+    if old.get("hyp") or hyp:
+        data["hyp"] = old.get("hyp") or hyp
+    _write(p, data)
     return p
 
 

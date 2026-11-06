@@ -201,6 +201,19 @@ def run_doctor(cfg, deep: bool = False) -> int:
                 add(BAD, "Konuşmacı modeli", diar_hint(f"{type(e).__name__}: {e}"))
     except Exception as e:  # noqa: BLE001
         add(WARN, "pyannote.audio", f"yok/yüklenemedi ({str(e)[:80]}) - --diarize kullanılamaz")
+    try:  # ölçüm: düzeltilmiş videolarda programın konuşmacı hatası (K5)
+        from .tune import measure
+        m = measure(Path(cfg.out_dir).resolve() / ".stt")
+        if m["videos"]:
+            worst = max(m["per"], key=lambda x: x["error"])
+            add(OK if m["error"] < 10 else WARN, "Konuşmacı doğruluğu",
+                f"düzeltilmiş {m['videos']} videoda ({m['minutes']} dk) hata %{m['error']}; en kötü: "
+                f"%{worst['error']} {worst['title']}")
+        else:
+            add(WARN, "Konuşmacı doğruluğu", "ölçülmedi: 'Metni göster' > 'Konuşmacılar' ekranında 3-5 basın "
+                "toplantısını düzeltip kaydedin (yeni sürümle işlenmiş videolar)")
+    except Exception as e:  # noqa: BLE001
+        add(WARN, "Konuşmacı doğruluğu", f"ölçülemedi ({str(e)[:80]})")
 
     try:
         import jiwer  # noqa: F401

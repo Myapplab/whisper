@@ -10,7 +10,7 @@ sıradakine geç. Kullanım biterse diğer profil ilk ✅ olmayan adımdan devam
 - [x] K2 (#4) ✅ ZATEN VARDI (pipeline `_diarize_task`: min_speakers en az 2) Basın modunda en az 2 konuşmacı otomatik (`min_speakers`), kullanıcı sayı girerse o geçerli.
 - [x] K3 (#9) ✅ (gui.html: sarı "Bitti · konuşmacısız"; index'te diarized zaten vardı) Konuşmacısız biten iş görünür olsun: kartta sarı "Bitti · konuşmacısız" + index'te diarized=false.
 - [x] K4 (#3) ✅ ("?" ile biten cümlenin sonundaki kısa muhabir parçası ayrı; `merge.QUESTION_MIN_SEC`). AÇIK: noktalamasız ara soru ("what about Saka") hâlâ yutuluyor, K5 ölçümüyle eşik gevşetilsin Kısa soru yutulmasın: cümle içi değişimde "?" ile biten kısa muhabir parçası korunur (önce simülasyon).
-- [ ] K5 (#1) `stt olc`: düzeltilmiş videolarda TAM akışın (ayırma + kelime eşleme) hatası; günlüğe + "Kontrol"e.
+- [x] K5 (#1) ✅ `tune.measure` + "Kontrol"de "Konuşmacı doğruluğu" satırı. Düzeltmede programın ilk çıktısı `duzeltme/*.json` "hyp" olarak saklanıyor (eskiden üzerine yazılıp kayboluyordu). Yalnız 1.8.9 sonrası düzeltilen videolar ölçülür. KULLANICIDAN: 3-5 basın toplantısı düzeltsin, Kontrol ekranı görüntüsü.
 - [ ] K6 DiariZen (BUT-FIT/diarizen-wavlm-large-s80-md, CC BY-NC): kendi pyannote çatalını ister → AYRI venv
       (`C:\stt\.venv-diarizen`), ayrı süreç, `diar_engine = "diarizen"` ayarı; olmazsa community-1. K5 ile karşılaştır.
 - [ ] K7 (#2) TD seçimi: ses kütüphanesi > soru sonrası uzun cevap veren > toplam süre.

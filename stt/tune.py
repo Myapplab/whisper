@@ -65,6 +65,27 @@ def speaker_error(ref, hyp, step: float = 0.1, collar: float = 0.5) -> tuple[flo
     return bad * step, total * step
 
 
+def measure(state_dir: Path) -> dict:
+    """Programın son çıktısı (ayırma + kelime eşleme) düzeltilmiş videolarda ne kadar doğru? Yeniden çalıştırmaz:
+    düzeltmeden önce saklanan çıktı (``hyp``) ile düzeltilmiş hâl karşılaştırılır. Döner: {videos, minutes, error, per}."""
+    per, bad, tot = [], 0.0, 0.0
+    for p in sorted((Path(state_dir) / "duzeltme").glob("*.json")):
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not d.get("hyp") or not d.get("turns"):
+            continue
+        b, t = speaker_error(d["turns"], d["hyp"])
+        if t <= 0:
+            continue
+        per.append({"title": (d.get("title") or d.get("key") or "")[:70], "error": round(100 * b / t, 1),
+                    "minutes": round(t / 60, 1)})
+        bad, tot = bad + b, tot + t
+    return {"videos": len(per), "minutes": round(tot / 60, 1), "error": round(100 * bad / tot, 1) if tot else None,
+            "per": per}
+
+
 # ---------------------------------------------------------------- ayar dosyası
 def load_tuned(state_dir: Path) -> dict:
     """{model: {"params": {"clustering.threshold": .., ...}, ...}}"""

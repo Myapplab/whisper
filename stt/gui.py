@@ -713,11 +713,13 @@ class App:
             from .voices import apply_corrections, learn_from_doc, save_reference
             jp = self._doc_path(p)
             doc = json.loads(jp.read_text(encoding="utf-8"))
+            from .voices import reference_turns
+            hyp = None if doc.get("corrected") else reference_turns(doc)  # programın kendi çıktısı (ölçüm için)
             apply_corrections(doc, (data or {}).get("labels"), (data or {}).get("moves"), (data or {}).get("td"))
             base = jp.stem
             write_all(jp.parent, base, doc, f"{base} - ozet.md")
             st = self._state_dir()
-            save_reference(st, doc)
+            save_reference(st, doc, hyp)
             learned = learn_from_doc(st, doc, ignore=(self._cfg.reporter_label, self._cfg.td_label, "Teknik direktör"))
             log.info("Konuşmacılar düzeltildi: %s (öğrenilen sesler: %s)", base[:60], ", ".join(learned) or "-")
             return {"ok": True, "learned": learned}
