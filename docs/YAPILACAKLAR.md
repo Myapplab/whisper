@@ -20,7 +20,7 @@ sıradakine geç. Kullanım biterse diğer profil ilk ✅ olmayan adımdan devam
       gerçekten etkili mi doğrulanmadı). SIRADAKİ: K6b kullanıcıda kurulum denemesi (günlükte "[diarizen kurulum]"),
       K6c Ayarlar'a "Konuşmacı motoru" seçimi + "DiariZen'i kur" düğmesi, K6d K5 ölçümüyle community-1 karşılaştırması.
 - [x] K7 (#2) ✅ `merge._td_guess`: uzun (≥5 sn) turların toplamı, tek uzun turu olan yarı puan (açılış yapan sözcü); ses kütüphanesi zaten önce geliyordu. Tercüman durumu çözülmedi (dil bilgisi gerekir).
-- [ ] K8 (#5) Örtüşme: sözü kesen kısa muhabir turu "uzun kazanır" kuralında silinmesin (3.x yolu).
+- [x] K8 (#5) ✅ `merge.exclusive_turns`: başka turun tamamen içindeki ≥1 sn söz kazanır (daha kısası "hı hı"). pyannote 4 zaten örtüşmesiz veriyor; bu kural 3.x ve DiariZen çıktısı için.
 - [ ] K9 (#6) Kelime zamanı kayması: kelime için en yakın tur yerine segment içi tutarlılık (K4 testleriyle).
 - [ ] K10 (#7) Müzik ayıklama yalnız film/podcast'te ve bellek yeterse; bellek az → atla (günlüğe yaz).
 - [ ] K11 (#8) Ses kütüphanesi: 0.6–0.7 arası belirsiz eşleşmede ad verme; eşik düzeltmelerle ölçülsün.

@@ -235,7 +235,11 @@ def exclusive_turns(turns: list[list]) -> list[list]:
         act = [t for t in act if t[1] >= t1]
         if not act:
             continue
-        spk = max(act, key=lambda t: t[1] - t[0])[2]
+        # başkasının turunun tamamen içinde kalan kısa söz (sözü kesen muhabir, ≥1 sn; daha kısası "hı hı" sayılır) kazanır; yoksa
+        # "uzun tur kazanır" kuralında o söz hiç görünmüyordu. Kısmi örtüşmede (söz devri) uzun tur kazanır.
+        inner = [t for t in act if t[1] - t[0] >= 1.0
+                 and any(o is not t and o[0] <= t[0] and o[1] >= t[1] and o[2] != t[2] for o in act)]
+        spk = (min(inner, key=lambda t: t[1] - t[0]) if inner else max(act, key=lambda t: t[1] - t[0]))[2]
         if out and out[-1][2] == spk and abs(out[-1][1] - t0) < 1e-9:
             out[-1][1] = t1
         else:

@@ -243,3 +243,9 @@ def test_td_is_many_long_answers_not_one_long_intro():
 def test_td_falls_back_to_total_without_long_turns():
     lab = merge.label_speakers([[0, 3, "A"], [3, 4, "B"], [4, 7, "A"]], "Hoca", "Muhabir")
     assert lab["A"]["label"] == "Hoca"
+
+
+# ---- K8: hocanın uzun turu içinde sözü kesen muhabir kaybolmasın
+def test_interjection_inside_long_turn_survives():
+    out = merge.exclusive_turns([[0, 30, "TD"], [12, 14, "R"], [29, 31, "R2"]])
+    assert out == [[0, 12, "TD"], [12, 14, "R"], [14, 30, "TD"], [30, 31, "R2"]]
