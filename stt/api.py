@@ -115,7 +115,7 @@ def make_handler(app):
 def start_api(app, port: int) -> ThreadingHTTPServer | None:
     try:
         srv = ThreadingHTTPServer(("127.0.0.1", int(port)), make_handler(app))
-    except OSError as e:
+    except (OSError, OverflowError, ValueError, TypeError) as e:
         log.warning("Yerel API açılamadı (port %s): %s", port, e)
         return None
     srv.daemon_threads = True

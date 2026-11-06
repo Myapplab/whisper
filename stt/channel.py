@@ -196,9 +196,10 @@ class Follows:
 
     def all(self) -> list[dict]:
         try:
-            return json.loads(self.path.read_text(encoding="utf-8"))
+            rows = json.loads(self.path.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             return []
+        return [r for r in rows if isinstance(r, dict) and r.get("id") and r.get("url")] if isinstance(rows, list) else []
 
     def _save(self, rows: list[dict]) -> None:
         atomic_write_text(self.path, json.dumps(rows, ensure_ascii=False, indent=1))

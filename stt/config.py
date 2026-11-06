@@ -1,6 +1,7 @@
 """Ayarlar: varsayılanlar < stt.toml < ortam değişkenleri < komut satırı."""
 from __future__ import annotations
 
+import math
 import os
 import sys
 import tomllib
@@ -159,12 +160,31 @@ def load_config() -> Config:
             continue
         for k, v in data.items():
             if k in names:
-                setattr(cfg, k, _coerce(k, v))
+                _set(cfg, k, v, path)
     for env, attr in ENV_MAP.items():
         val = os.environ.get(env, "").strip()
         if val and not (val.startswith("%") and val.endswith("%")):  # boş/çözülmemiş %DEGISKEN% değil
-            setattr(cfg, attr, _coerce(attr, val))
+            _set(cfg, attr, val, env)
     return normalize(cfg)
+
+
+def _set(cfg: Config, name: str, value, where) -> None:
+    """Hatalı tek değer (ör. port = "abc") uygulamayı açılmaz hâle getirmesin: varsayılan kalır."""
+    try:
+        setattr(cfg, name, _coerce(name, value))
+    except (TypeError, ValueError) as e:
+        print(f"[uyarı] {where}: {name} = {value!r} geçersiz, varsayılan kullanılıyor ({e})", file=sys.stderr)
+
+
+def _num(v, default: float, lo: float, hi: float | None = None) -> float:
+    """Sayısal ayarı sınırla: NaN/sonsuz/geçersiz -> varsayılan."""
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(v):
+        return default
+    return min(max(v, lo), hi) if hi is not None else max(v, lo)
 
 
 def normalize(cfg: Config) -> Config:
@@ -177,6 +197,14 @@ def normalize(cfg: Config) -> Config:
         v = cfg.llm_provider.strip().lower()
         v = {"google": "gemini", "anthropic": "claude", "gpt": "openai"}.get(v, v)
         cfg.llm_provider = v if v in ("gemini", "claude", "openai") else None
+    if not (isinstance(cfg.api_port, int) and 0 <= cfg.api_port <= 65535):
+        cfg.api_port = 0
+    # 0 / NaN takip aralığı: kanallar 10 dakikada bir taranır (YouTube engeller) ya da hiç taranmaz
+    cfg.follow_interval_h = _num(cfg.follow_interval_h, 6.0, 1.0)
+    cfg.chunk_min = _num(cfg.chunk_min, 5.0, 0.5)
+    cfg.split_min = _num(cfg.split_min, 8.0, 0.5)
+    cfg.live_chunk_s = _num(cfg.live_chunk_s, 20.0, 5.0)
+    cfg.llm_budget_usd = _num(cfg.llm_budget_usd, 5.0, 0.0)
     for k in ("gemini_api_key", "anthropic_api_key", "hf_token", "api_token", "webhook_url", "llm_model"):
         v = getattr(cfg, k)
         if isinstance(v, str) and not v.strip():
