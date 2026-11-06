@@ -6,15 +6,26 @@ sonuçları ekran görüntüsüyle paylaşır.
 **Ne:** basın toplantısı / podcast / film videolarını metne çeviren Windows uygulaması (faster-whisper large-v3 +
 pyannote konuşmacı ayırma). Amaç: Fantasy Premier League için veri seti (takım › maç › basın toplantısı).
 
-## İki profil, az kullanım (önce bunu oku)
+## İki profil, önce kalite (önce bunu oku)
 - Kullanıcı iki Claude hesabıyla sırayla çalışır. Ortak hafıza **`docs/YAPILACAKLAR.md`**: oturum başında oku,
   sonunda "Son durum"u güncelle. İşi her zaman güncel `main`'den başlat
   (`git fetch origin main && git checkout -B <dal> origin/main`), bitince dala ve `main`'e push et.
-- Kullanım limiti dar: dosyaları bütün okuma, `grep -n` ile bul, `sed -n a,bp` ile parça oku. Büyükler:
-  `stt/pipeline.py` (~1250 satır), `stt/gui.html` (~900), `stt/gui.py`, `stt/fetch.py`. Alt ajan açma.
-- Ayrıntılı mimari/tarihçe: `docs/GELISTIRME.md` (yalnızca gereken başlığı oku). Konuşmacı ayırma planı:
-  `docs/KONUSMACI_AYIRMA.md`. İndirme araştırması: `docs/ARASTIRMA.md`.
-- **Kod denetimi, konuşmacı ayırma kök nedenleri ve SOTA araştırması: `docs/GEMINI_4_ARGON_BULGULAR.md` (mutlaka oku!).**
+- **Öncelik kalite; kullanım (token/limit) ikinci planda.** Kullanıcının kararı (2026-11), kendisi geri alana kadar geçerli.
+  Eskiden burada yazan "dosyaları bütün okuma, parça oku, alt ajan açma" kuralı kaldırıldı:
+  - Değiştireceğin kodu, onu çağıran ve onun çağırdığı yerleri tam oku; gerekirse dosyanın tamamını. Tahminle değil,
+    okuyarak karar ver. Büyük dosyalar: `stt/pipeline.py` (~1500 satır), `stt/gui.py` (~1100), `stt/gui.html` (~1000),
+    `stt/fetch.py`, `stt/engines.py` (~850).
+  - Kütüphane davranışından (faster-whisper, pyannote, torch, yt-dlp...) emin değilsen kaynağına ya da belgesine bak.
+  - Hatayı önce testle göster, sonra düzelt; her davranış değişikliğine test ekle; bütün testler geçmeden push etme.
+  - Bitirmeden önce değişikliği kenar durumlar için baştan gözden geçir (iptal, GPU hatası, boş/bozuk girdi, Windows).
+  - Denemediğini açıkça yaz ("Windows'ta / ekran kartında denenmedi"); doğrulamadığın şeye "çalışıyor" deme.
+  - Alt ajan: bağımsız ikinci göz (kod incelemesi) ya da paralel araştırma kaliteyi artıracaksa açılabilir.
+- Ayrıntılı mimari/tarihçe: `docs/GELISTIRME.md`. Konuşmacı ayırma planı: `docs/KONUSMACI_AYIRMA.md`.
+  İndirme araştırması: `docs/ARASTIRMA.md`.
+- Dış denetim raporu (Gemini): `docs/GEMINI_4_ARGON_BULGULAR.md`. Konuşmacı ayırma işinden önce oku, ama raporun bir
+  kısmı yanlış: ör. "var olmayan model" dediği `claude-haiku-5-5` / `claude-sonnet-5-5` / `gpt-5-mini` /
+  `gpt-transcribe` gerçek modellerdir, değiştirilmez. Hiçbir maddeyi kodla doğrulamadan uygulama; doğrulama sonucu
+  raporun başındaki "Claude doğrulaması" bölümünde (varsa) yazılı.
 
 ## Yayınlama
 - Yeni sürüm = `stt/__init__.py` sürümünü artır + `main`'e push. Kullanıcıya "uygulamada Güncelle'ye basın" de;
@@ -39,5 +50,6 @@ pyannote konuşmacı ayırma). Amaç: Fantasy Premier League için veri seti (ta
 
 ## Kullanıcının makinesi
 Windows 11, RTX 3090 24 GB (cuda:1, işler burada) + RTX 3080 10 GB (cuda:0, monitörlü), i3-10100, 24 GB RAM,
-kurulum `C:\stt` (venv `.venv`, Python 3.11, torch 2.8.0+cu128, pyannote.audio 3.4.0, faster-whisper 1.2.1).
+kurulum `C:\stt` (venv `.venv`, Python 3.11, torch 2.8.0+cu128, pyannote.audio 4.0.7 (community-1; 1.7.0'dan beri),
+faster-whisper 1.2.1).
 Smart App Control açık. Günlük: `%LOCALAPPDATA%\stt\stt_app.log`.
