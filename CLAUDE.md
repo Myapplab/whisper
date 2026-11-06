@@ -24,8 +24,8 @@ pyannote konuşmacı ayırma). Amaç: Fantasy Premier League için veri seti (ta
   İndirme araştırması: `docs/ARASTIRMA.md`.
 - Dış denetim raporu (Gemini): `docs/GEMINI_4_ARGON_BULGULAR.md`. Konuşmacı ayırma işinden önce oku, ama raporun bir
   kısmı yanlış: ör. "var olmayan model" dediği `claude-haiku-5-5` / `claude-sonnet-5-5` / `gpt-5-mini` /
-  `gpt-transcribe` gerçek modellerdir, değiştirilmez. Hiçbir maddeyi kodla doğrulamadan uygulama; doğrulama sonucu
-  raporun başındaki "Claude doğrulaması" bölümünde (varsa) yazılı.
+  `gpt-transcribe` gerçek modellerdir, değiştirilmez. Her maddenin doğrulama sonucu raporun başındaki
+  **"0. Claude doğrulaması"** bölümünde; yanlış (❌) maddeleri uygulama, ❓ olanları ölçümle karar ver.
 
 ## Yayınlama
 - Yeni sürüm = `stt/__init__.py` sürümünü artır + `main`'e push. Kullanıcıya "uygulamada Güncelle'ye basın" de;

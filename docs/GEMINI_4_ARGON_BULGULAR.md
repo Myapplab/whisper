@@ -1,6 +1,77 @@
 # GEMINI 4 ARGON BULGULAR — Uçtan Uca Kod Denetimi, Konuşmacı Ayırma Kök Neden Analizi ve SOTA (Dünyanın En İyisi) Araştırma Raporu
 
 > **Claude Opus / Fable İçin Not:** Bu rapor, kullanıcının talebi doğrultusunda tüm kod tabanının (`stt/`, `installer/`, `tests/`, `docs/`) uçtan uca taranmasıyla hazırlanmıştır. Uygulama koduna dokunulmamıştır. Bir sonraki geliştirme oturumunda aşağıdaki bulguları ve çözüm mimarisini temel alarak düzeltmeleri uygulayabilirsin.
+>
+> **⚠️ Önce 0. bölümü oku (Claude doğrulaması, 2026-11-06):** maddelerin yaklaşık yarısı yanlış ya da abartılı.
+> Bölüm 1-5'teki kod alıntılarının bir kısmı koddaki hâliyle aynı değil (ör. `SENTENCE_GAP_SEC`, `STRONG_CHANGE_WORDS`,
+> `diarize_min_speakers`, `_job_busy`, `window_s` adları kodda yok). Bir maddeyi uygulamadan önce 0. bölümdeki sonucuna bak.
+
+---
+
+## 0. CLAUDE DOĞRULAMASI (2026-11-06) — HER MADDE KODLA KONTROL EDİLDİ
+
+Yöntem: her iddia için kod okundu; kütüphane davranışı kurulu sürümlerin kaynağından kontrol edildi (pyannote.audio 4.0.7,
+faster-whisper 1.2.1, DiariZen `main`); `merge.py` davranışı gerçek kodla küçük örneklerle denendi. Windows'ta / ekran
+kartında hiçbir şey denenmedi. İşaretler: ✅ doğru · ⚠️ kısmen / abartılı · ❌ yanlış · ❓ kanıtsız (ölçümle karar verilmeli).
+
+### 0.1 Konuşmacı ayırma "kök nedenleri" (bölüm 1)
+| Madde | Sonuç | Kanıt |
+|---|---|---|
+| KN1: cümle içindeki kısa başka-konuşmacı parçası yutuluyor | ⚠️ | Doğru ama bilinçli eşik (`merge.SPLIT_MIN_WORDS=4`, `SPLIT_MIN_SEC=1.5`; YAPILACAKLAR K4-AÇIK). Denendi: noktalamasız tek "cümle"de başta 3 kelime / 0.9 sn muhabir sorusu ve 3 kelime / 1.5 sn başka konuşmacı çoğunluğa katılıyor; 4 kelime / 1.7 sn bölünüyor. Eşiği ölçümsüz düşürmek yanlış bölünmeyi artırır (raporun kendi KN3'ü: kelime zamanları kayıyor). |
+| KN1: "?" istisnası yalnız cümle sonundaki parça için | ✅ | `merge.py:190-194` yalnız son parçaya bakıyor. |
+| KN2: 0.4–1.0 sn soru koruması "ölü kod" | ❌ | Soru cümlesi süreye göre değil kelime sayısına göre yumuşatılıyor (`merge.py:271`, `min_run=2`). Denendi: sondaki 2 kelime / 0.6 sn "and Saka?" ayrı kalıyor. Yalnız TEK kelimelik soru parçası yutuluyor. |
+| KN2: cümle başındaki <1 sn parça sağdakine katılıyor | ✅ | Tasarım gereği (<1 sn = sıçrama sayılıyor); KN1 ile aynı eşik konusu. |
+| KN2: `_smooth` yerinde değişim hatası | ❌ | Hata değil: art arda kısa parçalar uzun komşuya katılıyor (istenen). Raporun alıntıladığı kod `merge.py`'deki kod değil. |
+| KN3: toplu çeviride `condition_on_previous_text` eksik | ❌ | faster-whisper 1.2.1 toplu modda bunu her zaman `False` yapıyor (`faster_whisper/transcribe.py:547`); vermek hiçbir şeyi değiştirmez. |
+| KN3: `no_words` parçada konuşmacı satır düzeyinde | ⚠️ | Doğru, ama yalnız iki deneme (toplu, sonra toplusuz) başarısız olunca (`engines.py:373-386`). "Hata kelime zamanı (DTW) çekirdeğinden" iddiası kanıtsız. |
+| KN3: forced alignment (WhisperX tarzı) | ❓ | Yararlı olabilir, ölçülmeli. "±30–50 ms" iyimser. Dikkat: `torchaudio.functional.forced_align` / MMS_FA 2.8'de "deprecated", 2.9'da kaldırıldı → "torchaudio zaten kurulu, ek kurulum yok" önerisi torch yükseltmesinde kırılır. |
+| KN4: `agc()` konuşmacı ayırma sesine de uygulanıyor | ✅ | `engines.py:778-780` (tek `agc` ayarı, Whisper ile ortak). |
+| KN4: "+20 dB yankıyı büyütüp ses imzalarını bozuyor" | ❓ | Kanıtsız varsayım. `agc` uzaktaki muhabirleri bulmak için eklendi (`audio.py:71-75`). Kaldırmak muhabir kaçırmayı geri getirebilir → ayrı `diar_agc` ayarıyla A/B ölçümü. |
+| KN5.1: DiariZen seçiliyken pyannote da yükleniyor, HF token isteniyor | ✅ | `engines.py:511-512, 530`. Bilinçli: DiariZen hata verirse pyannote'a düşülüyor. İyileştirme: pyannote'u yalnız gerekince yükle. |
+| KN5.2: VRAM çakışması | ⚠️ | 24 GB 3090'da büyük olasılıkla sığar; ölçülmedi. |
+| KN5.3: DiariZen'de `min/max_speakers` çalışmıyor | ❌ | Çalışıyor: `DiariZenPipeline.__call__` `self.min_speakers/max_speakers`'ı kümelemeye veriyor (`diarizen/pipelines/inference.py:153-163`, `main`). |
+| KN5.4: DiariZen'de ses imzası yok | ✅ | Zaten biliniyordu (YAPILACAKLAR K6). |
+| KN5.5: DiariZen ortamı torch 2.1.1+cu121 | ✅ | Doğru; kullanıcının RTX 3090/3080'inde sorun değil (RTX 50 serisinde çalışmaz → pyannote'a düşer). |
+| KN5 önerisi: SUPlime (`rewayai/suplime`, `suplime-large`) | ⚠️ | Model gerçek; pyannote.audio ≥4.0.7 (uygulamadaki sürüm) + `pip install suplime` (MIT) ile ana ortamda çalışıyor, HF token istemiyor. Ama "doğrudan pyannote" değil (ek paket şart). Ağırlık lisansı doğrulanamadı (rapordaki "CC BY-NC" belirsiz). Skorlar yayıncının kendi ölçümü ve 8 veri seti (12 değil). Yine de denenecek en iyi aday: ayrı ortam gerekmez. |
+| KN6.1: ses kütüphanesi düzeltilmemiş küme imzasını öğreniyor | ✅ | `voices.py:275-289` ilk ayırmadaki küme ortalamasını kaydediyor; düzeltmeden sonra yeniden hesaplanmıyor; elle eklenen yeni kişi hiç öğrenilmiyor. Küme çoğunlukla doğru kişiyse etkisi küçük. Düzeltmek için imza ekran kartında yeniden çıkarılmalı. |
+| KN6.2: "Konuşmacılar" ekranında süre yanlış | ✅ | `gui.py:715` `end` göndermiyor, `gui.html:768` tahmin ediyor. Yalnız ekrandaki saniye; kaydedilen dosyada süre doğru (`voices.apply_corrections`). |
+| KN6.3: `stt egit` 99 kat yavaş (önbellek her denemede sıfırlanıyor) | ❌ | Aynı `f` sözlüğü her denemede kullanılıyor (`tune.py:217, 226`); pyannote 4.0.7 `training=True` iken bölütleme ve imzaları bu sözlükte saklıyor (`speaker_diarization.py:321-326, 361-370`), `instantiate` silmiyor. Sinir ağı bir kez çalışır. |
+| KN6.3: referans (Whisper satırları) ile pyannote zamanları farklı | ⚠️ | 0.5 sn yaka (`tune.speaker_error`, collar) ile hafifletilmiş. Ama referansta birleştirilen <1 sn boşluklar "hata" sayılıyor → mutlak hata şişer; `segmentation.min_duration_off` bu yüzden yanlı seçilebilir. |
+| KN7: `min_speakers=2` tek kişilik videoyu ikiye bölüyor | ✅ | Etkisi gerçek ve rapordakinden geniş: `diarize_min_speakers` diye ayar yok; 2 `pipeline.py:564`'te sabit ve basın + podcast/film HER modda uygulanıyor (K2 notu "basın modunda" diyordu). pyannote 4 VBx, bulduğu küme 2'den azsa KMeans ile zorla 2'ye bölüyor (`clustering.py:626-636`). **Raporda olmayan ek hata:** `stt.toml`'da `min_speakers = 3` yazılırsa `_speakers_wanted` (`pipeline.py:320`) bunu kesin sayı yapıyor (en çok da 3). |
+
+### 0.2 "Diğer hatalar" tablosu (bölüm 2)
+| # | Sonuç | Kanıt |
+|---|---|---|
+| 1 `_speaker_at` geri giden zaman | ⚠️ | Kenar durum: segmentler sıralı (`merge_chunks`), 3 tur geri bakılıyor. Pratikte görülmedi; düşük öncelik. |
+| 2 "Var olmayan" model adları | ❌ | **YANLIŞ — değiştirme!** `claude-haiku-5-5` ($0.10/$0.50), `claude-sonnet-5-5` ($2/$10), `claude-opus-5-5` ($4/$20) gerçek; fiyatlar `llm.py` ile aynı. `gpt-5-mini` ve `gpt-transcribe` (OpenAI, 2026 yazı) gerçek. Ek not: `llm_model` elle `claude-haiku-4-5` yapılırsa `effort` parametresi 400 verir. |
+| 3 OpenAI anahtar kutusu yok / anahtar silinemiyor | ✅ | OpenAI seçilebiliyor (`gui.html:400`) ama anahtar yalnız `OPENAI_API_KEY` ortam değişkeninden okunuyor. Silinememe bilinçli ("boş = kalsın", `gui.py:368-370`); silme düğmesi yok. |
+| 4 GUI'de "link 11 ARS" yutuluyor | ❌ | Yanlış çerçeve: GUI'de linkin yanına GW/takım yazma hiçbir link türünde yok (https'li de); GUI otomatik eşleştirme kullanıyor. "link 11 ARS" yalnız CLI liste dosyasında (README:258). İstenirse yeni özellik. |
+| 5 `ddelayed` yarış koşulu | ❌ | Aynı karttaki ayırma, metin görevi sıradayken / çalışırken zaten verilmiyor (`pipeline.py:836-838`); ayırma metnin bitmesine bağlı değil (yalnız sesi kullanır). Önerilen `_job_busy` kodda yok. |
+| 6 `self.jobs` kilitsiz gezinme | ❌ | Bütün yazmalar `self.lock` altında; kilitsiz okumalar `list(...)` kopyası ya da kilit altında (`_dispatch`). |
+| 7 Sürüm uyumsuzluğu | ⚠️ | Doğru ama zararsız: kurulum/güncelleme `pyproject.toml` `[diarize]` (4.0.7) kullanıyor; `requirements.txt` yalnız elle geliştirme. `pyproject.toml` değişirse güncellemede pip çalışır → boşuna değiştirme. |
+| 8 Canlı yazıda 25 sn'de bir tekrar | ❌ | Uydurma: `live.py`'de `window_s`, `emitted_until`, `step_s` yok; parçalar sessiz noktadan örtüşmesiz kesiliyor (`live.py:42-50, 162-165`). |
+| 9 Kanal takibi "görüldü"yü erken yazıyor | ⚠️ | Doğru yer `gui.py:666` (channel.py:94 değil). Başarısız video kuyrukta "Tekrar dene" ile görünür kalıyor, kuyruk kalıcı; yalnız takipçi kendiliğinden yeniden denemiyor. Düşük öncelik. |
+| 10 HDemucs parça başına normalize | ❌ | Ortalama/std bütün ses için bir kez hesaplanıyor (`engines.py:672`); torchaudio örneğiyle aynı. |
+
+### 0.3 Özellik tablosu ve SOTA bölümü (bölüm 3-4) düzeltmeleri
+- #13 "Claude/OpenAI 404 veriyor" ❌ (yukarıda 0.2/2). #12 canlı tekrar ❌. #4 "DiariZen ciddi hatalı" ⚠️ abartı: min/max
+  çalışıyor; kalanlar: pyannote da yükleniyor, ses imzası yok, kullanıcıda hiç denenmedi (K6b).
+- #14 "Gemini ve Parakeet (onnx-asr) motoru çalışıyor" ❌: kodda yalnız `whisper` ve `openai` motoru var (`config.py:19`).
+- "`nvidia/Nemotron-3-Diarization`" ❓ bulunamadı. NVIDIA'nın yayımladığı `nvidia/diar_streaming_sortformer_4spk-v2.1`:
+  en çok 4 konuşmacı (basın toplantısına az), ağırlıklar NVIDIA Open Model License ("Apache 2.0" değil), NeMo Windows'ta ağır.
+- Parakeet-TDT-0.6B-v2 / Canary-1B: İngilizce (Canary birkaç Avrupa dili); Türkçe/Azerbaycanca yok.
+- ClearerVoice, DeepFilterNet3, BS-RoFormer, 3D-Speaker, WeSpeaker, Groq: gerçek projeler, hiçbiri burada ölçülmedi.
+  Ses iyileştirme konuşma tanımayı / ayırmayı bazen bozar → ölçmeden eklenmez.
+
+### 0.4 Claude'un önerdiği sıra (bölüm 5'in yerine)
+0. **Ölçüm verisi önce:** kullanıcı 3–5 basın toplantısını "Konuşmacılar" ekranında düzeltip kaydetsin (K5); "Kontrol"de
+   "Konuşmacı doğruluğu" satırı çıkar. Bu olmadan eşik/ses değişikliği kör yapılır.
+1. Ölçüm gerektirmeyen güvenli düzeltmeler: (a) `min_speakers` 2 yalnız basın modunda + `cfg.min_speakers`'ın kesin sayı
+   olması hatası; (b) "Konuşmacılar" ekranında süre (`end`); (c) OpenAI anahtar kutusu + anahtar silme; (d)
+   `requirements.txt` pyannote 4.0.7; (e) DiariZen seçiliyken pyannote'u gerekince yükle.
+2. Ölçümle A/B (K5 verisi gelince): `merge` eşikleri (K4-AÇIK), ayırmada agc açık/kapalı, SUPlime-L ↔ community-1,
+   kelime hizalama (torchaudio 2.9 notuna dikkat).
+3. Ses kütüphanesi: imzayı düzeltilmiş satırlardan yeniden çıkar (ayırma işçisinde, ekran kartında).
 
 ---
 

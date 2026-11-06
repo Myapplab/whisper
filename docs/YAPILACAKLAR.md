@@ -1,8 +1,11 @@
 # Yapılacaklar / oturum devri
 
-> **🚨 ÖNEMLİ — GEMINI 4 ARGON BULGULAR RAPORU (`docs/GEMINI_4_ARGON_BULGULAR.md`):**
-> Kullanıcı tüm uygulamanın uçtan uca kod taramasını, konuşmacı ayırmanın neden hâlâ tatmin etmediğinin kök nedenlerini, vaat edilen özelliklerin kontrolünü ve her özellik için "Dünyanın En İyisi (SOTA)" açık kaynak/ücretsiz çözümleri çıkarttırdı.
-> **Claude Opus / Fable:** Yeni bir kod değişikliği yapmadan önce mutlaka **`docs/GEMINI_4_ARGON_BULGULAR.md`** dosyasını baştan sona oku!
+> **ÖNEMLİ — Gemini denetim raporu (`docs/GEMINI_4_ARGON_BULGULAR.md`):** kullanıcı Gemini'ye uçtan uca kod taraması,
+> konuşmacı ayırma kök nedenleri ve SOTA araştırması yaptırdı. **Claude 2026-11-06'da her maddeyi kodla doğruladı:**
+> sonuç raporun başındaki **0. bölümde**. Yaklaşık yarısı yanlış/abartılı (ör. Claude 5 ve `gpt-transcribe` model adları
+> gerçek, DiariZen'de min/max çalışıyor, `stt egit` önbelleği çalışıyor, canlı yazı "tekrarı" kodda yok). Doğru çıkanlar
+> ve önerilen sıra: 0.4. Konuşmacı ayırma işinden önce 0. bölümü oku; yanlış maddeleri uygulama.
+> **Kullanıcı kararı (2026-11):** öncelik kalite, kullanım ikinci planda (CLAUDE.md "İki profil, önce kalite").
 
 Kullanıcı iki Claude hesabıyla (iki profil) sırayla çalışır: biri sınıra gelince öbürü kaldığı yerden devam eder.
 Ortak hafıza bu dosyadır. **Oturum sonunda güncelle** (Son durum + liste) ve `main`'e push et.
@@ -13,6 +16,9 @@ sıradakine geç. Kullanım biterse diğer profil ilk ✅ olmayan adımdan devam
 **SIRADAKİ (1.9.2 sonrası):** K6b kullanıcıda kurulum denemesi (Ayarlar > 'DiariZen'i kur'; K6c ✅ 1.9.2), K6d + K9 + K4-açık: kullanıcı 3-5 video düzeltince K5 ölçümüyle karar.
 - [x] K1 (#10) ✅ (doctor: sürüm 3.x uyarısı; yedek model uyarısı zaten vardı) Kontrol: pyannote < 4 ise "community-1 çalışmıyor, eski 3.1 kullanılıyor" uyarısı + düzeltme yolu.
 - [x] K2 (#4) ✅ ZATEN VARDI (pipeline `_diarize_task`: min_speakers en az 2) Basın modunda en az 2 konuşmacı otomatik (`min_speakers`), kullanıcı sayı girerse o geçerli.
+      **DİKKAT (2026-11 doğrulama):** kod 2'yi HER modda (podcast/film dahil) uyguluyor (`pipeline.py:564`); pyannote 4
+      VBx 2'ye zorla böldüğü için tek kişilik videoda kişi ikiye bölünür. Ayrıca `stt.toml` `min_speakers` kesin sayı
+      gibi davranıyor (`_speakers_wanted`, en çok da o sayı). Düzeltilecek (Gemini raporu 0.4/1a).
 - [x] K3 (#9) ✅ (gui.html: sarı "Bitti · konuşmacısız"; index'te diarized zaten vardı) Konuşmacısız biten iş görünür olsun: kartta sarı "Bitti · konuşmacısız" + index'te diarized=false.
 - [x] K4 (#3) ✅ ("?" ile biten cümlenin sonundaki kısa muhabir parçası ayrı; `merge.QUESTION_MIN_SEC`). AÇIK: noktalamasız ara soru ("what about Saka") hâlâ yutuluyor, K5 ölçümüyle eşik gevşetilsin Kısa soru yutulmasın: cümle içi değişimde "?" ile biten kısa muhabir parçası korunur (önce simülasyon).
 - [x] K5 (#1) ✅ `tune.measure` + "Kontrol"de "Konuşmacı doğruluğu" satırı. Düzeltmede programın ilk çıktısı `duzeltme/*.json` "hyp" olarak saklanıyor (eskiden üzerine yazılıp kayboluyordu). Yalnız 1.8.9 sonrası düzeltilen videolar ölçülür. KULLANICIDAN: 3-5 basın toplantısı düzeltsin, Kontrol ekranı görüntüsü.
@@ -21,8 +27,8 @@ sıradakine geç. Kullanım biterse diğer profil ilk ✅ olmayan adımdan devam
       GitHub zip (`<araç>/diarizen`, pyannote çatalı içinde, git gerekmez). `diar_engine = "diarizen"` (stt.toml) →
       `Diarizer._diarizen`: müzik ayıklanmış/agc'li ses geçici wav → ayrı süreç (ayırma işçisinin CUDA_VISIBLE_DEVICES'ı
       geçer, DiariZen cuda:0 = 3090). Hata → pyannote. Ses imzası YOK (ses kütüphanesi DiariZen'le öğrenmez).
-      min/max konuşmacı `pipe.min_speakers/max_speakers` özniteliğiyle (DiariZen __call__ bunları config'ten okuyor;
-      gerçekten etkili mi doğrulanmadı). SIRADAKİ: K6b kullanıcıda kurulum denemesi (günlükte "[diarizen kurulum]"),
+      min/max konuşmacı `pipe.min_speakers/max_speakers` özniteliğiyle (DOĞRULANDI 2026-11: etkili; DiariZen `__call__`
+      `self.min_speakers/max_speakers`'ı kümelemeye veriyor, `diarizen/pipelines/inference.py:153-163`). SIRADAKİ: K6b kullanıcıda kurulum denemesi (günlükte "[diarizen kurulum]"),
       K6c ✅ (1.9.2: Ayarlar > Konuşmacı ayırma motoru + 'DiariZen'i kur', `App.diarizen_install`), K6d K5 ölçümüyle community-1 karşılaştırması.
 - [x] K7 (#2) ✅ `merge._td_guess`: uzun (≥5 sn) turların toplamı, tek uzun turu olan yarı puan (açılış yapan sözcü); ses kütüphanesi zaten önce geliyordu. Tercüman durumu çözülmedi (dil bilgisi gerekir).
 - [x] K8 (#5) ✅ `merge.exclusive_turns`: başka turun tamamen içindeki ≥1 sn söz kazanır (daha kısası "hı hı"). pyannote 4 zaten örtüşmesiz veriyor; bu kural 3.x ve DiariZen çıktısı için.
@@ -31,6 +37,10 @@ sıradakine geç. Kullanım biterse diğer profil ilk ✅ olmayan adımdan devam
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
+- 2026-11-06 (kod değişmedi, sürüm aynı 1.9.3): kullanıcı istedi → CLAUDE.md "önce kalite, kullanım ikinci planda".
+  Gemini raporu (`docs/GEMINI_4_ARGON_BULGULAR.md`) madde madde doğrulandı → raporun 0. bölümü. Raporda olmayan gerçek
+  hata: `min_speakers=2` her modda (yukarıda K2 notu). Kullanıcı "sıradaki prompt"u verecek; büyük olasılıkla bu
+  bulguların uygulanması → önce 0.4 sırası (güvenli düzeltmeler), eşik/ses değişiklikleri K5 ölçümüyle.
 - 1.9.3: ayırma sürerken metin işçisi şeridi "boşta" yerine "metin bitti · konuşmacı ayırma sürüyor". Not: Görev
   Yöneticisi'nin varsayılan grafikleri (3D/Copy/Video) CUDA yükünü göstermez → "%0" yanıltıcı; "Cuda"/"Compute_0" seçilmeli.
 - Sürüm 1.8.7: kullanıcı ekranı: 38 dk podcast'te ayırma "CUDA error: out of memory" ile düştü, aynı anda Chrome
