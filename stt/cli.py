@@ -160,6 +160,10 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     cfg = load_config()
     sub = SUBCOMMANDS.get(argv[0].lower()) if argv else None
+    if argv and argv[0].lower() in ("diarizen-kur", "diarizen"):
+        from .diarizen import main as dz_main
+        setup_logging()
+        return dz_main()
 
     if sub == "doctor":
         p = argparse.ArgumentParser(prog="stt kontrol", description="Kurulumu kontrol et")

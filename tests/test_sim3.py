@@ -209,3 +209,21 @@ def test_measure_uses_saved_program_output(tmp_path):
     save_reference(tmp_path, doc, None)  # ikinci düzeltme ilk program çıktısını silmez
     m = measure(tmp_path)
     assert m["videos"] == 1 and 20 < m["error"] < 35
+
+
+# ---- K6: DiariZen (ayrı ortam) kullanılır; hata verirse pyannote
+def test_diarizen_used_and_falls_back(tmp_path, monkeypatch):
+    from test_stability import _Pipe, _fake_diarizer, _wav
+
+    from stt import diarizen
+    monkeypatch.setattr(diarizen, "installed", lambda: True)
+    monkeypatch.setattr(diarizen, "run", lambda wav, a, b, beat=None: [[0, 1, "dz0"], [1, 2, "dz1"]])
+    pipe = _Pipe([])
+    d = _fake_diarizer(pipe, cpu_pipe=None)
+    d.engine = "diarizen"
+    assert [t[2] for t in d.run(_wav(tmp_path))] == ["dz0", "dz1"] and pipe.calls == 0
+
+    def boom(*a, **k):
+        raise RuntimeError("DiariZen hata verdi")
+    monkeypatch.setattr(diarizen, "run", boom)
+    assert [t[2] for t in d.run(_wav(tmp_path))] == ["SPEAKER_00", "SPEAKER_01"] and pipe.calls == 1

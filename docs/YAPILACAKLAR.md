@@ -11,8 +11,14 @@ sıradakine geç. Kullanım biterse diğer profil ilk ✅ olmayan adımdan devam
 - [x] K3 (#9) ✅ (gui.html: sarı "Bitti · konuşmacısız"; index'te diarized zaten vardı) Konuşmacısız biten iş görünür olsun: kartta sarı "Bitti · konuşmacısız" + index'te diarized=false.
 - [x] K4 (#3) ✅ ("?" ile biten cümlenin sonundaki kısa muhabir parçası ayrı; `merge.QUESTION_MIN_SEC`). AÇIK: noktalamasız ara soru ("what about Saka") hâlâ yutuluyor, K5 ölçümüyle eşik gevşetilsin Kısa soru yutulmasın: cümle içi değişimde "?" ile biten kısa muhabir parçası korunur (önce simülasyon).
 - [x] K5 (#1) ✅ `tune.measure` + "Kontrol"de "Konuşmacı doğruluğu" satırı. Düzeltmede programın ilk çıktısı `duzeltme/*.json` "hyp" olarak saklanıyor (eskiden üzerine yazılıp kayboluyordu). Yalnız 1.8.9 sonrası düzeltilen videolar ölçülür. KULLANICIDAN: 3-5 basın toplantısı düzeltsin, Kontrol ekranı görüntüsü.
-- [ ] K6 DiariZen (BUT-FIT/diarizen-wavlm-large-s80-md, CC BY-NC): kendi pyannote çatalını ister → AYRI venv
-      (`C:\stt\.venv-diarizen`), ayrı süreç, `diar_engine = "diarizen"` ayarı; olmazsa community-1. K5 ile karşılaştır.
+- [~] K6 DiariZen: KOD YAZILDI (1.9.0), GERÇEKTE DENENMEDİ. `stt/diarizen.py`: `python -m stt diarizen-kur` →
+      Python 3.10 (py -3.10 ya da python.org kurucusu, kullanıcı klasörüne) + `.venv-diarizen` + torch 2.1.1 cu121 +
+      GitHub zip (`<araç>/diarizen`, pyannote çatalı içinde, git gerekmez). `diar_engine = "diarizen"` (stt.toml) →
+      `Diarizer._diarizen`: müzik ayıklanmış/agc'li ses geçici wav → ayrı süreç (ayırma işçisinin CUDA_VISIBLE_DEVICES'ı
+      geçer, DiariZen cuda:0 = 3090). Hata → pyannote. Ses imzası YOK (ses kütüphanesi DiariZen'le öğrenmez).
+      min/max konuşmacı `pipe.min_speakers/max_speakers` özniteliğiyle (DiariZen __call__ bunları config'ten okuyor;
+      gerçekten etkili mi doğrulanmadı). SIRADAKİ: K6b kullanıcıda kurulum denemesi (günlükte "[diarizen kurulum]"),
+      K6c Ayarlar'a "Konuşmacı motoru" seçimi + "DiariZen'i kur" düğmesi, K6d K5 ölçümüyle community-1 karşılaştırması.
 - [ ] K7 (#2) TD seçimi: ses kütüphanesi > soru sonrası uzun cevap veren > toplam süre.
 - [ ] K8 (#5) Örtüşme: sözü kesen kısa muhabir turu "uzun kazanır" kuralında silinmesin (3.x yolu).
 - [ ] K9 (#6) Kelime zamanı kayması: kelime için en yakın tur yerine segment içi tutarlılık (K4 testleriyle).

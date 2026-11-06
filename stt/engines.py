@@ -502,7 +502,8 @@ class Diarizer:
     _sep = None          # müzik ayıklama modeli (HDemucs), ilk gerekince yüklenir
     _beat_fn = None      # "hâlâ çalışıyorum" sinyali (işçi -> ana süreç; takılma denetimi)
     def __init__(self, model: str, token: str | None, device: str, agc: bool = True, batch: int = 8,
-                 gpu_frac: float | None = None, ram_pct: int = 70, cpu_ok: bool = False, params: dict | None = None):
+                 gpu_frac: float | None = None, ram_pct: int = 70, cpu_ok: bool = False, params: dict | None = None,
+                 engine: str | None = None):
         os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")  # pyannote 3.x + torch>=2.6
         setup_cuda_dlls()
         import torch
@@ -512,6 +513,7 @@ class Diarizer:
         self.torch = torch
         self.model, self.token = model, token
         self.agc = agc
+        self.engine = (engine or "pyannote").lower()  # "diarizen": ayrı ortamda DiariZen (stt/diarizen.py)
         self.tuned = params or {}  # eğitilmiş ayarlar (stt/tune.py): {model: {"params": {...}}}
         self.batch, self.ram_pct, self.cpu_ok = max(1, int(batch or 8)), ram_pct, cpu_ok
         torch.backends.cudnn.benchmark = False
@@ -717,6 +719,34 @@ class Diarizer:
                 time.sleep(30)
                 self.wait_memory(len(audio) / SR, max_wait=600)
 
+    def _diarizen(self, audio, min_speakers, max_speakers) -> list[list] | None:
+        """DiariZen ile dene (müzik ayıklanmış / agc'li ses); olmazsa None -> pyannote. Ses imzası çıkmaz."""
+        from . import diarizen
+        if not diarizen.installed():
+            log.warning("diar_engine=diarizen ama DiariZen kurulu değil (python -m stt diarizen-kur); pyannote kullanılıyor")
+            return None
+        import tempfile
+        import wave
+        from pathlib import Path
+
+        import numpy as np
+        t = time.time()
+        try:
+            with tempfile.TemporaryDirectory(prefix="stt-dzw-") as td:
+                wav = Path(td) / "ses.wav"
+                with wave.open(str(wav), "wb") as w:
+                    w.setnchannels(1)
+                    w.setsampwidth(2)
+                    w.setframerate(SR)
+                    w.writeframes((np.clip(audio, -1, 1) * 32767).astype("<i2").tobytes())
+                turns = diarizen.run(str(wav), min_speakers, max_speakers, beat=lambda f=False: self._beat(f))
+            log.info("[%s] konuşmacı ayırma (DiariZen) %.1fs, %d konuşmacı", self.device, time.time() - t,
+                     len({x[2] for x in turns}))
+            return turns
+        except Exception as e:  # noqa: BLE001
+            log.warning("DiariZen başarısız (%s); pyannote ile yapılıyor", str(e)[:300])
+            return None
+
     def _beat(self, force: bool = False) -> None:
         if self._beat_fn is not None:
             self._beat_fn(force)
@@ -743,6 +773,10 @@ class Diarizer:
             kw["min_speakers"] = min_speakers
         if max_speakers:
             kw["max_speakers"] = max_speakers
+        if getattr(self, "engine", "pyannote") == "diarizen" and str(self.device).startswith("cuda"):
+            turns = self._diarizen(audio, min_speakers, max_speakers)
+            if turns is not None:
+                return turns
         try:
             turns = self._run_lowmem(audio, kw)
         except RuntimeError as e:

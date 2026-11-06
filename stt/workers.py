@@ -54,7 +54,8 @@ def _handle(task: dict, wid: str, device: str, engine_cfg: dict, cache: dict):
                                          agc=engine_cfg.get("agc", True), batch=engine_cfg.get("diar_batch", 8),
                                          gpu_frac=engine_cfg.get("diar_gpu_frac"), ram_pct=engine_cfg.get("ram_limit_pct", 70),
                                          cpu_ok=engine_cfg.get("diar_cpu", False),
-                                         params=engine_cfg.get("diar_params"))
+                                         params=engine_cfg.get("diar_params"),
+                                         engine=engine_cfg.get("diar_engine"))
                 log.info("[diar] konuşmacı modeli hazır (%.0f sn)", time.time() - t0)
             d = cache["diar"]
             turns = d.run(task["wav"], task.get("min_speakers"), task.get("max_speakers"),

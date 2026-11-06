@@ -45,6 +45,7 @@ class Config:
     diarize: bool = False
     hf_token: str | None = None
     diar_model: str = "pyannote/speaker-diarization-community-1"  # olmazsa 3.1'e düşülür
+    diar_engine: str = "pyannote"        # pyannote | diarizen (ayrı ortam: python -m stt diarizen-kur; CC BY-NC)
     diar_music: str = "auto"             # konuşmacı ayırmadan önce müzik ayıklama: auto (podcast/film) | on | off
     voice_match: bool = True             # ses kütüphanesindeki kişileri yeni videolarda adıyla tanı
     voice_threshold: float = 0.6         # ses imzası benzerliği (kosinüs) en az bu kadarsa aynı kişi sayılır
