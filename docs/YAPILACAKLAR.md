@@ -37,6 +37,16 @@ sıradakine geç. Kullanım biterse diğer profil ilk ✅ olmayan adımdan devam
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
+- 2026-11-06 (kod değişmedi, sürüm aynı 1.9.7): kullanıcı istedi → uçtan uca hata taraması + hedefe (FPL veri seti)
+  göre geliştirme planı: **`docs/TARAMA_2026-11-06.md`** (Claude çekirdeği okudu, 3 inceleme ajanı kalan modülleri;
+  bulgular kodla doğrulandı, Windows'ta denenmedi). En kritik alan `match.py`/`dataset.py`: "derby"/"nice" takım
+  sanılıyor, yanlış rakip fikstür aramasını kapatıyor, "Post-Match" başlığı maç seçiminde kullanılmıyor, 2025-26
+  hocaları (Frank, M. Silva...) listede yok → video "Podcast ve Film"e gidiyor, FPL verisi oturumda bir kez
+  yükleniyor. Çekirdek: parça planı değişince eski parçalar "bitmiş" sayılıyor (yeniden üretildi), boşluk doldurma
+  kapısı AGC yüzünden işlemiyor, başarısız işlerin ses.wav + çerez dosyaları hiç silinmiyor. Arayüz: takip eğitim
+  sürerken video kaybediyor, token'sız yerel API CSRF'e açık, K5 "Konuşmacı doğruluğu" muhabir adlarıyla şişiyor
+  (K5 ölçümünden ÖNCE düzeltilmeli). Önerilen sıra raporun 0. ve E. bölümünde. SIRADAKİ: kullanıcı onaylarsa A
+  bölümü (veri seti) ilk sürüm olarak; her düzeltmeye test (başlık örnekleri raporda).
 - 1.9.7 (Claude, Gemini'nin 1.9.6'sının incelemesi; 226 test): 1.9.6 Gemini (başka araç) tarafından yazılmıştı; Claude
   kodla ve uçtan uca (jsdom + gerçek `App.speakers_save`) denedi. Düzeltilen gerilemeler: (1) `merge.py`: ayırma sınırı
   ≥0.8 sn geç kalınca yeni konuşmacının ilk 2-3 kelimesi ("Well, I think") önceki konuşmacıya yazılıyordu (1.9.6'nın
