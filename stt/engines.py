@@ -477,7 +477,7 @@ class Diarizer:
     _sep = None          # müzik ayıklama modeli (HDemucs), ilk gerekince yüklenir
     _beat_fn = None      # "hâlâ çalışıyorum" sinyali (işçi -> ana süreç; takılma denetimi)
     def __init__(self, model: str, token: str | None, device: str, agc: bool = True, batch: int = 8,
-                 gpu_frac: float | None = None, ram_pct: int = 70, cpu_ok: bool = False):
+                 gpu_frac: float | None = None, ram_pct: int = 70, cpu_ok: bool = False, params: dict | None = None):
         os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")  # pyannote 3.x + torch>=2.6
         setup_cuda_dlls()
         import torch
@@ -487,6 +487,7 @@ class Diarizer:
         self.torch = torch
         self.model, self.token = model, token
         self.agc = agc
+        self.tuned = params or {}  # eğitilmiş ayarlar (stt/tune.py): {model: {"params": {...}}}
         self.batch, self.ram_pct, self.cpu_ok = max(1, int(batch or 8)), ram_pct, cpu_ok
         torch.backends.cudnn.benchmark = False
         try:  # ekran kartında da torch işlemcide iş parçacıkları açar; 2 ile sınırla (fan / donma)
@@ -549,6 +550,13 @@ class Diarizer:
             raise RuntimeError(f"{model} yüklenemedi: HF'de model sayfasındaki koşulları kabul ettiniz mi? "
                                f"(huggingface.co/{model})")
         self._set_batch(pipe, self.batch)
+        flat = ((getattr(self, "tuned", None) or {}).get(model) or {}).get("params")
+        if flat:
+            try:
+                from .tune import apply_params
+                log.info("Eğitilmiş konuşmacı ayarı kullanılıyor: %s", apply_params(pipe, flat))
+            except Exception as e:  # noqa: BLE001
+                log.warning("Eğitilmiş konuşmacı ayarı uygulanamadı: %s", str(e)[:160])
         return pipe
 
     @staticmethod

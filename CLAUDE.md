@@ -18,14 +18,14 @@ pyannote konuşmacı ayırma). Amaç: Fantasy Premier League için veri seti (ta
 ## Yayınlama
 - Yeni sürüm = `stt/__init__.py` sürümünü artır + `main`'e push. Kullanıcıya "uygulamada Güncelle'ye basın" de;
   zip/exe/PowerShell gönderme. (`pyproject.toml` değişirse güncellemede pip çalışır; gereksiz değiştirme.)
-- Testler: `pip install pytest numpy jiwer && python -m pytest -q tests` (129 test, ~3 sn). Commit mesajında model adı yazma.
+- Testler: `pip install pytest numpy jiwer && python -m pytest -q tests` (134 test, ~3 sn). Commit mesajında model adı yazma.
 
 ## Haritası
 - `pipeline.py` kuyruk/işçi yönetimi, iptal (`cancel`, `cancel_all`), bitirme · `workers.py` işçi süreçleri ·
   `engines.py` Whisper/Diarizer/GPU bilgisi · `merge.py` kelime→konuşmacı · `outputs.py` dosyalar ·
   `fetch.py` indirme zinciri · `gui.py`+`gui.html` arayüz (pywebview) · `config.py` ayarlar (`stt.toml`) ·
   `updater.py` uygulama içi güncelleme · `match.py`/`dataset.py`/`fpl.py` takım-maç-FPL · `llm.py` yapay zekâ ·
-  `live.py` canlı · `channel.py` kanal/liste · `doctor.py` "Kontrol" · `voices.py` ses kütüphanesi / konuşmacı düzeltme.
+  `live.py` canlı · `channel.py` kanal/liste · `doctor.py` "Kontrol" · `voices.py` ses kütüphanesi / konuşmacı düzeltme · `tune.py` konuşmacı ayırmayı düzeltilmiş videolarla eğitme (`stt egit`).
 - GUI kuralı: `App`'in `_` ile başlamayan metotları JS'e açık; olaylar yalnızca `App._push` ile (evaluate_js'i
   başka yerden çağırma, WebView2 takılıyordu).
 

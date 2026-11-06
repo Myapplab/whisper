@@ -236,7 +236,9 @@ class Pipeline:
             on_display = int(dev.split(":")[1]) in (self._ecfg.get("display_gpus") or [])
             pct = self.cfg.display_gpu_limit_pct if on_display else self.cfg.gpu_limit_pct
             frac = pct / 100 if pct and 0 < pct < 100 else None
-        self.dpool = WorkerPool([dev], {**self._ecfg, "role": "diar", "diar_gpu_frac": frac}, names=["diar"])
+        from .tune import load_tuned
+        self.dpool = WorkerPool([dev], {**self._ecfg, "role": "diar", "diar_gpu_frac": frac,
+                                        "diar_params": load_tuned(self.out_root / ".stt")}, names=["diar"])
         self.dpool.start()
         self.emit("worker", wid="diar", state="loading", name="Konuşmacı ayırma")
 

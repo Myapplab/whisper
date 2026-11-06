@@ -249,7 +249,8 @@ def reference_turns(doc: dict) -> list[list]:
 def save_reference(state_dir: Path, doc: dict) -> Path:
     p = Path(state_dir) / "duzeltme" / f"{_safe(doc.get('key') or doc.get('title') or 'x')}.json"
     _write(p, {"key": doc.get("key"), "title": doc.get("title"), "source": doc.get("source"),
-               "duration_s": doc.get("duration_s"), "turns": reference_turns(doc)})
+               "duration_s": doc.get("duration_s"), "speaker_mode": doc.get("speaker_mode"),
+               "turns": reference_turns(doc)})
     return p
 
 

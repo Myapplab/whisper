@@ -4,6 +4,9 @@ Kullanıcı iki Claude hesabıyla (iki profil) sırayla çalışır: biri sını
 Ortak hafıza bu dosyadır. **Oturum sonunda güncelle** (Son durum + liste) ve `main`'e push et.
 
 ## Son durum
+- Sürüm 1.8.0: konuşmacı ayırmayı referans videoyla eğitme ("Konuşmacılar" → "Kaydet ve eğit", `stt/tune.py`,
+  `stt egit`; ayrıntı `docs/KONUSMACI_AYIRMA.md` adım 3 ve 6). Windows'ta denenmedi: ilk denemede günlükte
+  "[eğitim]" ve "Konuşmacı ayarı eğitildi" satırları istensin. 134 test.
 - Sürüm 1.7.3: 1.7.2'de metin işçisi yeniden açılsa da t:0000 üç kez `invalid device ordinal` verdi (konuşmacı
   ayırma + müzik ayıklama aynı anda 3090'daydı). Artık aynı kartta sırayla: `Pipeline._shared_gpu/_diar_turn`
   (işin metni bitince ayırma araya girer, o sırada metin görevi verilmez). Kök neden kesin değil; tekrar ederse

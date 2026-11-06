@@ -473,6 +473,14 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
   }
   $("#modeTabs").addEventListener("click", e => { const b = e.target.closest("button"); if (b) setMode(b.dataset.m); });
 
+  function setTrain(text) { state.trainText = text; const e = $("#trainStat"); if (e) e.textContent = text; toast(text); }
+  function onTrain(ev) {
+    if (!ev.done) { setTrain("Eğitim: " + ev.text); return; }
+    const r = ev.result;
+    if (ev.error || !r) { setTrain("Eğitim yapılamadı: " + (ev.error || "?")); return; }
+    setTrain(r.saved ? "Eğitildi: konuşmacı hatası %" + r.before + " → %" + r.after + " (" + r.videos + " video, " + r.minutes + " dk). Yeni videolar bu ayarla ayrılır."
+      : "Şu anki ayar zaten en iyisi (hata %" + r.before + "). Daha çok video düzeltip tekrar deneyin.");
+  }
   function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove("show"), 3500); }
 
   // ---------- yeni iş
@@ -765,8 +773,11 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
       }
       r.append(rows);
       const bar = el("div", { class: "sbar" },
-        el("button", { class: "btn primary small", type: "button", onclick: save }, "Kaydet"),
+        el("button", { class: "btn primary small", type: "button", onclick: () => save() }, "Kaydet"),
+        el("button", { class: "btn small", type: "button", title: "Düzelttiğiniz videoları doğru cevap sayar; program kaç kişi olduğunu ve kimin konuştuğunu ayırma ayarını bunlara göre bulur",
+          onclick: () => save(true) }, "Kaydet ve eğit"),
         el("button", { class: "btn small", type: "button", onclick: () => openReader(path) }, "Vazgeç"),
+        el("span", { class: "hint", id: "trainStat" }, state.trainText || ""),
         st.voices.length ? el("span", { class: "hint" }, "Tanınan sesler:") : el("span", { class: "hint" }, "Ses kütüphanesi boş: ilk adı verdiğinizde dolmaya başlar."),
         st.voices.map(v => el("span", { class: "vchip" }, v.name + (v.n > 1 ? " (" + v.n + ")" : ""),
           el("button", { type: "button", title: "Bu sesi kütüphaneden sil", onclick: async () => {
@@ -788,13 +799,19 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
       }
       r.scrollTop = y;
     }
-    async function save() {
+    async function save(train) {
       const labels = {};
       for (const s of st.spk) if (st.labels[s.id] !== undefined && st.labels[s.id].trim() && st.labels[s.id] !== s.label) labels[s.id] = st.labels[s.id].trim();
       for (const s of st.spk) if (s.id.startsWith("ELLE_")) labels[s.id] = lab(s.id);
       const res = await call("speakers_save", path, { labels, moves: st.moves, td: st.td });
       if (!res || !res.ok) { toast("Kaydedilemedi: " + ((res && res.error) || "?")); return; }
       toast(res.learned && res.learned.length ? "Kaydedildi. Öğrenilen sesler: " + res.learned.join(", ") : "Kaydedildi.");
+      if (train) {
+        const t = await call("speakers_train");
+        if (!t || !t.ok) { toast("Eğitilemedi: " + ((t && t.error) || "?")); return; }
+        setTrain("Eğitim başladı (" + t.videos + " düzeltilmiş video). Birkaç dakika sürer; pencereyi kapatmayın.");
+        return;
+      }
       openReader(path);
     }
     $("#rSpk").textContent = "Metin";
@@ -899,6 +916,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
       }
       case "fatal": $("#bannerText").textContent = ev.error; $("#banner").classList.add("show"); return;
       case "update": onUpdate(ev); return;
+      case "train": onTrain(ev); return;
       case "dropped": state.files.push(...ev.paths); renderChips(); setMode("links"); toast(ev.paths.length + " dosya eklendi"); return;
       case "follows": renderFollows(ev.follows); return;
     }

@@ -52,7 +52,9 @@ Bu dosya bir sonraki oturumun uygulayacağı plandır. Sırayla yap; her adımda
    (`getattr(out, "speaker_diarization", out)` → `exclusive_speaker_diarization` önce denenmeli).
    Kurulumda sürüm (torch 2.8 ile uyum) ve HF koşul sayfası kontrol edilmeli; `diar_model` ayarı ile seçilebilir yap,
    eskisi yedek kalsın. 3.x'te yaklaşık eşdeğer: örtüşen turlarda kısa olanı kırp.
-3. **Ölçüm (DER):** kullanıcı 2–3 videoda doğru konuşmacıları düzeltsin (adım 4), `pyannote.metrics`
+3. ✅ **(1.8.0, `stt/tune.py`)** Ölçüm: `tune.speaker_error` (doğru cevabın konuşma süresinde yanlış/eksik kişi oranı,
+   açgözlü ad eşleme, değişimlerin ±0.5 sn'si sayılmaz; DER'in yanlış alarm kısmı yok çünkü referans satır düzeyinde).
+   Eski plan: **Ölçüm (DER):** kullanıcı 2–3 videoda doğru konuşmacıları düzeltsin (adım 4), `pyannote.metrics`
    `DiarizationErrorRate` ile `stt olc --konusmaci` ekle. Her değişiklik bu sayıyla karşılaştırılır.
 4. ✅ **(1.7.0)** **Düzeltme arayüzü = eğitim verisi:** "Metni göster" okuyucusunda satırın konuşmacısına tıklayıp değiştirme;
    düzeltmeler `<çıktı>/<ad>.duzeltme.json` (başla, bitir, doğru konuşmacı) olarak saklanır. Bu hem ölçüm verisi
@@ -61,7 +63,12 @@ Bu dosya bir sonraki oturumun uygulayacağı plandır. Sırayla yap; her adımda
    pyannote gömme vektörü (`pyannote/wespeaker-voxceleb-resnet34-LM`, `Inference(window="whole")`) ortalaması
    `<out>/.stt/sesler/<ad>.npy`. Yeni videoda kümeler bu imzalarla kosinüs benzerliğine göre adlandırılır
    (eşik ~0.6) → aynı TD her videoda aynı ad; "en uzun konuşan = TD" tahmini gereksizleşir.
-6. **Ayar optimizasyonu (az veriyle):** 1–2 saat düzeltilmiş veriyle `pyannote.pipeline.Optimizer` ile
+6. ✅ **(1.8.0)** Okuyucu "Konuşmacılar" → "Kaydet ve eğit" (`App.speakers_train` → ayrı süreç `stt egit`, monitörsüz
+   kart). `duzeltme/*.json` videolarının sesi `.stt/egitim/<key>/ses.wav` (yoksa kaynaktan yeniden indirilir), müzik
+   ayıklama + agc gerçek akıştaki gibi; `pipe.training=True` ile bölütleme/ses imzaları önbellekte, yalnız kümeleme
+   ızgarası (`clustering.threshold` 0.4–0.9, `Fa`, `segmentation.min_duration_off`) denenir. En iyisi
+   `.stt/konusmaci_ayar.json`'a (model başına) yazılır; `Diarizer(params=...)` yüklerken uygular. Windows'ta denenmedi.
+   Eski plan: **Ayar optimizasyonu (az veriyle):** 1–2 saat düzeltilmiş veriyle `pyannote.pipeline.Optimizer` ile
    `clustering.threshold` ve `segmentation.min_duration_off` aranır, sonuç `stt.toml`'a yazılır.
 7. **Gerçek ince ayar (çok veri, en son):** ~10+ saat etiketli veriyle `pyannote/segmentation-3.0` ince ayarı
    (pyannote.audio eğitim tarifi, `pyannote.database` protokolü, RTX 3090 yeter). Ancak 3–6 yetmezse.
@@ -69,4 +76,5 @@ Bu dosya bir sonraki oturumun uygulayacağı plandır. Sırayla yap; her adımda
 
 ## Kullanıcıya söylenecekler (kısa)
 - Kişi sayısını biliyorsanız "Kişi sayısı"na yazın (en büyük etki, hemen).
-- Eğitmek = birkaç videoda konuşmacıları düzeltmek (adım 4 gelince); program sesleri ve ayarları bundan öğrenir.
+- Eğitmek = bir videonun metnini açıp "Konuşmacılar"da TÜM satırları düzeltmek, "Kaydet ve eğit". Ne kadar çok
+  düzeltilmiş video, o kadar iyi. Düzeltilmeyen satırlar doğru sayılır (yarım düzeltme eğitimi bozar).

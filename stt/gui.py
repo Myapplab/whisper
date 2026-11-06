@@ -715,6 +715,47 @@ class App:
             log.exception("Konuşmacı düzeltmesi kaydedilemedi")
             return {"ok": False, "error": str(e)}
 
+    def speakers_train(self) -> dict:
+        """Konuşmacı ayırmayı düzeltilmiş videolarla eğit (ayrı süreçte, monitörsüz ekran kartında).
+        İlerleme ``train`` olaylarıyla gelir."""
+        if getattr(self, "_training", False):
+            return {"ok": False, "error": "Eğitim zaten sürüyor."}
+        if self._pipe is not None and self._pipe.active():
+            return {"ok": False, "error": "Kuyrukta iş varken eğitilmez (ekran kartı tek işe). Kuyruk bitince deneyin."}
+        from .tune import references
+        n = len(references(self._state_dir()))
+        if not n:
+            return {"ok": False, "error": "Düzeltilmiş video yok: önce bir videonun 'Konuşmacılar' ekranında "
+                                          "tüm satırların konuşmacısını düzeltip kaydedin."}
+        self._training = True
+
+        def run():
+            res, err = None, None
+            try:
+                pr = subprocess.Popen([console_python(), "-m", "stt", "egit", "-o", str(Path(self._cfg.out_dir).resolve())],
+                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+                                      errors="replace", cwd=str(TOOL_DIR))
+                for line in pr.stdout:  # type: ignore[union-attr]
+                    line = line.strip()
+                    if line.startswith("ILERLEME: "):
+                        self._push({"type": "train", "text": line[10:]})
+                    elif line.startswith("SONUC: "):
+                        res = json.loads(line[7:])
+                    elif line.startswith("HATA: "):
+                        err = line[6:]
+                    elif line:
+                        log.info("[eğitim] %s", line[:300])
+                pr.wait()
+                if res is None and not err:
+                    err = f"eğitim süreci bitti (kod {pr.returncode}); ayrıntı günlükte"
+            except Exception as e:  # noqa: BLE001
+                err = f"{type(e).__name__}: {e}"
+            finally:
+                self._training = False
+            self._push({"type": "train", "done": True, "result": res, "error": err})
+        threading.Thread(target=run, daemon=True, name="stt-egitim").start()
+        return {"ok": True, "videos": n}
+
     def voices_list(self) -> list[dict]:
         from .voices import VoiceLibrary
         return VoiceLibrary(self._state_dir()).names()

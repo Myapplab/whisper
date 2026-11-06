@@ -20,7 +20,8 @@ from .util import log, setup_logging
 
 SUBCOMMANDS = {"izle": "watch", "watch": "watch", "kontrol": "doctor", "doctor": "doctor", "check": "doctor",
                "olc": "bench", "ölç": "bench", "bench": "bench", "durum": "status", "status": "status",
-               "kanal": "channel", "channel": "channel", "liste": "channel", "serve": "serve", "api": "serve"}
+               "kanal": "channel", "channel": "channel", "liste": "channel", "serve": "serve", "api": "serve",
+               "egit": "train", "eğit": "train", "train": "train"}
 
 
 def _common(p: argparse.ArgumentParser) -> None:
@@ -179,6 +180,31 @@ def main(argv: list[str] | None = None) -> int:
         setup_logging(a.verbose)
         from .bench import run_bench
         return run_bench(_apply(cfg, a), Path(a.klasor) if a.klasor else None, a.ornek, a.hedef)
+
+    if sub == "train":
+        p = argparse.ArgumentParser(prog="stt egit", description="Konuşmacı ayırmayı düzeltilmiş videolarla eğit")
+        p.add_argument("--kart", help="cuda:1 gibi (varsayılan: monitörsüz en büyük kart)")
+        p.add_argument("-o", "--out", dest="out_dir")
+        a = p.parse_args(argv[1:])
+        setup_logging()
+        if a.out_dir:
+            cfg.out_dir = Path(a.out_dir)
+        import json as _json
+
+        from .tune import pick_device, run_tune
+        from .workers import isolate_gpu
+        dev = a.kart or pick_device()
+        if not dev:
+            print("HATA: Uygun ekran kartı yok (eğitim işlemcide yapılmaz)", flush=True)
+            return 1
+        try:
+            res = run_tune(cfg, isolate_gpu(dev), progress=lambda t: print("ILERLEME: " + t, flush=True))
+        except Exception as e:  # noqa: BLE001
+            log.exception("Eğitim yapılamadı")
+            print(f"HATA: {e}", flush=True)
+            return 1
+        print("SONUC: " + _json.dumps(res, ensure_ascii=False), flush=True)
+        return 0
 
     if sub == "status":
         p = argparse.ArgumentParser(prog="stt durum")
