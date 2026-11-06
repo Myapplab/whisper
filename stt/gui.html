@@ -681,8 +681,11 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
       g.append(el("div", { class: "gpu", title: "Bu kart masaüstü, tarayıcı ve oyunlar için boş bırakıldı (Ayarlar › Ekran kartı kullanımı)" }, el("i", { class: "dot", style: "background:var(--muted)" }),
         el("b", {}, sp.name), sp.gb ? el("span", { class: "mono" }, sp.gb + " GB") : null, el("span", { class: "what" }, sp.display ? "monitör · boş bırakıldı" : "boş bırakıldı")));
     }
+    const diarBusy = [...state.gpus].some(([w, x]) => x.task === "diarize" && x.state === "busy");
     for (const [wid, d] of state.gpus) {
-      const label = d.state === "loading" ? "yeniden başlatılıyor…" : d.state === "busy" ? (d.task === "diarize" ? "konuşmacı ayırıyor · " : "çeviriyor · ") + (d.title || "") : d.state === "error" ? "hata" : d.state === "idle" ? "boşta" : "yükleniyor…";
+      // metin işçisi boşken konuşmacı ayırma aynı kartta çalışıyor olabilir: "boşta" yanıltıcıydı
+      const idle = diarBusy && d.task !== "diarize" ? "metin bitti · konuşmacı ayırma sürüyor" : "boşta";
+      const label = d.state === "loading" ? "yeniden başlatılıyor…" : d.state === "busy" ? (d.task === "diarize" ? "konuşmacı ayırıyor · " : "çeviriyor · ") + (d.title || "") : d.state === "error" ? "hata" : d.state === "idle" ? idle : "yükleniyor…";
       g.append(el("div", { class: "gpu " + (d.state || ""), title: d.error || "" }, el("i", { class: "dot" }),
         el("b", {}, d.name || wid), d.display ? el("span", { class: "mono", title: "Monitör bu karta bağlı: düşük yükle çalışır" }, "monitör") : null, d.gb ? el("span", { class: "mono" }, d.gb + " GB") : null, el("span", { class: "what" }, label)));
     }

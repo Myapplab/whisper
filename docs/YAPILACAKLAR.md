@@ -27,6 +27,8 @@ sıradakine geç. Kullanım biterse diğer profil ilk ✅ olmayan adımdan devam
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
+- 1.9.3: ayırma sürerken metin işçisi şeridi "boşta" yerine "metin bitti · konuşmacı ayırma sürüyor". Not: Görev
+  Yöneticisi'nin varsayılan grafikleri (3D/Copy/Video) CUDA yükünü göstermez → "%0" yanıltıcı; "Cuda"/"Compute_0" seçilmeli.
 - Sürüm 1.8.7: kullanıcı ekranı: 38 dk podcast'te ayırma "CUDA error: out of memory" ile düştü, aynı anda Chrome
   "Not enough memory" diyordu (RAM + sanal bellek dolu → CUDA da OOM verir). Eskiden OOM hiç tekrar denenmiyor,
   "NVIDIA sürücüsünü güncelleyin" deniyordu. Artık OOM = bellek hatası yolu (`pipeline.is_oom`): ayırma süreci
