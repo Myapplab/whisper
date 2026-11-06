@@ -9,7 +9,7 @@ sıradakine geç. Kullanım biterse diğer profil ilk ✅ olmayan adımdan devam
 - [x] K1 (#10) ✅ (doctor: sürüm 3.x uyarısı; yedek model uyarısı zaten vardı) Kontrol: pyannote < 4 ise "community-1 çalışmıyor, eski 3.1 kullanılıyor" uyarısı + düzeltme yolu.
 - [x] K2 (#4) ✅ ZATEN VARDI (pipeline `_diarize_task`: min_speakers en az 2) Basın modunda en az 2 konuşmacı otomatik (`min_speakers`), kullanıcı sayı girerse o geçerli.
 - [x] K3 (#9) ✅ (gui.html: sarı "Bitti · konuşmacısız"; index'te diarized zaten vardı) Konuşmacısız biten iş görünür olsun: kartta sarı "Bitti · konuşmacısız" + index'te diarized=false.
-- [ ] K4 (#3) Kısa soru yutulmasın: cümle içi değişimde "?" ile biten kısa muhabir parçası korunur (önce simülasyon).
+- [x] K4 (#3) ✅ ("?" ile biten cümlenin sonundaki kısa muhabir parçası ayrı; `merge.QUESTION_MIN_SEC`). AÇIK: noktalamasız ara soru ("what about Saka") hâlâ yutuluyor, K5 ölçümüyle eşik gevşetilsin Kısa soru yutulmasın: cümle içi değişimde "?" ile biten kısa muhabir parçası korunur (önce simülasyon).
 - [ ] K5 (#1) `stt olc`: düzeltilmiş videolarda TAM akışın (ayırma + kelime eşleme) hatası; günlüğe + "Kontrol"e.
 - [ ] K6 DiariZen (BUT-FIT/diarizen-wavlm-large-s80-md, CC BY-NC): kendi pyannote çatalını ister → AYRI venv
       (`C:\stt\.venv-diarizen`), ayrı süreç, `diar_engine = "diarizen"` ayarı; olmazsa community-1. K5 ile karşılaştır.

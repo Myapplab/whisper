@@ -172,3 +172,27 @@ def test_diar_cuda_oom_is_retried_later_then_memory_hint(tmp_path):
     p._on_msg({"type": "start", "wid": "diar", "tid": d["id"]})
     p._on_msg({"type": "error", "wid": "diar", "tid": d["id"], "error": err})
     assert "bellek yetmedi" in job.diar_error and "NVIDIA" not in job.diar_error
+
+
+# ---- K4: kısa soru cevabın içine karışmasın
+def _conv(parts):
+    ws, turns, t = [], [], 0.0
+    for spk, text, gap in parts:
+        t += gap
+        a = t
+        for w in text.split():
+            ws.append(_w(t, " " + w))
+            t += 0.35
+        turns.append([a, t, spk])
+    seg = {"start": ws[0]["start"], "end": ws[-1]["end"], "text": "".join(x["word"] for x in ws).strip(), "words": ws}
+    return [(o["speaker_id"], o["text"]) for o in merge.assign_speakers([seg], turns)]
+
+
+def test_short_question_at_sentence_end_is_kept():
+    out = _conv([("TD", "I think we were good", 0), ("R", "and Saka?", 0.2), ("TD", "He is fine, he will play.", 0.2)])
+    assert out == [("TD", "I think we were good"), ("R", "and Saka?"), ("TD", "He is fine, he will play.")]
+
+
+def test_single_word_flicker_in_question_is_smoothed():
+    out = _conv([("TD", "Why would we change", 0), ("R", "now?", 0.0)])
+    assert [s for s, _ in out] == ["TD"]

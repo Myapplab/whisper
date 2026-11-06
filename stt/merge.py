@@ -179,8 +179,19 @@ def _sentences(words: list[dict]) -> list[tuple[int, int]]:
     return out
 
 
-def _sentence_labels(labels: list, durs: list[float]) -> list:
-    """Cümleye süre ağırlıklı çoğunluk oyu; yalnızca iki konuşmacı da uzun (≥1.5 sn, ≥4 kelime) konuşmuşsa böl."""
+QUESTION_MIN_SEC = 0.4  # "?" ile biten cümlenin sonundaki başka konuşmacı parçası en az bu kadar sürerse ayrı tutulur
+
+
+def _sentence_labels(labels: list, durs: list[float], question: bool = False) -> list:
+    """Cümleye süre ağırlıklı çoğunluk oyu; yalnızca iki konuşmacı da uzun (≥1.5 sn, ≥4 kelime) konuşmuşsa böl.
+
+    ``question``: cümle "?" ile bitiyor. Sondaki farklı konuşmacı parçası kısa da olsa (ör. muhabirin "…and Saka?"
+    ara sorusu) ayrı tutulur: soru soran muhabirdir, cevabın içine karışmasın."""
+    if question and labels:
+        runs = _runs(labels)
+        a, b = runs[-1]
+        if len(runs) > 1 and labels[a] is not None and sum(durs[a:b]) >= QUESTION_MIN_SEC:
+            return _sentence_labels(labels[:a], durs[:a]) + [labels[a]] * (b - a)
     vote: dict = defaultdict(float)
     for lab, d in zip(labels, durs):
         if lab is not None:
@@ -251,7 +262,10 @@ def assign_speakers(segments: list[dict], turns: list[list]) -> list[dict]:
         labels: list = []
         sents = _sentences(words)
         for a, b in sents:
-            labels += _sentence_labels(_smooth(raw[a:b], durs=durs[a:b]), durs[a:b])
+            q = words[b - 1]["word"].strip().rstrip("\"'”’»)]").endswith("?")
+            # soru cümlesinde kısa parçayı yumuşatma silmesin (yalnız tek kelimelik sıçramalar katılır)
+            sm = _smooth(raw[a:b], min_run=2) if q else _smooth(raw[a:b], durs=durs[a:b])
+            labels += _sentence_labels(sm, durs[a:b], question=q)
         # sessizlikten sonraki ilk kelimenin zamanı Whisper'da birkaç sn erken çıkabiliyor (faster-whisper #125):
         # segment başındaki 1-2 kelimelik, noktalamasız ve uzun boşlukla ayrılmış parça sonraki cümleye aittir
         if len(sents) > 1:
