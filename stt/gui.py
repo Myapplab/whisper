@@ -351,8 +351,15 @@ class App:
     def get_settings(self) -> dict:
         c = self._cfg
         g = (c.gpus or "auto").lower()
+        gi = self._gpus
+        if not gi:  # motor daha başlamadı (Ayarlar açılışta dolduruluyor): kartlar boş kalıp seçenekler görünmüyordu
+            try:
+                from .engines import gpu_info
+                gi = gpu_info()  # nvidia-smi (önbellekli); ana süreçte CUDA açılmaz
+            except Exception:  # noqa: BLE001
+                gi = {}
         cards = [{"id": str(i), "name": v["name"], "gb": round(v["gb"]), "display": bool(v.get("display"))}
-                 for i, v in sorted(self._gpus.items())]
+                 for i, v in sorted(gi.items())]
         llm = self.llm()
         return {"out_dir": str(Path(c.out_dir).resolve()), "hf_token_set": bool(c.hf_token),
                 "fpl_repo": str(c.fpl_repo or ""), "fpl_ok": bool(c.fpl_repo and (Path(c.fpl_repo) / "presser.py").is_file()),

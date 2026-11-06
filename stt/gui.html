@@ -1014,7 +1014,10 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     $("#sFplState").textContent = s.fpl_repo ? (s.fpl_ok ? "presser.py bulundu." : "Bu klasörde presser.py yok.") : "";
     updateNote();
   }
-  $("#btnSettings").onclick = () => $("#mSettings").classList.add("show");
+  $("#btnSettings").onclick = async () => {  // her açılışta güncel ayarlar (kart listesi motor açılınca belli oluyor)
+    const s = await call("get_settings"); if (s) fillSettings(s);
+    $("#mSettings").classList.add("show");
+  };
   $("#sOutPick").onclick = async () => { const r = await call("pick_folder"); if (r) $("#sOut").value = r; };
   $("#sFplPick").onclick = async () => { const r = await call("pick_folder"); if (r) $("#sFpl").value = r; };
   function showLlmFields() { const v = $("#sLlm").value; $("#fGem").hidden = v !== "gemini"; $("#fCla").hidden = v !== "claude"; $("#fOai").hidden = v !== "openai"; }

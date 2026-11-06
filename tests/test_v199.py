@@ -376,3 +376,21 @@ def test_only_one_helper_card():
     info = {0: {"name": "RTX 3080", "gb": 10, "display": True}, 1: {"name": "RTX 3090", "gb": 24, "display": False},
             2: {"name": "RTX 3060", "gb": 12, "display": True}}
     assert helper_devices("yardim", info) == ["cuda:2"]      # tek işçili havuz (kapanma işareti ona gider)
+
+
+def test_settings_list_cards_before_engine_ready(tmp_path, monkeypatch):
+    """Kullanıcıda 1.9.9'da "yardımcı" seçeneği görünmedi: Ayarlar uygulama açılırken (motor daha başlamadan)
+    dolduruluyor, kart listesi boş geliyordu. Motor hazır değilse kartlar nvidia-smi'den okunur."""
+    import stt.engines as eng
+    import stt.gui as gui
+    monkeypatch.setattr(eng, "gpu_info", lambda *a, **k: {0: {"name": "RTX 3080", "gb": 10.0, "display": True},
+                                                            1: {"name": "RTX 3090", "gb": 24.0, "display": False}})
+    app = gui.App.__new__(gui.App)
+    app._cfg = Config(out_dir=tmp_path)
+    app._pipe = None
+    app._gpus = {}                                   # motor henüz başlamadı
+    app._llm = None
+    monkeypatch.setattr(gui.App, "llm", lambda self: type("L", (), {"key": lambda s, x: None,
+                                                                     "status": lambda s: {}})())
+    cards = app.get_settings()["gpu_cards"]
+    assert [c["name"] for c in cards] == ["RTX 3080", "RTX 3090"] and cards[0]["display"] is True

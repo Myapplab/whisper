@@ -38,6 +38,12 @@ E.2 (C5) ve aşağıdaki K5 planı. **(1.9.5'ten kalan):** kullanıcı Güncelle
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
+- 1.9.10 (Claude; 488 test): kullanıcı 1.9.9'da Ayarlar > Ekran kartı kullanımında yalnız "Önerilen" ve "Hepsi"
+  gördü ("yardımcı" ve "Yalnızca RTX ..." yok). Sebep (eskiden de vardı): Ayarlar uygulama açılışında (`hello`)
+  dolduruluyordu, o anda motor başlamadığı için `App._gpus` boş → kart listesi boş. Düzeltme: `get_settings` motor
+  hazır değilse kartları `gpu_info`'dan (nvidia-smi) okur; Ayarlar her açılışta `get_settings` ile tazelenir.
+  Chromium'da denendi (önce 2 seçenek, sonra 5); Windows'ta denenmedi. KULLANICIDAN: Güncelle → yardımcı modu →
+  kart şeridi ekran görüntüsü.
 - 1.9.9 (Claude; kullanıcı istedi; 487 test; bağımsız inceleme ajanı 6 bulgu, hepsi düzeltildi): **yeni kart modu "yardımcı"** (`gpus = "yardim"`, Ayarlar > Ekran kartı
   kullanımı > "RTX 3090 + RTX 3080 yardımcı"). Kullanıcı 125 videoluk kuyrukta 3090'ın yetmediğini, 3080'in de
   "YouTube'a yer bırakarak" çalışmasını istedi. 3080 yalnız fazla iş varken (özellikle 3090 konuşmacı ayırırken, o
