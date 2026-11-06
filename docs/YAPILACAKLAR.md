@@ -1,5 +1,9 @@
 # Yapılacaklar / oturum devri
 
+> **🚨 ÖNEMLİ — GEMINI 4 ARGON BULGULAR RAPORU (`docs/GEMINI_4_ARGON_BULGULAR.md`):**
+> Kullanıcı tüm uygulamanın uçtan uca kod taramasını, konuşmacı ayırmanın neden hâlâ tatmin etmediğinin kök nedenlerini, vaat edilen özelliklerin kontrolünü ve her özellik için "Dünyanın En İyisi (SOTA)" açık kaynak/ücretsiz çözümleri çıkarttırdı.
+> **Claude Opus / Fable:** Yeni bir kod değişikliği yapmadan önce mutlaka **`docs/GEMINI_4_ARGON_BULGULAR.md`** dosyasını baştan sona oku!
+
 Kullanıcı iki Claude hesabıyla (iki profil) sırayla çalışır: biri sınıra gelince öbürü kaldığı yerden devam eder.
 Ortak hafıza bu dosyadır. **Oturum sonunda güncelle** (Son durum + liste) ve `main`'e push et.
 

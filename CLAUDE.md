@@ -14,6 +14,7 @@ pyannote konuşmacı ayırma). Amaç: Fantasy Premier League için veri seti (ta
   `stt/pipeline.py` (~1250 satır), `stt/gui.html` (~900), `stt/gui.py`, `stt/fetch.py`. Alt ajan açma.
 - Ayrıntılı mimari/tarihçe: `docs/GELISTIRME.md` (yalnızca gereken başlığı oku). Konuşmacı ayırma planı:
   `docs/KONUSMACI_AYIRMA.md`. İndirme araştırması: `docs/ARASTIRMA.md`.
+- **Kod denetimi, konuşmacı ayırma kök nedenleri ve SOTA araştırması: `docs/GEMINI_4_ARGON_BULGULAR.md` (mutlaka oku!).**
 
 ## Yayınlama
 - Yeni sürüm = `stt/__init__.py` sürümünü artır + `main`'e push. Kullanıcıya "uygulamada Güncelle'ye basın" de;
