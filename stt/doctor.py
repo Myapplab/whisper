@@ -181,6 +181,9 @@ def run_doctor(cfg, deep: bool = False) -> int:
         tok = cfg.hf_token
         add(OK if tok else WARN, "pyannote.audio", f"{pyannote.audio.__version__}; HF token: "
             + (f"var ({tok[:5]}…)" if tok else "YOK -> soru-cevap ayrımı çalışmaz (uygulamada Ayarlar > HuggingFace token)"))
+        if str(pyannote.audio.__version__).split(".")[0] in ("2", "3"):
+            add(WARN, "Konuşmacı modeli sürümü", f"pyannote.audio {pyannote.audio.__version__}: yeni model (community-1) "
+                "çalışmaz, eski 3.1 kullanılıyor. Uygulamada Güncelle'ye basın; olmazsa STT-Kurulum.exe'yi tekrar çalıştırın.")
         if tok:
             print("       konuşmacı ayırma modeli deneniyor (ilk seferde ~30 MB iner)...", flush=True)
             try:
