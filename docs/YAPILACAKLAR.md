@@ -3,6 +3,22 @@
 Kullanıcı iki Claude hesabıyla (iki profil) sırayla çalışır: biri sınıra gelince öbürü kaldığı yerden devam eder.
 Ortak hafıza bu dosyadır. **Oturum sonunda güncelle** (Son durum + liste) ve `main`'e push et.
 
+## ŞU ANKİ İŞ: konuşmacı ayırma iyileştirme (adım adım; her adım ayrı push)
+Kullanıcı istedi: DiariZen + "acımasız eleştiri"nin 10 maddesinin hepsi. Kural: bir adım bitince push et, burada ✅ yap,
+sıradakine geç. Kullanım biterse diğer profil ilk ✅ olmayan adımdan devam eder.
+- [ ] K1 (#10) Kontrol: pyannote < 4 ise "community-1 çalışmıyor, eski 3.1 kullanılıyor" uyarısı + düzeltme yolu.
+- [ ] K2 (#4) Basın modunda en az 2 konuşmacı otomatik (`min_speakers`), kullanıcı sayı girerse o geçerli.
+- [ ] K3 (#9) Konuşmacısız biten iş görünür olsun: kartta sarı "Bitti · konuşmacısız" + index'te diarized=false.
+- [ ] K4 (#3) Kısa soru yutulmasın: cümle içi değişimde "?" ile biten kısa muhabir parçası korunur (önce simülasyon).
+- [ ] K5 (#1) `stt olc`: düzeltilmiş videolarda TAM akışın (ayırma + kelime eşleme) hatası; günlüğe + "Kontrol"e.
+- [ ] K6 DiariZen (BUT-FIT/diarizen-wavlm-large-s80-md, CC BY-NC): kendi pyannote çatalını ister → AYRI venv
+      (`C:\stt\.venv-diarizen`), ayrı süreç, `diar_engine = "diarizen"` ayarı; olmazsa community-1. K5 ile karşılaştır.
+- [ ] K7 (#2) TD seçimi: ses kütüphanesi > soru sonrası uzun cevap veren > toplam süre.
+- [ ] K8 (#5) Örtüşme: sözü kesen kısa muhabir turu "uzun kazanır" kuralında silinmesin (3.x yolu).
+- [ ] K9 (#6) Kelime zamanı kayması: kelime için en yakın tur yerine segment içi tutarlılık (K4 testleriyle).
+- [ ] K10 (#7) Müzik ayıklama yalnız film/podcast'te ve bellek yeterse; bellek az → atla (günlüğe yaz).
+- [ ] K11 (#8) Ses kütüphanesi: 0.6–0.7 arası belirsiz eşleşmede ad verme; eşik düzeltmelerle ölçülsün.
+
 ## Son durum
 - Sürüm 1.8.7: kullanıcı ekranı: 38 dk podcast'te ayırma "CUDA error: out of memory" ile düştü, aynı anda Chrome
   "Not enough memory" diyordu (RAM + sanal bellek dolu → CUDA da OOM verir). Eskiden OOM hiç tekrar denenmiyor,
