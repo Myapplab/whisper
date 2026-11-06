@@ -32,7 +32,10 @@ def merge_chunks(parts: list[dict]) -> tuple[list[dict], str | None]:
         for s in p.get("segments", []):
             if not s.get("text") or is_hallucination(s):
                 continue
-            s = {**s, "text": collapse_repeats(s["text"])}
+            text = collapse_repeats(s["text"])
+            if text != s["text"] and s.get("words"):
+                s = {**s, "words": collapse_word_repeats(s["words"])}
+            s = {**s, "text": text}
             segs.append(s)
             if p.get("language"):
                 lang_dur[p["language"]] += max(0.0, s["end"] - s["start"])
@@ -65,6 +68,29 @@ def collapse_repeats(text: str) -> str:
             continue
         out.append(p)
     return " ".join(out)
+
+
+def _join(words: list[dict]) -> str:
+    return "".join(w["word"] for w in words).strip()
+
+
+def collapse_word_repeats(words: list[dict]) -> list[dict]:
+    """collapse_repeats'in kelime karşılığı: tekrarlanan cümlenin kelimeleri de atılsın
+    (yoksa konuşmacıya göre bölününce tekrar metne geri geliyordu)."""
+    sents, cur = [], []
+    for w in words:
+        cur.append(w)
+        if w["word"].strip()[-1:] in ".!?…":
+            sents.append(cur)
+            cur = []
+    if cur:
+        sents.append(cur)
+    out: list[list[dict]] = []
+    for snt in sents:
+        if out and len(_join(snt)) > 15 and _norm(_join(snt)) == _norm(_join(out[-1])):
+            continue
+        out.append(snt)
+    return [w for snt in out for w in snt]
 
 
 def _norm(t: str) -> str:
@@ -138,6 +164,7 @@ SENT_END = ".?!…"
 SENT_GAP = 0.6       # bu kadar sessizlik de cümle sonu sayılır (sn)
 SPLIT_MIN_SEC = 1.5  # cümle ortasında konuşmacı değişimi için öbür konuşmacının en az süresi
 SPLIT_MIN_WORDS = 4  # ... ve en az kelime sayısı
+EARLY_GAP = 1.5      # segment başındaki kelimeden sonra bu kadar boşluk: kelime zamanı kaymış olabilir
 
 
 def _sentences(words: list[dict]) -> list[tuple[int, int]]:
@@ -222,8 +249,17 @@ def assign_speakers(segments: list[dict], turns: list[list]) -> list[dict]:
             raw.append(spk)
         durs = [_dur(w) for w in words]
         labels: list = []
-        for a, b in _sentences(words):
+        sents = _sentences(words)
+        for a, b in sents:
             labels += _sentence_labels(_smooth(raw[a:b], durs=durs[a:b]), durs[a:b])
+        # sessizlikten sonraki ilk kelimenin zamanı Whisper'da birkaç sn erken çıkabiliyor (faster-whisper #125):
+        # segment başındaki 1-2 kelimelik, noktalamasız ve uzun boşlukla ayrılmış parça sonraki cümleye aittir
+        if len(sents) > 1:
+            a, b = sents[0]
+            last = words[b - 1]["word"].strip()
+            gap = words[b]["start"] - words[b - 1]["end"]
+            if b - a <= 2 and gap >= EARLY_GAP and last[-1:] not in SENT_END and labels[b] is not None:
+                labels[a:b] = [labels[b]] * (b - a)
         # ardışık aynı konuşmacılı kelime grupları -> alt segmentler
         groups: list[tuple[str | None, list[dict]]] = []
         for w, lab in zip(words, labels):

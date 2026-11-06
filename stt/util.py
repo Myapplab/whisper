@@ -295,7 +295,7 @@ def read_jsonl(path: Path) -> list[dict]:
     import json
     out = []
     try:
-        lines = Path(path).read_text(encoding="utf-8").splitlines()
+        lines = Path(path).read_text(encoding="utf-8-sig").splitlines()  # Not Defteri BOM ekleyebilir
     except OSError:
         return []
     for line in lines:
