@@ -58,6 +58,19 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   görev deneme sayılmadan `dbacklog` başına döner, işçi kapanır; CUDA hatasında yalnız o süreç yeniden açılır
   (`_respawn_diar`); "Durdur" hangi ayırma süreci o işi yapıyorsa onu keser; kalıcı düşerse kuyruğu `dbacklog`'a döner.
   Windows'ta / gerçek kartlarda DENENMEDİ.
+- **1.9.14:** (1) Oynatma listesi (`channel.is_playlist_url`: YouTube `list=` (Mix RD.. hariç), Dailymotion /playlist/,
+  Vimeo showcase/album) = kullanıcının seçtiği videolar: konu süzgeci yok, işlenmemişlerin hepsi seçili gelir; kanal
+  linkinde süzgeç kalır. "basin" konusuna "manager's preview" eklendi (Man City adlandırması). (2) **Ekran kararması**
+  (kullanıcıda 2 kez, "HDMI sinyali yok"): `stt/gpuguard.py` Windows olay günlüğünden nvlddmkm / Display 4101 /
+  LiveKernelEvent 141-117 / Kernel-Power 41 / 6008 okur (PowerShell Get-WinEvent); Kontrol'de "Ekran sürücüsü" satırı.
+  Yardımcı kart ilk açıldığında `.stt/yardimci_acik.json`; bundan sonra çökme varsa (açılışta + yardımcı moddayken
+  10 dk'da bir) yardımcı kapatılır, `gpus=auto`, arayüzde uyarı (`Pipeline.disable_helper`). Şüpheliler: monitörlü
+  karta yük, MSI Afterburner hız aşırtması (kullanıcıda 3090 çekirdek +143, bellek +1441), güç kaynağı. Windows'ta
+  DENENMEDİ (PowerShell sorgusu dahil). (3) Ayırma toplu boyutu karta göre (`engines.diar_batch_size`: 24 GB 32,
+  10-12 GB 16; `diar_batch` = 0 otomatik); pyannote parçaları ayrı hesaplar, sonuç değişmez. Hız kazancı ölçülmedi.
+  (4) **Kanalda basın toplantısı bulucu (deneme, varsayılan kapalı):** `channel.find_pressers` kanal içi YouTube
+  araması (`/@kanal/search?query=`; yt-dlp 2026.10.26 testinde var) + adında basın toplantısı geçen oynatma
+  listeleri; Kanal · liste'de "Kanalın tamamında basın toplantılarını ara (deneme)" kutusu.
 - **Konuşmacı ayırma ayrı süreçte** (`Pipeline.dpool`, wid `diar`, ilk ayırma görevinde açılır, belleği en büyük
   kartta): aynı süreçte torch + CTranslate2 → `invalid device ordinal` ve 1.2.0'da `CUDNN_STATUS_EXECUTION_FAILED`
   + `MemoryError` görüldü. `Diarizer.run`: cuDNN hatasında cuDNN kapalı tekrar dener; işlemciye geçmez (1.6.2, `diar_cpu`).

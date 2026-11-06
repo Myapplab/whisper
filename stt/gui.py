@@ -308,13 +308,24 @@ class App:
             self._upd_checked = True
             threading.Thread(target=self._auto_update_check, name="guncelleme", daemon=True).start()
             threading.Thread(target=self._follow_loop, name="takip", daemon=True).start()
-            threading.Thread(target=self._display_guard, name="ekran-koruma", daemon=True).start()
+            threading.Thread(target=self._display_guard_loop, name="ekran-koruma", daemon=True).start()
         return {"version": __version__, "settings": self.get_settings(), "engine": self._engine_state,
                 "dataset": self.dataset(), "pending": [{"uid": x["uid"], "title": x["title"], "source": x["source"]}
                                                        for x in self._pending],
                 "follows": self.follow_list()}
 
     # ---------------------------------------------------------- güncelleme
+    def _display_guard_loop(self) -> None:
+        """Açılışta ve yardımcı kart modundayken 10 dk'da bir (sürücü çöküp kendini toparlarsa uygulama açık kalır)."""
+        time.sleep(5)
+        while not self._stop.is_set():
+            try:
+                self._display_guard()
+            except Exception:  # noqa: BLE001
+                log.debug("ekran koruması denetlenemedi", exc_info=True)
+            if self._stop.wait(600):
+                return
+
     def _display_guard(self, events: list | None = None) -> dict | None:
         """Yardımcı kart (monitörlü 3080) açıkken ekran sürücüsü çöktüyse / bilgisayar kapandıysa yardımcıyı kapat.
         Kullanıcıda iki kez ekran karardı ("HDMI sinyali yok"); sebep kesin değil, ama monitörlü karta yük ilk şüpheli."""
