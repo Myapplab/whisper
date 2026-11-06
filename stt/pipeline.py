@@ -20,7 +20,7 @@ from .sources import Item
 from .state import State
 from .dataset import classify, fpl_data, presser_base_name, target_dir, update_index, write_match_json
 from .match import looks_like_presser, parse_match
-from .util import fmt_clock, log, text_hash
+from .util import fmt_clock, keep_awake, log, text_hash
 from .workers import WorkerPool
 
 MAX_PATH = 250  # Windows yol sınırı (260) altında kalmak için
@@ -733,6 +733,10 @@ class Pipeline:
                 step()
             except Exception:  # noqa: BLE001  (tek bir hata bütün motoru durdurmasın)
                 log.exception("Motor adımı hata verdi (%s); devam ediliyor", step.__name__)
+        busy = self.active()
+        if busy != getattr(self, "_awake", False):  # yalnız değişince (pump hep aynı iş parçacığında döner)
+            self._awake = busy
+            keep_awake(busy)
 
     def _safe_msg(self, msg: dict) -> None:
         """İşçi mesajını işle; beklenmedik hata (disk dolu, bozuk veri...) yalnız o videoyu düşürür.

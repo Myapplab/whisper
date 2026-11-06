@@ -4,6 +4,24 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 
 
+# Whisper'ın sessizlik/müzikte uydurduğu, eğitim verisindeki altyazı imzaları
+_ALWAYS_JUNK = ("amara.org", "altyazı m.k", "altyazi m.k", "subtitles by", "transcribed by", "transcript by",
+                "sottotitoli", "untertitel im auftrag", "untertitelung", "www.zeoranger")
+_LOWCONF_JUNK = ("thanks for watching", "thank you for watching", "izlediğiniz için teşekkür", "abone ol",
+                 "subscribe", "altyazı", "subtitle", "♪", "[müzik]", "[music]", "(music)")
+
+
+def is_hallucination(seg: dict) -> bool:
+    """Bilinen uydurma satır mı? İmza satırları her zaman; 'izlediğiniz için teşekkürler' gibi gerçek de olabilen
+    satırlar yalnızca kısa ve modelin emin olmadığı (sessizlik olasılığı yüksek / güven düşük) durumda atılır."""
+    t = (seg.get("text") or "").strip().lower()
+    if any(j in t for j in _ALWAYS_JUNK):
+        return True
+    if len(t) > 60 or not any(j in t for j in _LOWCONF_JUNK):
+        return False
+    return (seg.get("no_speech_prob") or 0) > 0.5 or (seg.get("avg_logprob") or 0) < -0.8
+
+
 REPEAT_GAP = 2.0  # sn: bundan uzak aynı cümle tekrar döngüsü sayılmaz
 
 
@@ -12,7 +30,7 @@ def merge_chunks(parts: list[dict]) -> tuple[list[dict], str | None]:
     lang_dur: Counter = Counter()
     for p in parts:
         for s in p.get("segments", []):
-            if not s.get("text"):
+            if not s.get("text") or is_hallucination(s):
                 continue
             s = {**s, "text": collapse_repeats(s["text"])}
             segs.append(s)

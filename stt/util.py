@@ -270,6 +270,19 @@ def popen_kw(low_priority: bool = False) -> dict:
     return {"creationflags": NO_WINDOW | (BELOW_NORMAL if low_priority else 0)}
 
 
+def keep_awake(on: bool) -> None:
+    """İş sürerken Windows uyku moduna geçmesin (ekran kapanabilir). Gece kuyruğu uykuda durmasın;
+    uykudan dönüşte ekran kartı sürücüsü de sık 'CUDA error: unknown error' veriyor."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        es_continuous, es_system_required = 0x80000000, 0x00000001
+        ctypes.windll.kernel32.SetThreadExecutionState(es_continuous | (es_system_required if on else 0))
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def console_python() -> str:
     """pythonw.exe altında çalışıyorsak yanındaki python.exe (pip / alt komutlar çıktı verebilsin)."""
     exe = Path(sys.executable)
