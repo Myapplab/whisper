@@ -39,6 +39,13 @@ Bu dosya bir sonraki oturumun uygulayacağı plandır. Sırayla yap; her adımda
 - **Sortformer yapılmadı:** NVIDIA NeMo gerektirir (çok büyük, Windows'ta resmî destek zayıf, en çok 4 konuşmacı).
   DER ölçümü (adım 3) gelince community-1 ile karşılaştırılmaya değer olursa ayrı süreçte denenmeli.
 
+## 1.9.7: 1.9.6 incelemesi (Claude)
+- 1.9.6'daki `_sentences` virgül/duraksama bölmesi ve `_sentence_labels` baştaki-konuşmacı kuralı, ayırma sınırı geç
+  kalınca yeni konuşmacının ilk kelimelerini önceki konuşmacıya veriyordu. İkisine de koşul eklendi: baştaki
+  konuşmacı bir önceki konuşmacıdan (önceki kelime / önceki cümle) farklı olmalı; virgül bölmesi yalnız cümle başında
+  (cümle ortasındaki kısa sapma ayrı cümle olmaz). Testler: `tests/test_v197.py`. Kurallar ölçülmedi (K5).
+- `keep_duzeltme` artık ad değil satır parmak izi (`spans_fp`) ile; `cluster_purity` üst üste satırları bir kez sayar.
+
 ## 1.9.6'da yapılanlar (ilk cümle yutulması + Konuşmacılar satır düzenleme/bölme/aynı anda konuşma)
 - **İlk cümlenin sonraki konuşmacının çok cümleli bloğuna yutulması (`stt/merge.py`):**
   1. `_smooth`: cümle başında (`k == 0`, `left is None`) konuşmacı koşusu kendisinden kısa/eşit bir kuyruk kaymasına

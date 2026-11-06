@@ -37,6 +37,19 @@ sıradakine geç. Kullanım biterse diğer profil ilk ✅ olmayan adımdan devam
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
+- 1.9.7 (Claude, Gemini'nin 1.9.6'sının incelemesi; 226 test): 1.9.6 Gemini (başka araç) tarafından yazılmıştı; Claude
+  kodla ve uçtan uca (jsdom + gerçek `App.speakers_save`) denedi. Düzeltilen gerilemeler: (1) `merge.py`: ayırma sınırı
+  ≥0.8 sn geç kalınca yeni konuşmacının ilk 2-3 kelimesi ("Well, I think") önceki konuşmacıya yazılıyordu (1.9.6'nın
+  baştaki-konuşmacı ve virgül bölmesi kuralları); artık baştaki konuşmacı bir önceki konuşmacıysa bölünmez, virgül
+  bölmesi yalnız cümle başında. 1.9.6'nın gerçek düzeltmesi (`_smooth` k=0: kısa ilk cümle son kelimesinin kaymasıyla
+  tümden sonrakine geçiyordu) duruyor. Bu kurallar ÖLÇÜLMEDİ: K5 verisi gelince bakılsın. (2) "Kaydet ve eğit"ten
+  sonra aynı ekranda tekrar Kaydet eski satır numaralarıyla yanlış satırın kelime zamanlarını alıyordu → ekran
+  yeniden açılıyor. (3) `keep_duzeltme` adla eşleşiyordu: iki kişinin adı yer değiştirince eski temiz imza yanlış
+  kişide kalıyordu → imza çıkarıldığı satırların parmak iziyle (`voices.spans_fp`) saklanıyor, satırlar aynıysa
+  korunuyor. (4) `cluster_purity` "Aynı anda" satırlarını iki kez sayıp kümeyi karışık gösteriyordu. (5) Süre
+  düzenlemede tam saniyeye yuvarlama (değiştirilmeyen uç da kayıyordu) → ondalıklı; kısaltılan satırın kelimeleri
+  satıra kırpılıyor. (6) "+ Yeni kişi" kayıtlı `ELLE_1`'in kimliğini yeniden alıyordu. Not: `voices.split_segment`
+  yalnız testlerde; asıl bölme gui.html `splitSeg`. Windows'ta / WebView2'de DENENMEDİ.
 - 1.9.6 (kullanıcı geri bildirimi; 218 test): eğitimden önce Konuşmacılar ekranında tam düzeltme yapılabilmesi ve ilk
   cümlenin yutulmaması. (1) `merge.py`: Konuşmacı 1 bir cümle söyleyip ardından Konuşmacı 2 5 cümle söylediğinde ilk
   cümlenin son kelimesindeki kayma yüzünden tüm cümlenin Konuşmacı 2'ye yazılması (`_smooth` `k=0` hatası) ve virgül /

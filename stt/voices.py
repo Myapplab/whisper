@@ -178,11 +178,15 @@ class VoiceLibrary:
         return n
 
     @staticmethod
-    def _append(voices: dict, name: str, emb, model, key: str, spk: str, td: bool, src: str) -> None:
+    def _append(voices: dict, name: str, emb, model, key: str, spk: str, td: bool, src: str,
+                fp: str | None = None) -> None:
         e = voices.setdefault(name, {"embs": []})
         e["td"] = bool(e.get("td")) or bool(td)
-        e["embs"].append({"model": model, "emb": [round(float(x), 5) for x in emb], "key": key, "spk": spk,
-                          "src": src, "t": time.strftime("%Y-%m-%d")})
+        x = {"model": model, "emb": [round(float(x), 5) for x in emb], "key": key, "spk": spk,
+             "src": src, "t": time.strftime("%Y-%m-%d")}
+        if fp:
+            x["fp"] = fp  # imzanın çıkarıldığı satırların parmak izi (spans_fp)
+        e["embs"].append(x)
         same = [x for x in e["embs"] if x.get("model") == model]
         if len(same) > MAX_PER_NAME:  # en eskisi çıkar
             drop = same[0]
@@ -201,32 +205,35 @@ class VoiceLibrary:
         return True
 
     def replace_video(self, key: str, model: str | None, entries, src: str = "kume",
-                      names: set | None = None, keep_duzeltme: set | None = None) -> list[str]:
+                      names: set | None = None, keep_duzeltme: dict | None = None) -> list[str]:
         """Bir videonun bu modeldeki imzalarını ``entries`` ile değiştir (tek kilitte). ``names`` verilirse yalnız bu
         adların eski imzaları çıkar (eğitimde imzası çıkarılamayan kişinin önceki imzası kalsın), yoksa hepsi.
-        ``keep_duzeltme``: düz "Kaydet"te (``src="kume"``) bu adların daha önce "Kaydet ve eğit" ile çıkarılmış temiz
-        (``src="duzeltme"``) imzası varsa silinmez ve kaba küme imzasıyla ezilmez.
-        ``entries``: [(ad, imza, td, spk), ...] (aynı ad birden çok kez olabilir) ya da {ad: (imza, td)}.
+        ``keep_duzeltme``: {ad: satır parmak izi (``spans_fp``)}. Düz "Kaydet"te (``src="kume"``) bir adın "Kaydet ve
+        eğit" ile çıkarılmış temiz (``src="duzeltme"``) imzası, çıkarıldığı satırlar o ada hâlâ aynen aitse (parmak izi
+        aynı) silinmez ve kaba küme imzasıyla ezilmez. Satırları değiştiyse (ör. iki kişinin adı yer değiştirdi) eski
+        imza başkasının sesidir: silinir.
+        ``entries``: [(ad, imza, td, spk[, fp]), ...] (aynı ad birden çok kez olabilir) ya da {ad: (imza, td)}.
         Döner: eklenen / korunan adlar (sırasıyla, tekrarsız)."""
         if isinstance(entries, dict):
             entries = [(n, v[0], v[1] if len(v) > 1 else False, f"{src}:{n}") for n, v in entries.items()]
-        good = [((n or "").strip(), e, bool(td), str(spk)) for n, e, td, spk in entries or []
-                if (n or "").strip() and _unit(e) is not None]
+        good = [((t[0] or "").strip(), t[1], bool(t[2]), str(t[3]), t[4] if len(t) > 4 else None)
+                for t in entries or [] if (t[0] or "").strip() and _unit(t[1]) is not None]
         with _FileLock(self.path):
             d = self._load_for_update()
-            kept_duz = {n for n in (keep_duzeltme or ())
-                        if any(x.get("key") == key and x.get("model") == model and x.get("src") == "duzeltme"
-                               for x in (d["voices"].get(n) or {}).get("embs", []))} if src == "kume" else set()
+            kept_duz = {n for n, fp in (keep_duzeltme or {}).items()
+                        if fp and any(x.get("key") == key and x.get("model") == model and x.get("src") == "duzeltme"
+                                      and x.get("fp") == fp
+                                      for x in (d["voices"].get(n) or {}).get("embs", []))} if src == "kume" else set()
             self._drop(d["voices"], lambda n, x: (
                 not (x.get("key") == key and x.get("model") == model and (names is None or n in names))
-                or (n in kept_duz and x.get("src") == "duzeltme")
+                or (n in kept_duz and x.get("src") == "duzeltme" and x.get("fp") == keep_duzeltme[n])
             ))
-            for name, emb, td, spk in good:
+            for name, emb, td, spk, fp in good:
                 if name in kept_duz:
                     if name in d["voices"] and td:
                         d["voices"][name]["td"] = True
                     continue
-                self._append(d["voices"], name, emb, model, key, spk, td, src)
+                self._append(d["voices"], name, emb, model, key, spk, td, src, fp)
             self.save(d)
         out: list[str] = []
         for g in good:
@@ -384,6 +391,9 @@ def _sync_words(words: list | None, text: str, start: float, end: float) -> list
            and start - 0.05 <= (float(w["start"]) + float(w["end"])) / 2 <= end + 0.05]
     if not sub:
         return None
+    for w in sub:  # süresi elle kısaltılan satırda kelime satır dışına taşmasın (.srt satırın süresine uysun)
+        w["start"] = round(min(max(float(w["start"]), start), end), 3)
+        w["end"] = round(min(max(float(w["end"]), w["start"]), end), 3)
     joined = "".join(str(w.get("word", "")) for w in sub).strip()
     if joined == text.strip():
         return sub
@@ -473,6 +483,24 @@ def apply_corrections(doc: dict, labels: dict | None = None, moves: dict | None 
     return doc
 
 
+def spans_fp(segs, name: str) -> str | None:
+    """``name`` etiketli satırların zaman parmak izi: "Kaydet ve eğit" imzası hangi satırlardan çıkarıldıysa sonraki
+    düz "Kaydet"te o satırlar aynı mı? Yalnız metin düzeltme ya da aynı kişinin satırını bölme izi değiştirmez
+    (bitişik satırlar birleşir, 0.1 sn'ye yuvarlanır); satır başka kişiye geçerse / süresi değişirse değişir."""
+    import hashlib
+    sp = sorted((float(a), float(b)) for a, b, lab in segs or [] if str(lab) == name and float(b) > float(a))
+    out: list[list[float]] = []
+    for a, b in sp:
+        if out and a - out[-1][1] < 0.3:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    if not out:
+        return None
+    txt = ";".join(f"{a:.1f}-{b:.1f}" for a, b in out)
+    return hashlib.sha1(txt.encode()).hexdigest()[:16]
+
+
 def reference_turns(doc: dict, merge_gap: float = 1.0) -> list[list]:
     """Düzeltilmiş çıktıdan [başla, bitir, etiket] turları. Art arda aynı konuşmacının satırları arada ``merge_gap``
     sn'den az boşluk varsa birleşir; ``merge_gap=0``: hiç birleştirilmez (satırlar olduğu gibi, aradaki sessizlik
@@ -534,14 +562,30 @@ def cluster_purity(orig_turns: list, segments: list) -> dict:
         while j0 < len(cur) and cur[j0][1] <= a:
             j0 += 1
         j = j0
+        cov, cov_same = [], []
         while j < len(cur) and cur[j][0] < b:
-            ov = min(b, cur[j][1]) - max(a, cur[j][0])
-            if ov > 0:
-                tot[sid] += ov
+            x0, x1 = max(a, cur[j][0]), min(b, cur[j][1])
+            if x1 > x0:
+                cov.append((x0, x1))
                 if cur[j][2] == sid:
-                    same[sid] += ov
+                    cov_same.append((x0, x1))
             j += 1
+        # "Aynı anda" satırları üst üste: o saniye bir kez sayılır, satırlardan biri hâlâ bu kümedeyse "aynı"
+        tot[sid] += _union_len(cov)
+        same[sid] += _union_len(cov_same)
     return {sid: same[sid] / t for sid, t in tot.items() if t > 0}
+
+
+def _union_len(spans: list) -> float:
+    n, end = 0.0, None
+    for a, b in sorted(spans):
+        if end is None or a > end:
+            n += b - a
+            end = b
+        elif b > end:
+            n += b - end
+            end = b
+    return n
 
 
 def ensure_orig_turns(state_dir: Path, doc: dict) -> bool:
@@ -583,7 +627,9 @@ def learn_from_doc(state_dir: Path, doc: dict, ignore=(), skipped: list | None =
             missed.append(lab)
             continue
         entries.append((lab, emb[sid], bool(td and lab == td), sid))
-    learned = VoiceLibrary(state_dir).replace_video(key, model, entries, keep_duzeltme=active) if (emb or active) else []
+    segs = reference_turns(doc, merge_gap=0)
+    keep = {n: spans_fp(segs, n) for n in active}
+    learned = VoiceLibrary(state_dir).replace_video(key, model, entries, keep_duzeltme=keep) if emb else []
     if skipped is not None:
         skipped.extend(n for n in dict.fromkeys(missed) if n not in learned and n not in skipped)
     return learned

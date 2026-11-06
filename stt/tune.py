@@ -292,7 +292,7 @@ def run_tune(cfg, device: str = "cuda:0", progress=lambda text: None) -> dict:
     from .config import diar_agc_on
     d = Diarizer(cfg.diar_model, cfg.hf_token, device, agc=diar_agc_on(cfg), batch=cfg.diar_batch,
                  params=load_tuned(state_dir), cpu_ok=False)
-    from .voices import is_generic
+    from .voices import is_generic, spans_fp
     ignore = (cfg.reporter_label, cfg.td_label, "Teknik direktör")
     files, voice_sets = [], []
     for i, ref in enumerate(refs, 1):
@@ -315,7 +315,8 @@ def run_tune(cfg, device: str = "cuda:0", progress=lambda text: None) -> dict:
                 got = voice_embeddings(getattr(d.pipe, "_embedding", None), audio, segs, names, torch=d.torch)
                 td = ref.get("td_label") if mode == "basin" else None
                 if got:
-                    voice_sets.append((ref.get("key") or "", [(n, v, bool(td and n == td), f"duzeltme:{n}")
+                    voice_sets.append((ref.get("key") or "", [(n, v, bool(td and n == td), f"duzeltme:{n}",
+                                                              spans_fp(segs, n))
                                                              for n, (v, _sec) in got.items()]))
         except Exception as e:  # noqa: BLE001  (imza ek iş; eğitimi durdurmasın)
             log.warning("Ses imzası çıkarılamadı (%s): %s", (ref.get("title") or "")[:60], str(e)[:200])

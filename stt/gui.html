@@ -773,11 +773,16 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
       }))
     };
     if (d.mode === "basin") { const t = st.spk.find(s => s.label === d.td_label); st.td = t ? t.id : null; }
-    let nNew = 0, delAsk = null, focusId = null;
+    // elle eklenen kişiler kaydedilince "ELLE_n" olarak kalıyor: yeni kişi var olanın kimliğini almasın
+    let nNew = st.spk.reduce((m, s) => { const x = /^ELLE_(\d+)$/.exec(s.id); return x ? Math.max(m, +x[1]) : m; }, 0),
+      delAsk = null, focusId = null;
     const r = $("#reader");
     const lab = id => { const s = st.spk.find(x => x.id === id); return st.labels[id] ?? (s ? s.label : "?"); };
     const sidOf = sg => sg.sid;
     const col = id => "s" + (Math.max(0, st.spk.findIndex(x => x.id === id)) % 6);
+    // süre kutusu ondalıklı (fmtDur tam saniyeye yuvarlıyor: yalnız bitişi değiştirince başlangıç da kayıyordu)
+    const clk = v => { v = Math.round(Math.max(0, Number(v) || 0) * 10) / 10; const m = Math.floor(v / 60), x = (v - m * 60).toFixed(1);
+      return m + ":" + (parseFloat(x) < 10 ? "0" : "") + x; };
     const parseClock = s => {
       const p = String(s || "").trim().split(":").map(x => parseFloat(x.replace(",", ".")));
       if (p.some(isNaN) || !p.length || p.length > 3) return null;
@@ -884,11 +889,13 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
             class: "tm" + (ov ? " ov" : ""),
             title: (ov ? "Aynı anda konuşma · " : "") + fmtDur(sg.start) + " – " + fmtDur(sg.end ?? sg.start) + " (süreyi değiştirmek için tıklayın)",
             onclick: () => {
-              const cur = fmtDur(sg.start) + " - " + fmtDur(sg.end ?? sg.start);
-              const ans = prompt("Satırın başlangıç - bitiş süresi (dk:sn - dk:sn):", cur);
+              const c0 = clk(sg.start), c1 = clk(sg.end ?? sg.start);
+              const ans = prompt("Satırın başlangıç - bitiş süresi (dk:sn - dk:sn):", c0 + " - " + c1);
               if (!ans) return;
-              const parts = ans.split(/\s*[-–]\s*/);
-              const a = parseClock(parts[0]), b = parts[1] !== undefined ? parseClock(parts[1]) : sg.end;
+              const parts = ans.trim().split(/\s*[-–]\s*/);
+              // değiştirilmeyen yarı eski (tam) değerinde kalsın
+              const a = parts[0] === c0 ? Number(sg.start) : parseClock(parts[0]);
+              const b = parts[1] === undefined || parts[1] === c1 ? Number(sg.end ?? sg.start) : parseClock(parts[1]);
               if (a === null || b === null || b < a) { toast("Geçersiz süre biçimi (ör. 1:05 - 1:12)."); return; }
               sg.start = a; sg.end = b;
               st.segs.sort((x, y) => (x.start - y.start) || (x.end - y.end));
@@ -943,8 +950,11 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
       toast(res.warning || ((res.learned && res.learned.length ? "Kaydedildi. Öğrenilen sesler: " + res.learned.join(", ") + "." : "Kaydedildi.") + sk));
       if (train) {
         const t = await call("speakers_train");
-        if (!t || !t.ok) { toast("Eğitilemedi: " + ((t && t.error) || "?")); return; }
-        setTrain("Eğitim başladı (" + t.videos + " düzeltilmiş video). Birkaç dakika sürer; pencereyi kapatmayın.");
+        if (!t || !t.ok) toast("Eğitilemedi: " + ((t && t.error) || "?"));
+        else setTrain("Eğitim başladı (" + t.videos + " düzeltilmiş video). Birkaç dakika sürer; pencereyi kapatmayın.");
+        // kaydedilen satırlar sıralanıp yeniden numaralandı: ekran dosyadan yeniden açılsın (yoksa ikinci Kaydet
+        // eski numaralarla yanlış satırın kelime zamanlarını alıyordu)
+        openSpeakers(path);
         return;
       }
       openReader(path);

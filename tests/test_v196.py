@@ -19,6 +19,7 @@ from stt.voices import (
     apply_corrections,
     learn_from_doc,
     save_doc_voices,
+    spans_fp,
     split_segment,
 )
 
@@ -259,7 +260,9 @@ def test_plain_save_preserves_trained_duzeltme_voice_signature(tmp_path: Path):
     clean_vec = [1.0, 0.0, 0.0, 0.0]
     noisy_vec = [0.0, 1.0, 0.0, 0.0]
     # 1) Eğitimden ('duzeltme') temiz imza kaydedilmiş
-    lib.replace_video("vid1", "wespeaker", [("Fatih Terim", clean_vec, True, "")], src="duzeltme")
+    # (1.9.7: imza çıkarıldığı satırların parmak iziyle saklanır; satırlar aynı kaldıkça korunur)
+    fp = spans_fp([[5.0, 10.0, "Fatih Terim"]], "Fatih Terim")
+    lib.replace_video("vid1", "wespeaker", [("Fatih Terim", clean_vec, True, "", fp)], src="duzeltme")
 
     # 2) Videonun ilk ayırma kümesi (SPEAKER_01) %50 karışık (yarısı başka konuşmacıya taşınmış)
     save_doc_voices(tmp_path, "vid1", "wespeaker", {"SPEAKER_01": noisy_vec},
