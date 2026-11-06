@@ -18,6 +18,17 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
 
 
+def user_agent() -> str:
+    """ffmpeg / requests yolları için güncel tarayıcı kimliği (yt-dlp'nin kendi listesi, sürümle güncellenir).
+    yt-dlp'ye ve curl_cffi'ye kimlik VERİLMEZ: tarayıcı taklidi kendi (uyumlu) kimliğini gönderir; eskiden sabit
+    "Chrome/130" taklidin Chrome 15x parmak iziyle çelişiyordu (bot korumaları bu uyuşmazlığa bakar)."""
+    try:
+        from yt_dlp.utils.networking import random_user_agent
+        return random_user_agent()
+    except Exception:  # noqa: BLE001
+        return UA
+
+
 class SkipItem(Exception):
     """Bilerek atlanan öğe (DRM, ses yok...)."""
 
@@ -155,13 +166,23 @@ def explain_error(msg: str) -> str:
     full = (msg or "").lower()
     # asıl hata ilk denemedir; sonraki denemelerin (çerez vb.) hataları yanıltıcı ipucu vermesin
     primary = re.split(r"\s\s\[|\s\|\|\s", full.replace("i̇ndirilemedi. ", ""), maxsplit=1)[0]
+    site = []  # siteye özgü: yt-dlp'nin genel mesajı yanıltıcı (sorun takipçisindeki örneklerle; 1.9.14)
+    if "odnoklassniki" in full and "unable to extract player" in full:
+        site.append("ok.ru bu videoyu vermedi: çoğu zaman bölgenize kapalıdır ya da giriş ister (ok.ru'da oturum "
+                    "açtığınız tarayıcıyı Ayarlar'da seçin).")
+    if "rutube" in full and "options json" in full and "404" in full:
+        site.append("Rutube bu videoyu oynatmıyor: bölgenize kapalı, yaş sınırlı ya da henüz yayınlanmamış olabilir.")
+    if "available to followers" in full:
+        site.append("VK bu videoyu yalnız takipçilere açık gösteriyor (VK tarafında bilinen bir hata da olabilir; "
+                    "VK'da oturum açtığınız tarayıcıyı Ayarlar'da seçip tekrar deneyin).")
+    if site:
+        short = (msg or "").strip().splitlines()[-1][:300]
+        return f"{site[0]}  (ayrıntı: {short})"
     hints = [
         (("not available in your country", "geo restrict", "geo-restrict", "not available from your location",
-          "blocked it in your country", "this video is not available in your region"),
+          "blocked it in your country", "not available in your region", "use a vpn or a proxy", "geoblock",
+          "geo restriction", "недоступно в вашей стране", "недоступно в вашем регионе"),
          "Bu video bulunduğunuz ülkeye kapalı (coğrafi kısıtlama)."),
-        (("unable to extract", "unable to download webpage", "no video formats found"),
-         "Site videoyu vermedi (site değişmiş ya da koruma var). STT yt-dlp'yi günde bir kez kendisi günceller; "
-         "uygulamayı kapatıp açıp tekrar deneyin. Giriş isteyen bir siteyse Firefox'ta oturum açın."),
         (("tarayıcı açılamadı",), "Gizli tarayıcı (Edge) açılamadı: uygulamada Güncelle'ye basın; olmazsa Ayarlar'dan "
                                    "'gizli tarayıcıyla yakala'yı kapatın."),
         (("playwright",), "Tarayıcıyla yakalama bileşeni kurulu değil: uygulamada Güncelle'ye basın."),
@@ -170,20 +191,32 @@ def explain_error(msg: str) -> str:
          "YouTube bot doğrulaması istedi. Ayarlar'da çerez tarayıcısını seçin (YouTube'a giriş yaptığınız "
          "tarayıcı) ve o tarayıcıyı kapatıp tekrar deneyin."),
         (("private video", "members-only", "join this channel"), "Video gizli ya da yalnızca üyelere açık."),
+        # giriş: çerez okuma hatasından ÖNCE ("Use --cookies..." yazan giriş hatası eskiden "çerez okunamadı" sanılıyordu)
+        (("registered users", "only available for registered", "login required", "account authentication",
+          "logged-in", "requires authentication"),
+         "Site giriş istiyor. Ayarlar'da çerez tarayıcısını seçin (siteye giriş yaptığınız tarayıcı)."),
         (("video unavailable", "this content isn't available", "has been removed", "http error 404"),
          "Video bulunamadı ya da kaldırılmış."),
         (("live event will begin", "premieres in", "is_upcoming"), "Yayın henüz başlamadı."),
-        (("impersonat",),
-         "Bu site (ör. Dailymotion) tarayıcı taklidi istiyor ama gerekli kütüphane (curl_cffi) kurulu değil. "
-         "Uygulamada Güncelle'ye basın; güncel sürüm bu kütüphaneyi kendisi kurar."),
-        (("dpapi", "could not copy chrome cookie", "failed to decrypt", "cookie"),
+        (("cloudflare", "anti-bot challenge"),
+         "Site bot koruması (Cloudflare) kullanıyor; tarayıcı taklidi ve gizli tarayıcı denendi. Video tarayıcınızda "
+         "açılıyorsa Ayarlar'da o tarayıcıyı çerez kaynağı seçip tekrar deneyin."),
+        (("impersonate target", "impersonation dependenc", "dependencies required to support this target"),
+         "Bu site (ör. Dailymotion) tarayıcı taklidi istiyor ama gerekli kütüphane (curl_cffi) kurulu değil ya da "
+         "uyumsuz. Uygulamada Güncelle'ye basın; güncel sürüm bu kütüphaneyi kendisi kurar."),
+        (("unable to extract", "unable to download webpage", "no video formats found",
+          "expected string or bytes-like object"),
+         "Site videoyu vermedi (site değişmiş ya da koruma var). STT yt-dlp'yi günde bir kez kendisi günceller; "
+         "uygulamayı kapatıp açıp tekrar deneyin. Giriş isteyen bir siteyse Firefox'ta oturum açın."),
+        (("dpapi", "could not copy chrome cookie", "failed to decrypt", "app-bound", "failed to load cookies",
+          "cookies database", "çerez okunamadı"),
          "Tarayıcı çerezleri okunamadı. Chrome'u tamamen kapatıp tekrar deneyin ya da Ayarlar'dan Firefox/Edge seçin."),
         (("n challenge", "signature", "js runtime", "jsc", "deno"),
          "YouTube çözücüsü çalışmadı (deno). Kurulumu tekrar çalıştırın; olmazsa yt-dlp güncellenmeli."),
         (("timed out", "connection", "getaddrinfo", "network", "temporary failure", "ssl"),
          "İnternet bağlantısı sorunu. Bağlantıyı kontrol edip tekrar deneyin."),
         (("unsupported url", "m3u8/mp4 linki bulunamadı"), "Bu sayfada indirilebilir video bulunamadı."),
-        (("http error 403", "http error 401", "login", "log in", "registered users"),
+        (("http error 403", "http error 401", "login", "log in", "use --cookies"),
          "Site giriş istiyor. Ayarlar'da çerez tarayıcısını seçin (siteye giriş yaptığınız tarayıcı)."),
     ]
     for m in (primary, full):
@@ -199,16 +232,18 @@ def explain_error(msg: str) -> str:
 class _QuietLogger:
     """yt-dlp mesajlarını kendi günlüğümüze (debug) yönlendir; hataları biz özetleriz."""
 
-    def debug(self, msg):
+    # yt-dlp bazı yerlerde ek argüman verir: çerez okuyucu warning(msg, only_once=True) çağırıyor. Eskiden bu
+    # TypeError ile BÜTÜN çerez okumasını düşürüyordu (Chrome/Edge'in yeni şifreli çerezlerinde tam da bu uyarı çıkar).
+    def debug(self, msg, *a, **k):
         log.debug("yt-dlp: %s", msg)
 
-    def info(self, msg):
+    def info(self, msg, *a, **k):
         log.debug("yt-dlp: %s", msg)
 
-    def warning(self, msg):
+    def warning(self, msg, *a, **k):
         log.debug("yt-dlp uyarı: %s", msg)
 
-    def error(self, msg):
+    def error(self, msg, *a, **k):
         log.debug("yt-dlp hata: %s", msg)
 
 
@@ -226,7 +261,6 @@ def _ytdlp_opts(workdir: Path, extra: dict) -> dict:
         "continuedl": True,
         "concurrent_fragment_downloads": 4,
         "socket_timeout": 30,
-        "http_headers": {"User-Agent": UA},
         "allow_unplayable_formats": False,
     }
     opts["js_runtimes"] = _js_runtimes(warn=True)
@@ -337,6 +371,9 @@ def impersonate_target():
     """curl_cffi kuruluysa tarayıcı taklidi hedefi (Dailymotion, Cloudflare'li siteler...)."""
     try:
         import curl_cffi  # noqa: F401
+        # yt-dlp yalnız desteklediği curl_cffi sürümlerinde taklidi açar; yoksa her denemede "Impersonate target
+        # is not available" hatası verirdi (çerez denemeleri dahil). Bu içe aktarma uyumsuz sürümde hata verir.
+        from yt_dlp.networking._curlcffi import CurlCFFIRH  # noqa: F401
         from yt_dlp.networking.impersonate import ImpersonateTarget
         return ImpersonateTarget.from_str("chrome")
     except Exception:  # noqa: BLE001
@@ -405,8 +442,11 @@ def ytdlp_download(url: str, workdir: Path, cookies_browser: str | None, cookies
         try:
             extra = make()
             if headers:
-                extra["http_headers"] = {"User-Agent": UA, **headers}
-            with yt_dlp.YoutubeDL(_ytdlp_opts(workdir, {**extra, "match_filter": live_filter})) as ydl:
+                extra["http_headers"] = dict(headers)  # kimlik yt-dlp'nin (ya da taklidin) kendisi
+            # yalnız ilk video: tanınmayan kanal / liste linkinde (VK, Rutube, Dailymotion kullanıcı sayfası
+            # noplaylist'i dinlemiyor) bütün kanal indirilmesin
+            with yt_dlp.YoutubeDL(_ytdlp_opts(workdir, {**extra, "match_filter": live_filter,
+                                                        "playlist_items": "1"})) as ydl:
                 info = ydl.extract_info(url, download=True)
             if live:
                 raise LiveStream(dict(live))
@@ -605,7 +645,8 @@ def _http_get(url: str, headers: dict, timeout: float = 30):
     """Sayfa indir: curl_cffi varsa tarayıcı taklidiyle (Cloudflare / bot korumalı siteler), yoksa requests."""
     try:
         from curl_cffi import requests as creq
-        return creq.get(url, headers=headers, timeout=timeout, impersonate="chrome", allow_redirects=True)
+        h = {k: v for k, v in headers.items() if k.lower() != "user-agent"}  # taklidin kendi kimliği kalsın
+        return creq.get(url, headers=h, timeout=timeout, impersonate="chrome", allow_redirects=True)
     except ImportError:
         pass
     except Exception as e:  # noqa: BLE001
@@ -620,7 +661,9 @@ _EMBED_HOSTS = ("youtube.com/embed", "youtube-nocookie.com/embed", "player.vimeo
                 "vkvideo.ru/video_ext", "rutube.ru/play/embed", "players.brightcove.net", "cdn.jwplayer.com",
                 "content.jwplatform.com", "fast.wistia", "streamable.com", "facebook.com/plugins/video",
                 "platform.twitter.com", "kaltura.com", "uplynk", "vidyard", "twitch.tv", "kick.com", "rumble.com/embed",
-                "mediadelivery.net", "bunny", "/embed/")
+                "mediadelivery.net", "bunny", "my.mail.ru/video/embed", "/+/video/meta/", "/embed/")
+# mail.ru: sayfa yapılandırması yoksa yt-dlp TypeError veriyor (#15243); gömme / meta adresi sayfasız açılıyor
+_MAILRU_RE = re.compile(r'(?:https?:)?//my\.mail\.ru/(?:video/embed/\d+|\+/video/meta/\d+)|"metaUrl"\s*:\s*"([^"]+)"')
 _BC_TAG_RE = re.compile(r"<[^>]*data-account=[^>]*>", re.I | re.S)
 
 
@@ -649,6 +692,15 @@ def find_embeds(page_html: str, base_url: str) -> list[str]:
             out.append(f"https://players.brightcove.net/{acc}/{player}_default/index.html?videoId={vid}")
     for m in re.finditer(r"https?://(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/)[\w-]{11}", text):
         out.append(m.group(0))
+    if "mail.ru" in (urlsplit(base_url).hostname or ""):
+        for m in _MAILRU_RE.finditer(text):
+            u = m.group(1) or m.group(0)
+            if "/video/" in u:
+                out.append(urljoin("https://my.mail.ru/", u if not u.startswith("//") else "https:" + u))
+    for m in _ATTR_RE.finditer(text):  # og:video bilinen bir oynatıcıysa ffmpeg yerine yt-dlp'ye (gömülü adım)
+        u = m.group(2)
+        if u and any(h in u.lower() for h in _EMBED_HOSTS if h != "/embed/"):
+            out.append(urljoin(base_url, html.unescape(u)))
     seen, uniq = set(), []
     for u in out:
         if u not in seen and u.split("#")[0] != base_url:
@@ -679,7 +731,7 @@ def _media_headers(req_headers: dict, page_url: str, cookies: str = "") -> dict:
         lk = k.lower()
         if lk in ("referer", "origin", "user-agent", "cookie", "authorization") or lk.startswith("x-"):
             keep[k.title() if not lk.startswith("x-") else k] = v
-    keep.setdefault("User-Agent", UA)
+    keep.setdefault("User-Agent", user_agent())
     keep.setdefault("Referer", page_url)
     if cookies and not any(k.lower() == "cookie" for k in keep):
         keep["Cookie"] = cookies
@@ -693,7 +745,7 @@ def page_title(page_html: str) -> str:
 
 def scrape_and_convert(page_url: str, dst: Path, page_html: str) -> tuple[Path, dict]:
     """Sayfa HTML'inde doğrudan geçen m3u8/mp4 adreslerini ffmpeg ile çek."""
-    headers = {"User-Agent": UA, "Referer": page_url, "Accept-Language": "en-US,en;q=0.9,tr;q=0.8"}
+    headers = {"User-Agent": user_agent(), "Referer": page_url, "Accept-Language": "en-US,en;q=0.9,tr;q=0.8"}
     cands = find_media_urls(page_html, page_url)
     if not cands:
         raise FetchError("Sayfada m3u8/mp4 linki bulunamadı")
@@ -706,7 +758,7 @@ def scrape_and_convert(page_url: str, dst: Path, page_html: str) -> tuple[Path, 
         try:
             _check_manifest_drm(s, u, headers)
             log.info("Yedek yol: ffmpeg ile çekiliyor: %s", u[:150])
-            to_wav16k(u, dst, headers={"User-Agent": UA, "Referer": page_url})
+            to_wav16k(u, dst, headers={"User-Agent": headers["User-Agent"], "Referer": page_url})
             return dst, {"title": title, "webpage_url": page_url, "media_url": u, "extractor": "stt-scrape"}
         except DRMProtected:
             drm_seen = True
@@ -776,11 +828,56 @@ def _from_ytdlp(raw: dict) -> dict:
     return info
 
 
+def site_url_variants(url: str) -> list[str]:
+    """yt-dlp'nin tanımadığı / bozuk işlediği link biçimleri için denenecek sıra (önce düzeltilmiş, sonra asıl).
+    - m.ok.ru, ok.ru/group/../video/<id> -> ok.ru/video/<id>; olmazsa ok.ru/videoembed/<id> (bölge kısıtında gerçek
+      sebebi gösteriyor, bazı videolar oradan oynuyor; yt-dlp sorun #15845)
+    - rutube.ru/shorts/<id> -> rutube.ru/video/<id>/ (shorts biçimi genel çıkarıcıya düşüyordu)
+    - VK gömme biçimi video_ext.php?oid=..&id=.. yt-dlp'de bozuk (#16070, #17537); aynı video sayfa biçimiyle
+      (vkvideo.ru/video<oid>_<id>) iniyor; özel gömmeler yalnız gömmeden açılabildiği için asıl link de denenir.
+    (yt-dlp 2026.10.26 kaynağına göre; gerçek linklerle denenmedi.)"""
+    from urllib.parse import parse_qs
+    p = urlsplit((url or "").strip())
+    host = (p.hostname or "").lower()
+    out: list[str] = []
+    if host == "ok.ru" or host.endswith(".ok.ru") or host.endswith("odnoklassniki.ru"):
+        m = re.search(r"/video(?:embed)?/(\d+)", p.path or "")
+        if m:
+            out = [f"https://ok.ru/video/{m.group(1)}", f"https://ok.ru/videoembed/{m.group(1)}"]
+    elif host.endswith("rutube.ru"):
+        m = re.match(r"^/shorts/([0-9a-f]{32})", p.path or "")
+        if m:
+            out = [f"https://rutube.ru/video/{m.group(1)}/"]
+    elif (host.endswith("vk.com") or host.endswith("vkvideo.ru") or host.endswith("vk.ru")) \
+            and (p.path or "").endswith("video_ext.php"):
+        q = parse_qs(p.query)
+        oid, vid = (q.get("oid") or [""])[0], (q.get("id") or [""])[0]
+        if re.fullmatch(r"-?\d+", oid) and re.fullmatch(r"\d+", vid):
+            out = [f"https://vkvideo.ru/video{oid}_{vid}"]
+    return list(dict.fromkeys(out + [url]))  # sıra korunur; asıl link zaten listedeyse yerinde kalır
+
+
 def _ytdlp_to_wav(url: str, workdir: Path, wav: Path, cfg, **kw) -> dict:
-    src, raw = ytdlp_download(url, workdir, cfg.cookies_browser, cfg.cookies_file, **kw)
-    to_wav16k(str(src), wav)
-    src.unlink(missing_ok=True)
-    return _from_ytdlp(raw)
+    errors: list[FetchError] = []
+    variants = site_url_variants(url)
+    for i, u in enumerate(variants):
+        try:
+            src, raw = ytdlp_download(u, workdir, cfg.cookies_browser, cfg.cookies_file, **kw)
+        except FetchError as e:
+            errors.append(e)
+            if e.transient or i == len(variants) - 1:
+                break
+            log.info("yt-dlp olmadı (%s); başka link biçimi deneniyor", u[:120])
+            continue
+        to_wav16k(str(src), wav)
+        src.unlink(missing_ok=True)
+        info = _from_ytdlp(raw)
+        if u != url:
+            info["webpage_url"] = url  # kayıt kullanıcının verdiği linkle kalsın
+        return info
+    # "Unable to extract" gibi genel hata yerine sitenin kendi sebebini (ör. ok.ru gömmesindeki bölge mesajı) göster
+    best = next((e for e in errors if "unable to extract" not in str(e).lower()), errors[0])
+    raise best
 
 
 def download_url(url: str, workdir: Path, wav: Path, cfg) -> dict:
@@ -791,13 +888,13 @@ def download_url(url: str, workdir: Path, wav: Path, cfg) -> dict:
 
     def fetch_page() -> list:
         """Sayfayı bir kez indir; gömülü oynatıcı ve m3u8/mp4 adımlarını üret."""
-        r = _http_get(url, {"User-Agent": UA, "Accept-Language": "en-US,en;q=0.9,tr;q=0.8"})
+        r = _http_get(url, {"User-Agent": user_agent(), "Accept-Language": "en-US,en;q=0.9,tr;q=0.8"})
         ctype = (r.headers.get("content-type") or "").lower()
         if r.status_code >= 400:
             raise FetchError(f"HTTP {r.status_code}", transient=r.status_code in (429, 500, 502, 503, 504))
         if ctype.startswith(("video/", "audio/")) or "mpegurl" in ctype:  # link doğrudan medya dosyası
             def direct():
-                to_wav16k(str(r.url), wav, headers={"User-Agent": UA})
+                to_wav16k(str(r.url), wav, headers={"User-Agent": user_agent()})
                 return {"title": "", "webpage_url": url, "media_url": str(r.url), "extractor": "stt-direct"}
             return [("doğrudan", direct)]
         if "html" not in ctype:

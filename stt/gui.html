@@ -1121,7 +1121,15 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
       case "worker": {
         const g = state.gpus.get(ev.wid) || { name: ev.name || ev.wid };
         state.gpus.set(ev.wid, { ...g, state: ev.state, task: ev.task, title: ev.title, error: ev.error, note: ev.note });
-        renderGpus({ state: "ready" }); return;
+        renderGpus({ state: "ready" });
+        // işin kartında ne yapıldığı (eskiden yalnız hazırlanmış iş de "Metne çevriliyor 0/N", ayırma sürerken "3/3")
+        const jj = ev.uid && state.jobs.get(ev.uid);
+        if (jj && ev.state === "busy" && jj.kind !== "ok" && !jj.live) {
+          if (ev.task === "diarize") { jj.status = "Konuşmacılar ayrılıyor"; jj.kind = "busy"; }
+          else if (ev.task === "transcribe") { jj.started = true; jj.status = "Metne çevriliyor " + (jj.done || 0) + "/" + (jj.total || "?"); jj.kind = "busy"; }
+          scheduleQueue();
+        }
+        return;
       }
       case "fatal": $("#bannerText").textContent = ev.error; $("#banner").classList.add("show"); return;
       case "notice": $("#bannerText").textContent = ev.text; $("#banner").classList.add("show"); toast(ev.text.slice(0, 140)); return;
@@ -1144,7 +1152,13 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
       if (ev.state === "end") { j.liveOn = false; j.status = "Canlı bitti: tam metin yazılıyor"; j.kind = "busy"; }
     }
     if (ev.type === "planned") { j.duration = ev.duration; j.total = ev.chunks; }
-    if (ev.type === "progress") { j.done = ev.done; j.total = ev.total; j.status = ev.live ? "Canlı · " + fmtDur(ev.recorded || 0) : "Metne çevriliyor " + ev.done + "/" + ev.total; }
+    if (ev.type === "progress") {
+      j.done = ev.done; j.total = ev.total; if (ev.started) j.started = true;
+      j.status = ev.live ? "Canlı · " + fmtDur(ev.recorded || 0)
+        : ev.total && ev.done >= ev.total && ev.diar_wait ? "Metin bitti · konuşmacı ayırma sırada"
+        : j.started || ev.done ? "Metne çevriliyor " + ev.done + "/" + ev.total
+        : "Hazır · sırada (" + ev.total + " parça)";
+    }
     if (ev.type === "diar") { if (ev.ok) j.speakers = ev.speakers; else j.diar_error = ev.error; }
     if (ev.type === "done") {
       Object.assign(j, { status: "Bitti", kind: "ok", txt: ev.txt, out_dir: ev.out_dir, dataset: ev.dataset, speakers: ev.speakers || 0,

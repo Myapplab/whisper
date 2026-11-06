@@ -38,6 +38,25 @@ E.2 (C5) ve aşağıdaki K5 planı. **(1.9.5'ten kalan):** kullanıcı Güncelle
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
+- 1.9.14 (Claude; kullanıcının 6 isteği; 534 test; iki araştırma ajanı + bağımsız inceleme; rapor
+  **`docs/TARAMA_2026-11-07.md`**): (1) oynatma listesinde işlenmemişlerin hepsi seçili (konu süzgeci yok);
+  "manager's preview" basın toplantısı sayılır. (2) **Ekran kararması** (2 kez, "HDMI sinyali yok"): Kontrol'de
+  "Ekran sürücüsü" satırı (Windows olay günlüğü), yardımcı kart açıkken sürücü çöktüyse yardımcı kendiliğinden kapanır
+  (`stt/gpuguard.py`). Kullanıcıya: önce Ayarlar > Önerilen, MSI Afterburner'da Reset (3090: çekirdek +143, bellek
+  +1441 aşırtma var; CUDA'da kararsızlık yapabilir). (3) **Kanalda basın toplantısı bulucu (deneme, kapalı)**:
+  Kanal · liste > "Kanalın tamamında basın toplantılarını ara". (4) Hız: 3090'da ayırma toplu boyutu 32 (8'di);
+  önden hazırlık en çok 6 video (`PREP_AHEAD`; eskiden 100 video önden indiriliyordu, i3 / disk). (5) İndirme:
+  çerez okuma yt-dlp'nin `only_once` uyarısıyla tamamen düşüyordu (D1, düzeldi); sabit "Chrome/130" kimliği
+  taklitle çelişiyordu (kaldırıldı); Türkçe hata mesajları (giriş / bölge / Cloudflare / ok.ru / Rutube / VK);
+  tanınmayan kanal linki bütün kanalı indirmesin (`playlist_items 1`); ok.ru / m.ok.ru / videoembed, Rutube shorts,
+  VK video_ext -> vkvideo sayfası (`site_url_variants`); mail.ru gömme / meta; VK / Rutube kanal linkleri; ok.ru /
+  mail.ru kanal listesi için açık mesaj. (6) Kartlarda "Hazır · sırada", "Konuşmacılar ayrılıyor", "Metin bitti ·
+  konuşmacı ayırma sırada". DENENMEDİ: Windows, gerçek siteler (ağ kapalıydı), PowerShell olay sorgusu, hız.
+  **AÇIK (TARAMA_2026-11-07 B):** ayırma RAM beklerken 3090'ı boşta tutuyor (B-1, yüksek etki); C5 K5 ölçümünden
+  önce; B1 parça imzası dil/model içermiyor; B3/D4 başarısız işlerin ses.wav / çerezleri silinmiyor; B6 parça
+  json'larını sakla; yt-dlp nightly kararı (kullanıcıya sorulmalı); gizli tarayıcıda alan başına çerez ve
+  kullanıcının çerezleri; 3090'da metin + ayırmayı aynı anda (ölçerek). KULLANICIDAN: Kontrol ekran görüntüsü
+  ("Ekran sürücüsü" satırı), Afterburner Reset sonrası kararma olup olmadığı, bulucu denemesi.
 - 1.9.13 (Claude; kullanıcı iki kez istedi; 510 test; bağımsız inceleme 4 hata buldu, hepsi testle düzeltildi: kalıcı düşen rol öbürünü kilitliyordu, yer yokken nvidia-smi her turda, bellek aşan görev 3080'e tekrar tekrar (artık `no_helper`), ana ayırma açılırken 3080 gereksiz açılıyordu (15 sn + ana işçi hazır)): **yardımcı kart (3080) konuşmacı ayırmaya da geçer.** Ekranda
   videolar "3/3" metin bitmiş, ayırma bekliyordu (darboğaz 3090'daki tek ayırma süreci). 3080 aynı anda tek iş yapar:
   metin ya da ayırma; hangisinde iş birikmişse (20 sn'den uzun) ona geçer. Ayrıntı GELISTIRME "1.9.13". DENENMEDİ:

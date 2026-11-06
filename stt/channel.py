@@ -69,9 +69,13 @@ def is_collection_url(url: str) -> bool:
     if host.endswith("dailymotion.com"):
         return bool(re.match(r"^/(playlist/|[^/]+/?$)", path)) and not path.startswith("/video/")
     if host.endswith("vimeo.com"):
-        return bool(re.match(r"^/(channels|showcase|user\d+|album)/", path))
+        return bool(re.match(r"^/(channels/|showcase/|album/|user\d+(/|$))", path))
     if host in ("ok.ru",):
-        return "/video/c" in path or "/videos" in path
+        return "/video/c" in path or "/videos" in path   # listelenemez: list_videos açık mesaj verir
+    if host.endswith("vkvideo.ru") or host.endswith("vk.com") or host == "vk.ru":
+        return bool(re.match(r"^/(@[^/]+/?$|video/@[^/]+|playlist/)", path))
+    if host.endswith("rutube.ru"):
+        return bool(re.match(r"^/(channel/|u/|plst/|video/person/)", path))
     if host.endswith("twitch.tv"):
         return path.rstrip("/").endswith("/videos")
     return False
@@ -136,6 +140,11 @@ def list_videos(url: str, cfg, limit: int | None = None) -> dict:
 
     from .fetch import ytdlp_info
     limit = int(limit or cfg.channel_max)
+    host = (urlsplit(url).hostname or "").lower()
+    if host.endswith("ok.ru") or host.endswith("mail.ru"):
+        # yt-dlp'de ok.ru / mail.ru kanal-grup listeleyici yok (yalnız tek video): anlaşılır mesaj
+        raise RuntimeError("ok.ru / mail.ru kanal ve grup listeleri desteklenmiyor; videoları tek tek "
+                           "'Linkler' sekmesine ekleyin.")
 
     def fetch(tab):
         try:

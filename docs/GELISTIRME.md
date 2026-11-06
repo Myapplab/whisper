@@ -71,6 +71,16 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   (4) **Kanalda basın toplantısı bulucu (deneme, varsayılan kapalı):** `channel.find_pressers` kanal içi YouTube
   araması (`/@kanal/search?query=`; yt-dlp 2026.10.26 testinde var) + adında basın toplantısı geçen oynatma
   listeleri; Kanal · liste'de "Kanalın tamamında basın toplantılarını ara (deneme)" kutusu.
+- **1.9.14 indirme / kuyruk:** `fetch._QuietLogger` ek argümanları kabul eder (yt-dlp çerez okuyucu
+  `warning(msg, only_once=True)`; eskiden TypeError ile bütün tarayıcı çerezi okuması düşüyordu). yt-dlp'ye ve
+  curl_cffi'ye User-Agent verilmez (taklidin kendi kimliği); ffmpeg / requests yolları `user_agent()` (yt-dlp'nin
+  güncel listesi). `explain_error` sırası: bölge > ... > giriş > ... > Cloudflare > taklit eksik > "unable to
+  extract" > çerez okunamadı (dar) ...; siteye özgü: ok.ru "unable to extract player", Rutube "options JSON 404",
+  VK "available to followers". `ytdlp_download` `playlist_items: "1"`. `site_url_variants` + `_ytdlp_to_wav`:
+  biçimler sırayla, ağ hatasında durur, en açıklayıcı hata ("unable to extract" olmayan) gösterilir. `find_embeds`:
+  mail.ru gömme / meta, bilinen oynatıcı olan og:video yt-dlp'ye. `Pipeline._wait_prep_turn`: en çok `PREP_AHEAD`
+  (6) iş hazırlanmış / metni bitmemiş olabilir (metni bitip ayırma bekleyen sayılmaz). İlerleme olayında
+  `diar_wait` / `started`; arayüz işçi "busy" olayından işin kartını günceller.
 - **Konuşmacı ayırma ayrı süreçte** (`Pipeline.dpool`, wid `diar`, ilk ayırma görevinde açılır, belleği en büyük
   kartta): aynı süreçte torch + CTranslate2 → `invalid device ordinal` ve 1.2.0'da `CUDNN_STATUS_EXECUTION_FAILED`
   + `MemoryError` görüldü. `Diarizer.run`: cuDNN hatasında cuDNN kapalı tekrar dener; işlemciye geçmez (1.6.2, `diar_cpu`).

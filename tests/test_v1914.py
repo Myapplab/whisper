@@ -245,3 +245,179 @@ def test_list_channel_finder_opt_in(tmp_path, monkeypatch):
     assert used == ["list", "find"] and r["finder"] is True
     app.list_channel("https://www.youtube.com/playlist?list=PL1", {"topic": "basin", "find": True})
     assert used[-1] == "list"                                            # oynatma listesinde bulucu yok
+
+
+# ---------------------------------------------------------------- indirme siteleri
+ERRS = {  # yt-dlp'nin gerçek hata metinleri (yt-dlp kaynağı / sorun takipçisi)
+    "vk_login": "ERROR: [vk] -1_2: This video is only available for registered users. Use --cookies, "
+                "--cookies-from-browser, --username and --password, --netrc-cmd, or --netrc (vk) to provide account "
+                "credentials. See  https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp",
+    "dm_geo": "ERROR: [dailymotion] x8abc: Video geoblocked by the owner\nYou might want to use a VPN or a proxy "
+              "server (with --proxy) to workaround.",
+    "ok_player": "ERROR: [Odnoklassniki] 9987641379464: Unable to extract player; please report this issue on  "
+                 "https://github.com/yt-dlp/yt-dlp/issues?q= , filling out the appropriate issue template.",
+    "rutube_404": "ERROR: [rutube] c5f0: Unable to download options JSON: HTTP Error 404: Not Found",
+    "vk_followers": "ERROR: [vk] Video only available to followers",
+    "mailru_type": "ERROR: expected string or bytes-like object, got 'NoneType'",
+    "cloudflare": 'ERROR: [generic] Got HTTP Error 403 caused by Cloudflare anti-bot challenge; try again with  '
+                  '--extractor-args "generic:impersonate"',
+    "imp_missing": 'Impersonate target "chrome" is not available. Use --list-impersonate-targets to see available '
+                   'targets. You may be missing dependencies required to support this target.',
+    "chrome_cookie": "ERROR: Could not copy Chrome cookie database. See https://github.com/yt-dlp/yt-dlp/issues/7271",
+}
+
+
+def test_explain_error_site_messages():
+    """İnceleme: giriş hatası "çerez okunamadı", bölge kısıtı İngilizce, Cloudflare "curl_cffi yok" görünüyordu."""
+    from stt.fetch import explain_error
+    e = {k: explain_error(v).split("  (ayrıntı")[0] for k, v in ERRS.items()}
+    assert e["vk_login"].startswith("Site giriş istiyor")
+    assert "ülkeye kapalı" in e["dm_geo"]
+    assert e["ok_player"].startswith("ok.ru bu videoyu vermedi")
+    assert e["rutube_404"].startswith("Rutube bu videoyu oynatmıyor")
+    assert "takipçilere" in e["vk_followers"]
+    assert e["mailru_type"].startswith("Site videoyu vermedi")
+    assert "Cloudflare" in e["cloudflare"] and "curl_cffi" not in e["cloudflare"]
+    assert "curl_cffi" in e["imp_missing"]
+    assert e["chrome_cookie"].startswith("Tarayıcı çerezleri okunamadı")
+
+
+def test_quiet_logger_accepts_yt_dlp_kwargs():
+    """yt-dlp çerez okuyucu warning(msg, only_once=True) çağırıyor; eskiden TypeError ile bütün okuma düşüyordu."""
+    from stt.fetch import _QuietLogger
+    lg = _QuietLogger()
+    lg.warning("cannot decrypt v10 cookies: no key found", only_once=True)
+    lg.debug("x", once=True)
+    lg.info("x")
+    lg.error("x", tb=None)
+
+
+def test_site_url_variants():
+    from stt.fetch import site_url_variants
+    assert site_url_variants("https://m.ok.ru/video/123456") == [
+        "https://ok.ru/video/123456", "https://ok.ru/videoembed/123456", "https://m.ok.ru/video/123456"]
+    assert site_url_variants("https://ok.ru/video/123456") == ["https://ok.ru/video/123456",
+                                                               "https://ok.ru/videoembed/123456"]
+    h = "a" * 32
+    assert site_url_variants(f"https://rutube.ru/shorts/{h}/")[0] == f"https://rutube.ru/video/{h}/"
+    vk = "https://vk.com/video_ext.php?oid=-22822305&id=456242110&hash=abc"
+    assert site_url_variants(vk) == ["https://vkvideo.ru/video-22822305_456242110", vk]
+    assert site_url_variants("https://www.dailymotion.com/video/x8abc") == ["https://www.dailymotion.com/video/x8abc"]
+
+
+def test_variants_tried_in_order_and_best_error(tmp_path, monkeypatch):
+    import pytest
+
+    import stt.fetch as f
+    tried = []
+
+    def dl(u, *a, **k):
+        tried.append(u)
+        if "videoembed" in u:
+            raise f.FetchError("ERROR: [Odnoklassniki] 1: This video is not available in your country")
+        raise f.FetchError("ERROR: [Odnoklassniki] 1: Unable to extract player")
+    monkeypatch.setattr(f, "ytdlp_download", dl)
+    with pytest.raises(f.FetchError) as ei:
+        f._ytdlp_to_wav("https://m.ok.ru/video/1", tmp_path, tmp_path / "s.wav", Config())
+    assert tried == ["https://ok.ru/video/1", "https://ok.ru/videoembed/1", "https://m.ok.ru/video/1"]
+    assert "not available in your country" in str(ei.value)          # genel "unable to extract" değil, asıl sebep
+
+
+def test_variant_transient_error_stops(tmp_path, monkeypatch):
+    import pytest
+
+    import stt.fetch as f
+    tried = []
+
+    def dl(u, *a, **k):
+        tried.append(u)
+        raise f.FetchError("HTTP Error 503", transient=True)
+    monkeypatch.setattr(f, "ytdlp_download", dl)
+    with pytest.raises(f.FetchError):
+        f._ytdlp_to_wav("https://m.ok.ru/video/1", tmp_path, tmp_path / "s.wav", Config())
+    assert len(tried) == 1                                               # ağ hatası: biçim değiştirmek boşuna
+
+
+def test_find_embeds_mailru_and_og_video():
+    from stt.fetch import find_embeds
+    page = ('<meta property="og:video" content="https://my.mail.ru/video/embed/123456789">'
+            '<script>{"metaUrl":"//my.mail.ru/+/video/meta/987654321"}</script>')
+    out = find_embeds(page, "https://my.mail.ru/mail/user/video/1/2.html")
+    assert "https://my.mail.ru/video/embed/123456789" in out
+    assert "https://my.mail.ru/+/video/meta/987654321" in out
+
+
+def test_collection_urls_new_sites():
+    from stt.channel import is_collection_url
+    assert is_collection_url("https://vkvideo.ru/@arsenal")
+    assert is_collection_url("https://rutube.ru/channel/12345/")
+    assert is_collection_url("https://vimeo.com/user12345")
+    assert not is_collection_url("https://vkvideo.ru/video-1_2")
+
+
+def test_okru_channel_listing_clear_message():
+    import pytest
+
+    from stt.channel import list_videos
+    with pytest.raises(RuntimeError, match="desteklenmiyor"):
+        list_videos("https://ok.ru/video/c123", Config())
+
+
+def test_no_fixed_user_agent_for_ytdlp(tmp_path):
+    """Taklitte sabit "Chrome/130" kimliği taklidin parmak iziyle çelişiyordu: yt-dlp'ye kimlik verilmez."""
+    from stt.fetch import _ytdlp_opts
+    assert "http_headers" not in _ytdlp_opts(tmp_path, {})
+
+
+# ---------------------------------------------------------------- önden hazırlık sınırı
+def test_prep_waits_when_many_prepared(tmp_path, monkeypatch):
+    """100 video önden indirilmesin: en çok PREP_AHEAD iş hazırlanmış / çevriliyor olsun."""
+    import stt.pipeline as pl
+    from stt.pipeline import Job, Pipeline
+    from stt.sources import Item
+    p = Pipeline(Config(out_dir=tmp_path))
+    for i in range(pl.PREP_AHEAD):
+        it = Item("url", f"https://x/{i}", key=f"u_{i}")
+        j = Job(it, tmp_path / f"w{i}", status="run")
+        t = {"id": f"u_{i}:t:0000", "kind": "transcribe", "job": it.key}
+        p.tasks[t["id"]] = t
+        j.pending = {t["id"]}
+        p.jobs[it.key] = j
+    assert p._prep_ahead() == pl.PREP_AHEAD and not p._pending_ahead_ok()
+    # metni bitip yalnız konuşmacı ayırma bekleyen iş sayılmaz (onun sesi zaten hazır, GPU'yu bekletmesin)
+    j0 = p.jobs["u_0"]
+    d = {"id": "u_0:d", "kind": "diarize", "job": "u_0"}
+    p.tasks[d["id"]] = d
+    j0.pending = {d["id"]}
+    assert p._pending_ahead_ok()
+    # durdurulunca bekleme biter
+    it = Item("url", "https://x/new", key="u_new")
+    it.extra["_cancel"] = True
+    p.jobs["u_0"].pending = {"u_0:t:0000"}
+    assert p._wait_prep_turn(it) is False
+
+
+def test_prepare_does_not_download_while_full(tmp_path, monkeypatch):
+    import threading
+    import time
+
+    import stt.pipeline as pl
+    from stt.pipeline import Job, Pipeline
+    from stt.sources import Item
+    p = Pipeline(Config(out_dir=tmp_path))
+    monkeypatch.setattr(pl, "PREP_AHEAD", 1)
+    it0 = Item("url", "https://x/0", key="u_0")
+    j = Job(it0, tmp_path / "w0", status="prep")
+    p.jobs["u_0"] = j
+    called = []
+    monkeypatch.setattr(pl, "prepare_audio", lambda item, work, cfg: called.append(item.key) or (_ for _ in ()).throw(
+        pl.SkipItem("test")))
+    it = Item("url", "https://x/1", key="u_1")
+    it.extra["uid"] = "a"
+    th = threading.Thread(target=p._prepare, args=(it,), daemon=True)
+    th.start()
+    time.sleep(1.5)
+    assert called == []                       # sıra gelmedi: indirmeye başlamadı
+    j.status = "done"
+    th.join(5)
+    assert called == ["u_1"]

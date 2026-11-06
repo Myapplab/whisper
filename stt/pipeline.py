@@ -23,6 +23,7 @@ from .match import looks_like_presser, parse_match
 from .util import fmt_clock, keep_awake, log, text_hash
 from .workers import WorkerPool
 
+PREP_AHEAD = 6       # en çok bu kadar video önden hazırlanır (indiriliyor + metni bitmemiş); kalanı "Sırada" bekler
 FPL_MEM_S = 1800     # FPL fikstür verisi bellekte en çok bu kadar tutulur (erteleme / skor için yeniden okunur)
 AUTO_SPECS = ("auto", "all", "hepsi", "tum", "tümü")
 HELPER_SPECS = ("yardim", "yardım", "helper")   # monitörsüz kart(lar) tam + monitörlü kart yardımcı (düşük yük)
@@ -537,6 +538,26 @@ class Pipeline:
             with self.lock:
                 self._pending_futs -= 1
 
+    def _prep_ahead(self) -> int:
+        """Önden hazırlanmış (indiriliyor ya da metin çevirisi henüz bitmemiş) iş sayısı."""
+        with self.lock:
+            return sum(1 for j in self.jobs.values()
+                       if not j.live and (j.status == "prep" or (j.status == "run" and any(
+                           (self.tasks.get(x) or {}).get("kind") == "transcribe" for x in j.pending))))
+
+    def _wait_prep_turn(self, item: Item) -> bool:
+        """Kuyruğun tamamı önden indirilmesin: en çok ``PREP_AHEAD`` video hazırlanmış / çevriliyor olsun. Eskiden
+        100 videonun hepsi saatlerce önden indiriliyor, VAD'den geçiriliyor (i3'te GPU işçileriyle yarış, fan; diskte
+        100 x ses.wav; arayüzde 100 kart birden "Metne çevriliyor 0/N"). Sonuç değişmez. Döner: False = durduruldu."""
+        while not self._pending_ahead_ok():
+            if self._cancelled(item):
+                return False
+            time.sleep(1.0)
+        return not self._cancelled(item)
+
+    def _pending_ahead_ok(self) -> bool:
+        return self._prep_ahead() < PREP_AHEAD
+
     def _fail_item(self, item: Item, err: str, status: str = "failed"):
         with self.lock:
             key = item.key or "?"
@@ -604,6 +625,9 @@ class Pipeline:
                 self.results.append(job)
             self.emit("skipped", item, status="done_before", out_dir=prev["out_dir"] if prev else None,
                       json=(prev.get("info") or {}).get("json") if prev else None)
+            return
+        if not item.extra.get("live") and not self._wait_prep_turn(item):
+            self.emit("failed", item, error="Durduruldu.", cancelled=True)
             return
         with self.lock:
             if item.key in self.jobs and self.jobs[item.key].status in ("queued", "prep", "run", "finalize"):
@@ -1575,8 +1599,10 @@ class Pipeline:
                 if not task.get("redo"):  # dil düzeltmesi için yeniden çeviri ilerlemeye sayılmaz
                     job.done_chunks += 1
                 total = task["n"] or len(job.chunks)
+                # metin bitti ama konuşmacı ayırma sürüyor / bekliyor: arayüz "3/3"te takılı görünmesin
+                diar_wait = any((self.tasks.get(x) or {}).get("kind") == "diarize" for x in job.pending)
                 self.emit("progress", job.item, done=job.done_chunks, total=total, speed=dur / max(0.01, m["elapsed"]),
-                          live=job.live_active or None)
+                          live=job.live_active or None, diar_wait=diar_wait or None, started=True)
                 if job.live and not task.get("redo"):
                     self._live_vote(job, payload, dur)
                     job.live_buf[task["idx"]] = payload.get("segments", [])
