@@ -102,13 +102,24 @@ def test_opponent_pattern_drops_generic_words():
     assert m["away"] == "Wycombe"
 
 
-def test_unknown_opponent_still_finds_fixture_within_3_days():
+def test_unknown_opponent_matching_fixture_within_3_days():
+    """Sözlükte olmayan rakip metni ("Manchester", "City") yakındaki PL maçının rakibiyle örtüşürse o maç."""
     info = {"title": "x", "timestamp": _ts("2026-11-06 12:00")}
-    meta = classify({"team": "Arsenal", "home": "Arsenal", "away": "Bukayo Saka's", "manager": "Mikel Arteta"}, info, FPL)
-    assert (meta["gw"], meta["home"], meta["away"], meta["opponent"]) == (11, "Arsenal", "Chelsea", "Chelsea")
+    meta = classify({"team": "Manchester City", "home": "Manchester City", "away": "Manchester"}, info, FPL)
+    assert (meta["gw"], meta["home"], meta["away"]) == (11, "Manchester City", "Manchester United")
+    meta = _meta("Pep Guardiola Previews The Manchester Derby", "Man City", timestamp=_ts("2026-11-06 12:00"))
+    assert (meta["gw"], meta["away"]) == (11, "Manchester United")
     info = {"title": "x", "timestamp": _ts("2026-11-03 12:00")}  # maça 5 gün: tahmin edilmez
-    meta = classify({"team": "Arsenal", "home": "Arsenal", "away": "Bukayo Saka's"}, info, FPL)
+    meta = classify({"team": "Manchester City", "home": "Manchester City", "away": "Manchester"}, info, FPL)
     assert meta["gw"] is None
+
+
+@pytest.mark.parametrize("title", ["Mikel Arteta previews Wycombe", "Arsenal vs Wycombe | Mikel Arteta press conference",
+                                   "Arteta: 'Saka is fine' | Arsenal vs Wycombe"])
+def test_unknown_club_is_cup_match_not_next_pl_match(title):
+    """Sözlükte olmayan gerçek kulüp (kupa rakibi): iki gün sonraki PL maçına (Man City) yazılmaz."""
+    meta = _meta(title, "Arsenal", timestamp=_ts("2026-11-09 13:00"))
+    assert meta["gw"] is None and meta["opponent"] == "Wycombe"
 
 
 def test_known_non_pl_opponent_does_not_take_pl_fixture():
@@ -302,24 +313,37 @@ def test_rel_path_posix():
 
 # ---------------------------------------------------------------- A4: FPL verisi yeniden denenir
 def test_fpl_retried_after_failure(tmp_path, monkeypatch):
+    """Açılışta FPL'ye ulaşılamadı: eskiden oturum boyunca GW'siz. Artık 10 dk sonra yeniden denenir (arada ağ
+    beklenmez), veri gelince bellekte tutulur, yarım saatte bir disk önbelleğinden yenilenir."""
+    import stt.dataset as ds
     import stt.pipeline as pl
     from stt.config import Config
-    calls = []
-    answers = [None, FPL]
-    monkeypatch.setattr(pl, "fpl_data", lambda d: calls.append(d) or answers[min(len(calls) - 1, 1)])
     clock = [1000.0]
     monkeypatch.setattr(pl.time, "time", lambda: clock[0])
+    state = {"down": True}
+    tries = []
+    boot = {"teams": [{"id": int(k), "name": v["name"], "short_name": v["short_name"]} for k, v in FPL["teams"].items()]}
+
+    def get(url):
+        tries.append(url)
+        if state["down"]:
+            raise OSError("ağ yok")
+        return boot if "bootstrap" in url else FPL["fixtures"]
+    monkeypatch.setattr(ds, "_get_json", get)
+    monkeypatch.setattr(ds, "_fail_until", 0.0)
     pipe = pl.Pipeline(Config(out_dir=tmp_path))
     try:
-        assert pipe.fpl() is None
-        assert pipe.fpl() is None and len(calls) == 1      # hemen tekrar denenmez (her video 40 sn beklemesin)
-        clock[0] += 11 * 60
-        assert pipe.fpl() is FPL and len(calls) == 2
+        assert pipe.fpl() is None and len(tries) == 1
         clock[0] += 60
-        assert pipe.fpl() is FPL and len(calls) == 2       # bellekte
+        assert pipe.fpl() is None and len(tries) == 1      # 10 dk dolmadan ağ denenmez (her video beklemesin)
+        state["down"] = False
+        clock[0] += 10 * 60
+        data = pipe.fpl()
+        assert data and [f["id"] for f in data["fixtures"]] == [f["id"] for f in FPL["fixtures"]] and len(tries) == 3
+        clock[0] += 60
+        assert pipe.fpl() is data and len(tries) == 3      # bellekte
         clock[0] += 31 * 60
-        pipe.fpl()
-        assert len(calls) == 3                             # yarım saatte bir disk önbelleği / FPL yeniden okunur
+        assert [f["id"] for f in pipe.fpl()["fixtures"]] == [f["id"] for f in FPL["fixtures"]] and len(tries) == 3  # disk önbelleği
     finally:
         pipe.close()
 
@@ -480,7 +504,7 @@ def test_reclassify_leaves_podcasts_and_reports_pressers(tmp_path):
 
 def test_reclassify_needs_fpl_and_skips_other_seasons(tmp_path, monkeypatch):
     import stt.reclassify as rc
-    monkeypatch.setattr(rc, "fpl_data", lambda d: None)
+    monkeypatch.setattr(rc, "fpl_data", lambda d, **k: None)
     assert not rc.reclassify(tmp_path, apply=True)["ok"]               # FPL yok: GW'ler silinmesin
     ds = {"team": "Arsenal", "opponent": "Chelsea", "is_pl": True, "gw": 30, "presser_date": "2026-03-01",
           "home": "Arsenal", "away": "Chelsea", "match_date": "2026-03-02", "phase": "mac-oncesi"}
@@ -528,7 +552,7 @@ def test_gui_reclassify_dry_run_then_apply(tmp_path, monkeypatch):
     import stt.gui as g
     import stt.reclassify as rc
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(rc, "fpl_data", lambda d: FPL)
+    monkeypatch.setattr(rc, "fpl_data", lambda d, **k: FPL)
     app = g.App()
     app._cfg.out_dir = tmp_path
     old = {"team": "Arsenal", "opponent": "Bukayo Saka's", "is_pl": True, "presser_date": "2026-11-06",
@@ -587,3 +611,247 @@ def test_finalize_writes_new_index_fields_and_posix_paths(tmp_path):
     assert doc["description_head"].startswith("Mikel Arteta reacts") and len(doc["description_head"]) == 400
     mac = json.loads((job.out_dir / "mac.json").read_text("utf-8"))
     assert mac["score"] == "2-1" and mac["kickoff_utc"] == "2026-11-08T16:30:00Z"
+
+
+# ---------------------------------------------------------------- bağımsız inceleme bulguları
+@pytest.mark.parametrize("title", [
+    "Mikel Arteta reacts to transfer rumours",
+    "Mikel Arteta's reaction to Saka's England call-up",
+    "Arteta press conference: Saka out for 2-3 weeks",
+    "Arteta reacts to Champions League draw",
+    "Okan Buruk: milli ara sonrası hedefimiz belli",
+])
+def test_phase_hint_no_false_post(title):
+    assert phase_hint(title) != "mac-sonrasi"
+
+
+@pytest.mark.parametrize("title", [
+    "Arsenal 2-1 Chelsea: Arteta's verdict",
+    "Arteta reacts to Chelsea win",
+    "Mikel Arteta reacts to the draw with Chelsea",
+    "Mikel Arteta reacts",
+    "Fenerbahçe derbisi sonrası Okan Buruk",
+    "2-1 win: Arteta on the comeback",
+])
+def test_phase_hint_real_post(title):
+    assert phase_hint(title) == "mac-sonrasi"
+
+
+def test_injury_timeline_presser_keeps_next_match():
+    meta = _meta("Arteta press conference: Saka out for 2-3 weeks", "Arsenal", timestamp=_ts("2026-11-06 12:00"))
+    assert (meta["gw"], meta["phase"]) == (11, "mac-oncesi")
+
+
+@pytest.mark.parametrize("title,channel,desc", [
+    ("Arsenal vs Chelsea preview: can we finally win? | Podcast", "The Arsenal Vision Podcast", ""),
+    ("Chelsea 2-1 Arsenal | Fan reactions & player ratings", "Chelsea Fan TV", ""),
+    ("Every Saka goal vs Chelsea", "Arsenal", ""),
+    ("Arsenal x adidas | 2026/27 away kit launch", "Arsenal", "Worn for the first time against Chelsea on Sunday."),
+    ("LIVE: Arsenal vs Chelsea | Match day show", "Arsenal", ""),
+    ("Liverpool vs Chelsea preview | Blood Red podcast", "Liverpool Echo", ""),
+    ("Arsenal vs Chelsea | Fan reactions", "Arsenal Fan TV", ""),
+])
+def test_club_channel_rule_needs_the_club_itself(title, channel, desc):
+    info = {"title": title, "channel": channel, "description": desc}
+    assert not looks_like_presser(info, parse_match(info))
+
+
+@pytest.mark.parametrize("title,want", [
+    ("ARNE SLOT'S PRESS CONFERENCE", "Arne Slot"),
+    ("XABI ALONSO'S PRESS CONFERENCE", "Xabi Alonso"),
+    ("İLHAN PALUT'UN AÇIKLAMALARI", "İlhan Palut"),
+    ("Carrick on Mainoo's fitness", "Michael Carrick"),
+    ("Howe on Isak", "Eddie Howe"),
+    ("Andreas Pereira on his goal", "Andreas Pereira"),
+    ("Nuno Mendes on PSG's win", "Nuno Mendes"),
+    ("Giuliano Simeone on the derby", "Giuliano Simeone"),
+    ("Scott McKenna on Forest", "Scott McKenna"),
+    ("Coletiva de Imprensa | Abel Ferreira", "Abel Ferreira"),
+    ("Rueda de Prensa | Javier Aguirre", "Javier Aguirre"),
+    ("COLETIVA DE IMPRENSA | ABEL FERREIRA", "Abel Ferreira"),
+    ("RUEDA DE PRENSA DE JAVIER AGUIRRE", "Javier Aguirre"),
+    ("SAKA OUT FOR SIX WEEKS", None),
+    ("KEVIN DE BRUYNE PRESS CONFERENCE", "Kevin de Bruyne"),
+    ("RÉGIS LE BRIS PRESS CONFERENCE", "Régis Le Bris"),
+    ("Nuno on the derby", "Nuno Espírito Santo"),
+])
+def test_manager_name_review_cases(title, want):
+    assert find_manager(title, find_teams(title)) == want
+
+
+def test_unsafe_surname_accepted_with_own_club():
+    """'Alonso' tek başına belirsiz (Marcos Alonso), ama Chelsea kanalında Xabi Alonso."""
+    assert find_manager("Alonso on Palmer's fitness", ["Chelsea"]) == "Xabi Alonso"
+    assert find_manager("Alonso on Palmer's fitness", []) is None
+    info = {"title": "Alonso on Palmer's fitness", "channel": "Chelsea FC"}
+    assert looks_like_presser(info, parse_match(info))
+
+
+@pytest.mark.parametrize("title,channel", [
+    ("Carrick on Mainoo's fitness", "Manchester United"),
+])
+def test_known_short_manager_names_still_pressers(title, channel):
+    info = {"title": title, "channel": channel}
+    assert looks_like_presser(info, parse_match(info))
+
+
+@pytest.mark.parametrize("title,channel", [
+    ("Nuno Mendes | All goals 2025", "PSG"),
+    ("Andreas Pereira skills and goals", "Fulham FC"),
+])
+def test_namesakes_are_not_managers(title, channel):
+    info = {"title": title, "channel": channel}
+    assert not looks_like_presser(info, parse_match(info))
+
+
+@pytest.mark.parametrize("title,teams", [
+    ("Zira FK vs Qarabağ", ["Zira", "Qarabağ"]),
+    ("Zira FK - Qarabağ oyunundan sonra", ["Zira", "Qarabağ"]),
+    ("Sabah FC - Neftçi", ["Sabah", "Neftçi"]),
+    ("Sporting Clube de Portugal", ["Sporting CP"]),
+    ("Qarabağ - Sabah mətbuat konfransı", ["Qarabağ", "Sabah"]),
+    ("Arsenal - Sporting press conference", ["Arsenal", "Sporting CP"]),
+    ("Qarabağ - Sabah matçından sonra", ["Qarabağ", "Sabah"]),
+    ("Derby - Nice", ["Derby County", "Nice"]),
+    ("Leeds 2-0 Derby highlights", ["Leeds United", "Derby County"]),
+    ("Arteta: Sporting will be a tough test", ["Sporting CP"]),
+    ("Spurs postgame reaction | NBC Sports", ["Tottenham"]),
+])
+def test_ambiguous_review_cases(title, teams):
+    assert find_teams(title) == teams
+
+
+def test_canon_team_resolves_ambiguous_fpl_names():
+    from stt.dataset import canon_team
+    assert canon_team("Derby") == "Derby County" and canon_team("Nice") == "Nice"
+
+
+def test_joined_with_spaced_score():
+    m = parse_match({"title": "Everton 0 - 0 Coventry City | Frank Lampard reacts", "channel": "Coventry City"})
+    assert (m["home"], m["away"]) == ("Everton", "Coventry City")
+
+
+def test_season_guard_uses_timestamp_when_no_upload_date():
+    """Yerel dosya (yalnız timestamp): 2025'teki Maresca videosu Man City'ye yazılmaz."""
+    m = parse_match({"title": "Enzo Maresca press conference | Chelsea", "timestamp": _ts("2025-12-01 12:00")})
+    assert m["team"] == "Chelsea"
+    m = parse_match({"title": "Enzo Maresca press conference | Chelsea", "timestamp": _ts("2026-11-01 12:00")})
+    assert m["team"] == "Manchester City"
+
+
+def test_fpl_attempts_every_10_minutes_not_20(tmp_path, monkeypatch):
+    """pipeline.fpl() ile fpl_data'nın iki ayrı beklemesi birleşip ağ 20 dk'da bir deneniyordu."""
+    import stt.dataset as ds
+    import stt.pipeline as pl
+    from stt.config import Config
+    clock = [10_000.0]
+    monkeypatch.setattr(ds.time, "time", lambda: clock[0])
+    tries = []
+
+    def boom(url):
+        tries.append(clock[0])
+        clock[0] += 20                      # zaman aşımı
+        raise OSError("ağ yok")
+    monkeypatch.setattr(ds, "_get_json", boom)
+    monkeypatch.setattr(ds, "_fail_until", 0.0)
+    pipe = pl.Pipeline(Config(out_dir=tmp_path))
+    try:
+        while clock[0] < 10_000 + 35 * 60:  # dakikada bir video bitiyor
+            pipe.fpl()
+            clock[0] += 60
+    finally:
+        pipe.close()
+    gaps = [(b - a) / 60 for a, b in zip(tries, tries[1:])]
+    assert len(tries) >= 3 and all(g <= 11.5 for g in gaps), gaps
+
+
+def test_fpl_force_ignores_backoff(tmp_path, monkeypatch):
+    import stt.dataset as ds
+    tries = []
+
+    def boom(url):
+        tries.append(url)
+        raise OSError("x")
+    monkeypatch.setattr(ds, "_get_json", boom)
+    monkeypatch.setattr(ds, "_fail_until", 0.0)
+    assert ds.fpl_data(tmp_path) is None and len(tries) == 1
+    assert ds.fpl_data(tmp_path) is None and len(tries) == 1
+    assert ds.fpl_data(tmp_path, force=True) is None and len(tries) == 2
+
+
+def test_reclassify_case_only_rename_keeps_files(tmp_path):
+    """Windows'ta (NTFS büyük/küçük harf duyarsız) 'Erik Ten Hag' -> 'Erik ten Hag' yeni dosyaları siliyordu:
+    yalnız harf büyüklüğü değişiyorsa kayıt yerinde kalır, eski adıyla."""
+    from stt.reclassify import reclassify
+    ds = {"team": "Bayer Leverkusen", "manager": "Erik Ten Hag", "presser_date": "2026-11-06",
+          "match_date": "2026-11-06", "home": "Bayer Leverkusen"}
+    p = _old_output(tmp_path, "y_hag", "Erik Ten Hag press conference", "Bayer Leverkusen", _ts("2026-11-06 12:00"),
+                    "Diger Takimlar/Bayer Leverkusen/2026-11-06 Bayer Leverkusen basın toplantısı",
+                    "2026-11-06 - Erik Ten Hag", ds)
+    res = reclassify(tmp_path, apply=True, data=FPL)
+    assert res["moved"] == 0 and not res["errors"], res
+    assert p["txt"].exists() and p["json"].exists()
+    assert not (p["txt"].parent / "2026-11-06 - Erik ten Hag.txt").exists()
+    row = json.loads((tmp_path / "index.jsonl").read_text("utf-8"))
+    assert row["json"].endswith("2026-11-06 - Erik Ten Hag.json") and row["manager"] == "Erik ten Hag"
+
+
+def test_reclassify_old_doc_keeps_cup_from_description(tmp_path):
+    """1.9.7 json'unda açıklama yok: açıklamadan doğru bulunmuş kupa maçı PL haftasına taşınmasın."""
+    from stt.reclassify import reclassify
+    ds = {"team": "Arsenal", "opponent": "Slavia Prague", "competition": "Champions League", "is_pl": True,
+          "presser_date": "2026-11-06", "match_date": "2026-11-06", "home": "Arsenal", "away": "Slavia Prague"}
+    p = _old_output(tmp_path, "y_cl", "Mikel Arteta press conference", "Arsenal", _ts("2026-11-06 12:00"),
+                    "Premier League/Arsenal/2026-11-06 Champions League Arsenal vs Slavia Prague",
+                    "2026-11-06 - Mikel Arteta", ds,
+                    match={"home": "Arsenal", "away": "Slavia Prague", "team": "Arsenal", "manager": "Mikel Arteta"})
+    ds2 = {"team": "Arsenal", "opponent": "Wycombe", "competition": "EFL Cup", "is_pl": True,
+           "presser_date": "2026-11-09", "match_date": "2026-11-09", "home": "Arsenal", "away": "Wycombe"}
+    p2 = _old_output(tmp_path, "y_cup", "Arsenal vs Wycombe | Mikel Arteta press conference", "Arsenal",
+                     _ts("2026-11-09 13:00"), "Premier League/Arsenal/2026-11-09 EFL Cup Arsenal vs Wycombe",
+                     "2026-11-09 - Mikel Arteta", ds2,
+                     match={"home": "Arsenal", "away": "Wycombe", "team": "Arsenal", "manager": "Mikel Arteta"})
+    res = reclassify(tmp_path, apply=True, data=FPL)
+    assert res["moved"] == 0, res["changes"]
+    assert p["txt"].exists() and p2["txt"].exists()
+
+
+def test_reclassify_survives_broken_source_info_and_keeps_extra_data(tmp_path):
+    from stt.reclassify import reclassify
+    old = {"team": "Arsenal", "opponent": "Bukayo Saka's", "is_pl": True, "presser_date": "2026-11-06",
+           "home": "Arsenal", "away": "Bukayo Saka's"}
+    p = _old_output(tmp_path, "y_ek", "Mikel Arteta on Bukayo Saka's fitness | Press conference", "Arsenal",
+                    _ts("2026-11-06 12:00"), "Premier League/Arsenal/2026-11-06 Arsenal vs Bukayo Saka's",
+                    "2026-11-06 - Mikel Arteta", old)
+    mac = p["txt"].parent / "mac.json"
+    mac.write_text(json.dumps({"team": "Arsenal", "ek_bilgiler": {"kadro": ["Saka"]}}), encoding="utf-8")
+    # bozuk bir başka kayıt bütün işi durdurmasın
+    b = _old_output(tmp_path, "y_bozuk", "x", "Arsenal", _ts("2026-11-06 12:00"), "Premier League/Arsenal/b", "b", {})
+    doc = json.loads(b["json"].read_text("utf-8"))
+    doc["source_info"] = "bozuk"
+    b["json"].write_text(json.dumps(doc), encoding="utf-8")
+    res = reclassify(tmp_path, apply=True, data=FPL)
+    assert res["moved"] >= 1, res
+    assert mac.exists() and json.loads(mac.read_text("utf-8"))["ek_bilgiler"] == {"kadro": ["Saka"]}
+
+
+def test_reclassify_collections_heal_on_rerun(tmp_path, monkeypatch):
+    """Yarıda kalan çalıştırma (koleksiyonlar güncellenmeden kapandı): sonraki çalıştırma yolları tamamlar."""
+    import stt.reclassify as rc
+    from stt.util import write_jsonl_csv
+    old = {"team": "Arsenal", "opponent": "Bukayo Saka's", "is_pl": True, "presser_date": "2026-11-06",
+           "home": "Arsenal", "away": "Bukayo Saka's"}
+    paths = _old_output(tmp_path, "y_heal", "Mikel Arteta on Bukayo Saka's fitness | Press conference", "Arsenal",
+                        _ts("2026-11-06 12:00"), "Premier League/Arsenal/2026-11-06 Arsenal vs Bukayo Saka's",
+                        "2026-11-06 - Mikel Arteta", old)
+    col = tmp_path / "Koleksiyonlar" / "k"
+    col.mkdir(parents=True)
+    row = {"date": "2026-11-06", "title": "t", "url": "u", "txt": str(paths["txt"]), "json": str(paths["json"]),
+           "key": "y_heal"}
+    write_jsonl_csv(col / "liste.jsonl", col / "liste.csv", [row], list(row))
+    monkeypatch.setattr(rc, "_fix_collections", lambda *a, **k: None)   # ilk çalıştırma yarıda kaldı
+    rc.reclassify(tmp_path, apply=True, data=FPL)
+    monkeypatch.undo()
+    rc.reclassify(tmp_path, apply=True, data=FPL)
+    r = json.loads((col / "liste.jsonl").read_text("utf-8"))
+    assert "GW11" in r["txt"] and Path(r["txt"]).exists()

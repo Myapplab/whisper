@@ -24,7 +24,6 @@ from .util import fmt_clock, keep_awake, log, text_hash
 from .workers import WorkerPool
 
 FPL_MEM_S = 1800     # FPL fikstür verisi bellekte en çok bu kadar tutulur (erteleme / skor için yeniden okunur)
-FPL_RETRY_S = 600    # FPL'ye ulaşılamadıysa bu kadar sonra tekrar denenir
 
 
 @dataclass
@@ -194,7 +193,6 @@ class Pipeline:
         self.devices: list[str] = []
         self._fpl = None
         self._fpl_at = 0.0                   # FPL verisinin okunduğu an
-        self._fpl_retry_at = 0.0             # FPL'ye ulaşılamadıysa bir sonraki deneme
         self.events = None                   # isteğe bağlı: GUI için olay geri çağırma fonksiyonu
         self.results: list[Job] = []
         self._pending_futs = 0
@@ -1198,20 +1196,16 @@ class Pipeline:
 
     def fpl(self) -> dict | None:
         """FPL fikstür verisi. Eskiden oturumda bir kez yükleniyordu: açılışta FPL'ye ulaşılamazsa günlerce açık
-        kalan uygulamada her video GW'siz yazılıyordu; erteleme / skor da hiç yenilenmiyordu. Artık ulaşılamazsa
-        FPL_RETRY_S sonra tekrar denenir, bellekteki veri FPL_MEM_S'de bir yeniden okunur (6 saatlik disk önbelleği)."""
+        kalan uygulamada her video GW'siz yazılıyordu; erteleme / skor da hiç yenilenmiyordu. Artık veri yoksa her
+        bitirmede istenir (``fpl_data`` ulaşamayınca 10 dk ağı denemez, hemen döner), varsa FPL_MEM_S'de bir yeniden
+        okunur (6 saatlik disk önbelleği)."""
         now = time.time()
         if self._fpl is not None and now - self._fpl_at < FPL_MEM_S:
             return self._fpl
-        if self._fpl is None and now < self._fpl_retry_at:
-            return None
         data = fpl_data(self.out_root / ".stt")
         if data is not None:
-            self._fpl, self._fpl_at = data, now
-        elif self._fpl is None:
-            self._fpl_retry_at = now + FPL_RETRY_S
-        else:
-            self._fpl_at = now  # yenilenemedi: eldeki veriyle devam, yarım saat sonra yine dene
+            self._fpl = data
+        self._fpl_at = now  # yenilenemediyse eldeki veriyle devam, yarım saat sonra yine dene
         return self._fpl
 
     def _out_paths(self, job: Job, meta: dict) -> tuple[Path, str]:

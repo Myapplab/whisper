@@ -25,8 +25,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path, PurePath
 
-from .match import _norm, find_teams, is_team, manager_team, safe_filename  # noqa: F401
-from .match import _known_manager
+from .match import _ALIAS_MAP, _ALIASES, _alias_norm, _known_manager, _norm, find_teams, is_team, safe_filename
 from .util import atomic_write_text, log, read_jsonl, write_jsonl_csv
 
 FPL_BASE = "https://fantasy.premierleague.com/api"
@@ -81,9 +80,10 @@ def _read_cache(cache: Path) -> dict | None:
         return None
 
 
-def fpl_data(cache_dir: Path, max_age_h: float = 6) -> dict | None:
+def fpl_data(cache_dir: Path, max_age_h: float = 6, force: bool = False) -> dict | None:
     """{'teams': {fpl_id: {...}}, 'fixtures': [...]} — önbellekli; erişilemezse eski önbellek ya da None.
-    Erişilemeyince FPL_RETRY_S boyunca yeniden denenmez (eski önbellek / None hemen döner)."""
+    Erişilemeyince FPL_RETRY_S boyunca yeniden denenmez (eski önbellek / None hemen döner); ``force``: kullanıcı
+    elle istedi (yeniden sınıflandır), bekleme süresine bakmadan dene."""
     global _fail_until
     cache = Path(cache_dir) / "fpl_cache.json"
     with _lock:
@@ -91,7 +91,7 @@ def fpl_data(cache_dir: Path, max_age_h: float = 6) -> dict | None:
             data = _read_cache(cache)
             if data is not None:
                 return data
-        if time.time() < _fail_until:
+        if time.time() < _fail_until and not force:
             return _read_cache(cache) if cache.exists() else None
         try:
             boot = _get_json(f"{FPL_BASE}/bootstrap-static/")
@@ -117,6 +117,10 @@ def fpl_data(cache_dir: Path, max_age_h: float = 6) -> dict | None:
 
 
 def canon_team(name: str) -> str:
+    """FPL takım adı -> sözlükteki kanonik ad. Ad tam bir takma adsa (belirsiz "Derby" dahil) doğrudan."""
+    exact = _ALIAS_MAP.get(_alias_norm(name or ""))
+    if exact:
+        return exact
     hits = find_teams(name)
     return hits[0] if hits else name
 
@@ -159,22 +163,45 @@ def presser_datetime(info: dict) -> datetime | None:
     return presser_time(info)[0]
 
 
-# Başlıktan maç evresi: "Post-Match", "reacts", "2-1", "maç sonrası" / "pre-match", "previews", "pre-Chelsea", "öncesi".
-# Yalnız "after" / "before" ipucu değil ("after the international break" maç öncesi toplantıdır).
-_POST_RE = re.compile(r"post[ -]?(?:match|game)|\breacts?\b|\breaction\b|\bafter (?:the )?(?:game|match|win|defeat|draw|loss)\b|"
-                      r"(?:mac|karsilasma|oyun|derbi)\w* (?:sonrasi|sonra|ardindan)\b|\bsonrasi\b|"
-                      r"(?<![\d-])\d{1,2} ?- ?\d{1,2}(?![\d-])")
+# Başlıktan maç evresi: "Post-Match", "Arteta reacts", "reacts to Chelsea win", "2-1", "maç sonrası" / "pre-match",
+# "previews", "pre-Chelsea", "öncesi". İpucu SAYILMAYANLAR: yalnız "after" ("after the international break"),
+# "reacts to transfer rumours", "reaction to call-up", "Champions League draw" (kura), "out for 2-3 weeks",
+# Türkçe tek başına "sonrası" ("milli ara sonrası").
+_RESULT = r"(?:win|wins|won|defeat|draw|drew|loss|lost|victory|beat|result|game|match|thrashing|comeback)"
+_POST_RE = re.compile(
+    r"post[ -]?(?:match|game)|"
+    rf"\breact(?:s|ion)?\b(?! to\b)|\breact(?:s|ion)? to (?:the |our |their |his |a )?(?:\d|[a-z]+ (?:\d|{_RESULT}\b)|{_RESULT}\b)|"
+    r"(?:mac|karsilasma|oyun|derbi|galibiyet|yenilgi|beraberlik|maglubiyet)\w* (?:sonrasi|sonra|ardindan)\b")
+# zayıf: "after Slavia win" geçmiş maçı anar; başlıkta "ahead of / previews" da varsa toplantı sonraki maçın öncesidir
+_POST_WEAK_RE = re.compile(rf"\bafter (?:the |our |a )?(?:[a-z]+ )?{_RESULT}\b")
 _PRE_RE = re.compile(r"pre[ -]?(?:match|game)|\bpreviews?\b|\bahead of\b|\bbefore (?:the )?(?:game|match)\b|"
                      r"\bpre[ -](?!season)[a-z]|\boncesi\b|\bevvel\b|build[ -]?up")
+# skor: "Arsenal 2-1 Chelsea", "2-1 win"; "2-3 weeks", "4-3-3", tarih değil
+_SCORE_RE = re.compile(r"(?<![\d-])\d{1,2} ?[-–] ?\d{1,2}(?![\d-])(?! ?(?:weeks?|wks?|days?|months?|years?|games?|"
+                       r"matches|mins?|minutes?|hafta\w*|gun\w*|ay\b|yil\w*|mac\w*|dakika\w*|hefte\w*))")
 
 
 def phase_hint(title: str) -> str | None:
-    """Başlık maç öncesi mi sonrası mı diyor? İkisi birden ya da hiçbiri: None (saate göre karar verilir)."""
+    """Başlık maç öncesi mi sonrası mı diyor? İkisi birden ya da hiçbiri: None (saate göre karar verilir).
+    Skor ancak başlıkta takım adı ya da sonuç sözcüğü de varsa maç sonrası sayılır."""
     t = _norm(title or "")
-    post, pre = bool(_POST_RE.search(t)), bool(_PRE_RE.search(t))
+    post = bool(_POST_RE.search(t)) or bool(
+        _SCORE_RE.search(t) and (find_teams(title) or re.search(rf"\b{_RESULT}\b", t)))
+    pre = bool(_PRE_RE.search(t))
+    if not post and not pre and _POST_WEAK_RE.search(t):
+        return "mac-sonrasi"
     if post == pre:
         return None
     return "mac-sonrasi" if post else "mac-oncesi"
+
+
+def _same_club(name: str, team: str | None) -> bool:
+    """Sözlükte olmayan rakip metni ("Manchester", "City", "Utd") o takımın bir adıyla örtüşüyor mu?"""
+    if not team:
+        return False
+    words = {w for w in _alias_norm(name).split() if len(w) > 2 and w not in ("the", "and", "fc", "afc")}
+    team_words = {w for a, c in _ALIASES if c == team for w in a.split()}
+    return bool(words & team_words)
 
 
 def find_fixture(team: str, opponent: str | None, when: datetime, data: dict, phase: str | None = None,
@@ -288,10 +315,17 @@ def classify(match: dict, info: dict, data: dict | None) -> dict:
             if not desc_cup_only or opp_is_pl:                     # açıklamadaki kupa, o rakiple PL maçını ezmez
                 fx = find_fixture(team, opponent, when, data, **kw)
         elif not is_team(opponent) or comp_title == "Premier League":
+            # sözlükte olmayan rakip: ±3 gündeki PL maçı yalnız rakibi o adla örtüşüyorsa ("Manchester" ->
+            # Manchester United). Örtüşmüyorsa (Wycombe) sözlükte olmayan bir kulüple kupa maçıdır.
             if not desc_cup_only:
                 fx = find_fixture(team, None, when, data, window=3, **kw)
                 if fx:
-                    log.info("Rakip tanınmadı (%s); en yakın PL maçı kullanıldı.", str(opponent)[:60])
+                    by_id = {v["id"]: k for k, v in teams.items()}
+                    other = by_id.get(fx["team_a"] if fx["team_h"] == teams[team]["id"] else fx["team_h"])
+                    if not (comp_title == "Premier League" or _same_club(str(opponent), other)):
+                        fx = None
+                if fx:
+                    log.info("Rakip sözlükte yok (%s); %s maçı kullanıldı.", str(opponent)[:60], fx.get("id"))
     if fx:
         by_id = {v["id"]: k for k, v in teams.items()}
         ko = _parse_dt(fx["kickoff_time"])

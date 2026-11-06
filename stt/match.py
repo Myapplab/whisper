@@ -70,13 +70,13 @@ TEAMS: dict[str, list[str]] = {
     "Atalanta": [], "Roma": ["AS Roma"], "Lazio": [], "Bologna": [], "Fiorentina": [],
     "Paris Saint-Germain": ["PSG", "Paris SG", "Paris Saint Germain"], "Monaco": ["AS Monaco"],
     "Marseille": ["Olympique de Marseille", "OM"], "Lille": ["LOSC"], "Lyon": ["Olympique Lyonnais"], "Nice": ["OGC Nice"],
-    "Benfica": [], "Porto": ["FC Porto"], "Sporting CP": ["Sporting Lisbon", "Sporting"], "Braga": ["SC Braga"],
+    "Benfica": [], "Porto": ["FC Porto"], "Sporting CP": ["Sporting Lisbon", "Sporting", "Sporting Clube de Portugal"], "Braga": ["SC Braga"],
     "Ajax": [], "PSV": ["PSV Eindhoven"], "Feyenoord": [],
     "Club Brugge": ["Brugge"], "Union Saint-Gilloise": ["Union SG", "Union St-Gilloise"],
     "Celtic": [], "Rangers": [],
     "Galatasaray": [], "Fenerbahçe": ["Fenerbahce"], "Beşiktaş": ["Besiktas"], "Trabzonspor": [],
     "Başakşehir": ["Basaksehir", "İstanbul Başakşehir"], "Göztepe": ["Goztepe"], "Samsunspor": [],
-    "Qarabağ": ["Qarabag", "Karabağ", "Karabag"], "Neftçi": ["Neftchi"], "Sabah": ["Sabah FK"], "Zira": [],
+    "Qarabağ": ["Qarabag", "Karabağ", "Karabag"], "Neftçi": ["Neftchi"], "Sabah": ["Sabah FK", "Sabah FC"], "Zira": ["Zira FK"],
     "Slavia Prague": ["Slavia Praha", "Slavia"], "Sparta Prague": ["Sparta Praha"], "Viktoria Plzen": ["Plzen", "Plzeň"],
     "Olympiacos": ["Olympiakos"], "Panathinaikos": [], "PAOK": [],
     "Copenhagen": ["FC Copenhagen", "FC København"], "Midtjylland": ["FC Midtjylland"],
@@ -114,7 +114,7 @@ OTHER_MANAGERS = (
 )
 # Ortak sözcük / çok yaygın soyadı: tek başına yazılınca hoca sayılmaz ("time slot", "Bernardo Silva", "Derrick Rose")
 _UNSAFE_SURNAMES = {"slot", "silva", "rose", "sage", "frank", "parker", "edwards", "andrews", "alonso", "tudor",
-                    "potter", "flick", "howe", "carrick"}
+                    "potter", "flick", "santo"}
 
 
 def _norm(s: str) -> str:
@@ -149,6 +149,11 @@ final semi quarter round leg week weekend season fans fan says speaks talks reve
 praises confirms discusses fitness transfer transfers window deadline january summer liga laliga serie
 bundesliga ligue is it his he we our my their they has have was were be from with into about after before
 ahead against why how what who
+coletiva imprensa rueda prensa conferencia conferenza stampa pressekonferenz persconferentie presse entrevista
+intervista out back set big top all one two three four five six seven eight nine ten more now next last first
+ready return returns fit doubt ruled miss misses available injured lineup xi starting bench goal goals assist
+assists start starts debut contract deal signing signs sign loan special key title race relegation chances
+weeks days months video clip clips every best
 """.split())
 
 _UP = "A-ZÀ-ÖØ-ÞĞİŞÇÜÖƏ"
@@ -194,26 +199,42 @@ _AMBIGUOUS = {"derby", "nice", "sporting", "sabah", "zira", "om"}
 _EXACT_CASE = {"om": "OM"}
 # Basketbol (NBA) bağlamında "Spurs" = San Antonio Spurs, Tottenham değil
 _NBA = re.compile(r"\b(?:nba|wnba|san antonio|wembanyama|grizzlies|lakers|warriors|celtics|knicks|mavericks|nuggets|"
-                  r"clippers|timberwolves|pelicans|basketball|basketbol|postgame)\b")
+                  r"clippers|timberwolves|pelicans|basketball|basketbol)\b")
 _CONNECT_BEFORE = re.compile(r"(?:^|[\s|:])(?:vs|v|versus|against)$")
-_LINK = r"(?:vs|v|versus|-|\d+(?:\s|:)\s*\d+)"
+_SCORE = r"\d+\s*[-:]?\s*\d+"
+_LINK = rf"(?:vs|v|versus|-|{_SCORE})"
+# Belirsiz addan sonra gelince "takım - takım" kalıbını doğrulayan sözcükler ("Qarabağ - Sabah oyunundan sonra")
+_AMB_AFTER = re.compile(r"(?:$|[|:\-]|\d|(?:mac|matc|oyun|karsilasma|match|game|clash|fixture|tie|press|presser|"
+                        r"metbuat|konfrans|basin|toplanti|aciklama|conference|preview|highlight|derbi|derby)\w*)")
+# "Sporting will be tough", "Nice are dangerous": belirsiz ad özne (önünde tanımlık yoksa)
+_AMB_VERB = re.compile(r"(?:are|have|has|will|were|is|was|can|could|would|play|plays|face|faces|host|hosts|visit|"
+                       r"visits|come|arrive)\b")
+_DETERMINERS = {"the", "a", "an", "this", "that", "our", "their", "his", "its", "next", "big", "local", "every", "any",
+                "no", "what"}
 
 
-def _ambiguous_ok(t: str, a: int, b: int, hits: list) -> bool:
+def _ambiguous_ok(t: str, a: int, b: int, alias: str, hits: list, cands: list) -> bool:
+    """Belirsiz ad (t[a:b]) burada takım mı? ``hits``: kesin takımlar, ``cands``: öbür belirsiz adaylar
+    ("Derby - Nice": ikisi de belirsiz, birbirine bağlı)."""
     before, after = t[:a].rstrip(), t[b:].lstrip()
     if _CONNECT_BEFORE.search(before):                       # "Leeds v Derby", "against Sporting"
         return True
-    ends = {y for _, y, _ in hits}
-    starts = {x for x, _, _ in hits}
-    # "<takım> - <ad>" / "<takım> 2-1 <ad>": adın ardında ayraç, maç sözcüğü, skor ya da başlık sonu
-    m = re.search(r"(?:-|\d+(?:\s|:)\s*\d+)$", before)
-    if m and len(t[:m.start()].rstrip()) in ends and \
-            re.match(r"(?:$|[|:\-]|\d|(?:mac|oyun|karsilasma|match|game|clash|fixture)\w*)", after):
+    ends = {y for _, y, *_ in hits + cands}
+    starts = {x for x, *_ in hits + cands}
+    # "<takım> - <ad>" / "<takım> 2-1 <ad>": adın ardında ayraç, maç / basın sözcüğü, skor ya da başlık sonu
+    m = re.search(rf"(?:-|{_SCORE})$", before)
+    if m and len(t[:m.start()].rstrip()) in ends and _AMB_AFTER.match(after):
         return True
+    seg_start = before.strip() in ("", "|", ":") or before.endswith(("|", ":"))
     # "<ad> vs <takım>" başlığın / bölümün başında
-    if before.strip() in ("", "|", ":") or before.endswith(("|", ":")):
+    if seg_start:
         m = re.match(_LINK + r"\s+", after)
         if m and b + (len(t[b:]) - len(after)) + m.end() in starts:
+            return True
+    # "Sporting will be a tough test" (derby hariç: "derby will be..." çoğunlukla yerel maç)
+    if alias != "derby" and _AMB_VERB.match(after):
+        prev = before.split()[-1] if before.split() else ""
+        if prev.strip("|:") not in _DETERMINERS:
             return True
     return False
 
@@ -237,13 +258,13 @@ def _team_hits(text: str) -> tuple[str, list[tuple[int, int, str]]]:
                 continue
             taken.append((a, b))
             hits.append((a, b, canon))
+    amb = [x for x in amb if not any(x[0] < y and x[1] > z for z, y in taken)]
+    amb = [x for x in amb if x[2] not in _EXACT_CASE
+           or re.search(rf"(?<![A-Za-z0-9]){_EXACT_CASE[x[2]]}(?![A-Za-z0-9])", text)]
+    fixed = list(hits)
     for a, b, alias, canon in amb:  # ortak sözcükler: öbür takımlar bulunduktan sonra, bağlama göre
-        if any(a < y and b > x for x, y in taken):
-            continue
-        if alias in _EXACT_CASE and not re.search(rf"(?<![A-Za-z0-9]){_EXACT_CASE[alias]}(?![A-Za-z0-9])", text):
-            continue
-        if _ambiguous_ok(t, a, b, hits):
-            taken.append((a, b))
+        others = [c for c in amb if c[0] != a]
+        if _ambiguous_ok(t, a, b, alias, fixed, others):
             hits.append((a, b, canon))
     return t, sorted(hits)
 
@@ -273,19 +294,29 @@ _ACRONYMS = {a.upper() for _, al in TEAMS.items() for a in al if a.isupper() and
 
 
 def _titlecase_caps(s: str) -> str:
-    # "MIKEL ARTETA PRESS CONFERENCE" -> "Mikel Arteta Press Conference"; "PSG", "FC" gibi kısaltmalar kalır
-    return re.sub(rf"\b[{_UP}]{{2,}}\b",
-                  lambda m: m.group(0) if len(m.group(0)) <= 3 and m.group(0) in _ACRONYMS else m.group(0).capitalize(),
-                  s)
+    # "MIKEL ARTETA PRESS CONFERENCE" -> "Mikel Arteta Press Conference"; "PSG", "FC" gibi kısaltmalar kalır;
+    # ad parçacıkları küçük harf ("ERIK TEN HAG" -> "Erik ten Hag", "RUEDA DE PRENSA DE ..." -> "Rueda de Prensa de")
+    def fix(m):
+        w = m.group(0)
+        if len(w) <= 3 and w in _ACRONYMS:
+            return w
+        if w.lower() in _PARTICLES and m.start() > 0:
+            return w.lower()
+        return w.capitalize()
+    return re.sub(rf"\b[{_UP}]{{2,}}\b", fix, s)
 
 
 def _strip_poss(tok: str) -> str:
-    """Slot's -> Slot, Buruk'un -> Buruk, Spurs' -> Spurs; O'Neil / D'Alessandro olduğu gibi."""
-    return re.sub(rf"['’](?:[{_LO}]+)?$", "", tok)
+    """Slot's -> Slot, Buruk'un -> Buruk, SLOT'S -> Slot (büyük harfli başlık), Spurs' -> Spurs;
+    O'Neil, D'Alessandro, N'Golo olduğu gibi (kesme işareti ilk harften hemen sonra)."""
+    i = max(tok.rfind("'"), tok.rfind("’"))
+    if i >= 2 and re.fullmatch(r"\w*", tok[i + 1:]):
+        return tok[:i]
+    return tok
 
 
 def _name_runs(title: str, teams: list[str]) -> list[list[str]]:
-    """Başlıktaki ardışık 'isim olabilecek' kelime dizileri (en az 2 kelime)."""
+    """Başlıktaki ardışık 'isim olabilecek' kelime dizileri (tek kelimelikler dahil)."""
     t = _titlecase_caps(title)
     team_words = {w for team in teams for w in _alias_norm(team).split()}
     all_team_words = {w for a, _ in _ALIASES for w in a.split()}
@@ -309,12 +340,13 @@ def _name_runs(title: str, teams: list[str]) -> list[list[str]]:
             cur = []
     if cur:
         runs.append(cur)
-    return [r for r in runs if len(r) >= 2 and not all(_norm(w) in all_team_words for w in r)]
+    return [r for r in runs if not all(_norm(w) in all_team_words for w in r)]
 
 
-def _known_manager(words: list[str]) -> str | None:
+def _known_manager(words: list[str], teams: list[str] | None = None) -> str | None:
     """Kelimeler bilinen bir hoca mı? Tam ad ("Erik ten Hag"), soyadı ("De Zerbi") ya da aynı adla başlayan yazım.
-    Aynı soyadlı başka kişi ("Derrick Rose", "Bernardo Silva") ve tek başına ortak sözcük ("Slot") değil."""
+    Aynı soyadlı başka kişi ("Derrick Rose", "Bernardo Silva") değil. Ortak sözcük / çok yaygın soyadı tek başına
+    ("Slot", "Alonso") yalnız hocanın takımı ``teams`` içindeyse (kanal / başlık) sayılır."""
     ws = [_norm(w) for w in words if w]
     if not ws:
         return None
@@ -322,15 +354,19 @@ def _known_manager(words: list[str]) -> str | None:
     if not full:
         return None
     if len(ws) == 1:
-        return None if ws[0] in _UNSAFE_SURNAMES else full
+        if ws[0] in _UNSAFE_SURNAMES and PL_MANAGERS.get(full) not in (teams or []):
+            return None
+        return full
     fw = _norm(full).split()
     return full if ws == fw[-len(ws):] or ws[0] == fw[0] else None
 
 
 def _known_in_run(run: list[str]) -> str | None:
+    """Çok kelimeli dizide bilinen hoca: en az iki kelimelik pencere ("Mikel Arteta", "De Zerbi"). Tek soyadı
+    başka bir adın ardındaysa ("Andreas Pereira", "Nuno Mendes") başka kişidir."""
     for p, w in enumerate(run):
         if _norm(w) in MANAGER_HINTS:
-            for s in range(max(0, p - 2), p + 1):
+            for s in range(max(0, p - 2), p):
                 k = _known_manager(run[s:p + 1])
                 if k:
                     return k
@@ -339,19 +375,21 @@ def _known_in_run(run: list[str]) -> str | None:
 
 def find_manager(title: str, teams: list[str]) -> str | None:
     runs = _name_runs(title, teams)
-    for r in runs:  # bilinen hoca önce (yazılışı düzeltilmiş tam adıyla: "FABIAN HURZELER" -> "Fabian Hürzeler")
+    multi = [r for r in runs if len(r) >= 2]
+    for r in multi:  # bilinen hoca önce (yazılışı düzeltilmiş tam adıyla: "FABIAN HURZELER" -> "Fabian Hürzeler")
         k = _known_in_run(r)
         if k:
             return k
-    if runs:
-        r = runs[0][:3]
+    for r in runs:  # tek başına soyadı: "Arteta on Saka", "Carrick on Mainoo's fitness"
+        if len(r) == 1:
+            k = _known_manager(r, teams)
+            if k:
+                return k
+    if multi:
+        r = multi[0][:3]
         while r and r[-1].lower() in _PARTICLES:
             r = r[:-1]
         return " ".join(r)
-    for w in re.findall(_NAME_WORD, _titlecase_caps(title)):
-        k = _known_manager([_strip_poss(w)])
-        if k:
-            return k
     return None
 
 
@@ -406,9 +444,28 @@ _PRESSER_RE = re.compile(
     r"conferencia de prensa|pressekonferenz|conferenza stampa|conference de presse|persconferentie|coletiva")
 # Kulüp kanalında rakip adı geçse de basın toplantısı / röportaj olmayan videolar
 _NOT_PRESSER_RE = re.compile(
-    r"highlight|extended|all goals|goals? and|behind the scenes|tunnel|unseen|training|antrenman|idman|full match|"
-    r"replay|women|u ?21|u ?23|u ?18|academy|vlog|asmr|compilation|skills|best goals|matchday live|live stream|"
-    r"watchalong|fan ?cam|ozet|gol(?:ler)?\b")
+    r"highlight|extended|\bgoals?\b|behind the scenes|tunnel|unseen|training|antrenman|idman|full match|"
+    r"replay|women|u ?21|u ?23|u ?18|academy|vlog|asmr|compilation|skills|matchday|match day|\blive\b|stream|"
+    r"watchalong|\bfans?\b|podcast|\bshow\b|\bkit\b|launch|unboxing|documentary|trailer|\btour\b|ticket|"
+    r"rewind|classic|on this day|mic'?d|\bbts\b|inside|moments|quiz|challenge|prank|fifa|efootball|ozet|"
+    r"\bgol(?:ler)?\b")
+# Kulübün kendi kanalı: kanal adında kulüp adından başka yalnız bunlar olabilir ("Liverpool FC", "LFC TV")
+_CLUB_CHANNEL_WORDS = {"fc", "afc", "cf", "sc", "fk", "pfk", "sk", "jk", "official", "football", "club", "the", "tv",
+                       "hd", "channel", "futbol", "spor", "kulubu", "klubu"}
+
+
+def club_of_channel(channel: str) -> str | None:
+    """Kanal kulübün kendisi mi (Arsenal, Tottenham Hotspur, Qarabağ FK)? Taraftar / gazete / podcast kanalı
+    ("Arsenal Fan TV", "Liverpool Echo", "The Arsenal Vision Podcast") değil."""
+    t, hits = _team_hits(channel or "")
+    teams = _uniq(c for *_, c in hits)
+    if len(teams) != 1:
+        return None
+    rest = t
+    for a, b, _ in sorted(hits, reverse=True):
+        rest = rest[:a] + " " + rest[b:]
+    words = [w for w in re.split(r"[\s|:\-/&']+", rest) if w]
+    return teams[0] if all(w in _CLUB_CHANNEL_WORDS or len(w) == 1 for w in words) else None
 
 
 def looks_like_presser(info: dict, match: dict | None = None) -> bool:
@@ -418,15 +475,17 @@ def looks_like_presser(info: dict, match: dict | None = None) -> bool:
     clash", "X reacts to Brighton defeat"); özet / antrenman / kadın takımı videoları hariç."""
     m = match or {}
     mgr = m.get("manager") or ""
-    if mgr and _known_manager(mgr.split()):
-        return True
     title = info.get("title") or ""
+    channel = info.get("channel") or info.get("uploader") or ""
+    if mgr and _known_manager(mgr.split(), find_teams(f"{title} | {channel}")):
+        return True
     text = _norm(f"{title} {(info.get('description') or '')[:300]}")
     if _PRESSER_RE.search(text):
         return True
-    channel = info.get("channel") or info.get("uploader") or ""
+    club = club_of_channel(channel)
     opp = m.get("away") if m.get("team") in (None, m.get("home")) else m.get("home")
-    if channel and is_team(opp) and opp != m.get("team") and find_teams(channel) \
+    # rakip başlıkta geçmeli (açıklamadaki rakip yetmez: forma tanıtımı "... against Chelsea on Sunday")
+    if club and is_team(opp) and opp != club and (opp in find_teams(title) or opp == _opponent_by_pattern(title, club)) \
             and not _NOT_PRESSER_RE.search(_norm(title)):
         return True
     return False
@@ -441,6 +500,18 @@ def _joined(t: str, hits: list) -> bool:
     if not nxt:
         return False
     return re.fullmatch(r"\s*(?:" + _LINK + r")?\s*", t[b0:nxt[0]]) is not None
+
+
+def _ts_date(info: dict) -> str | None:
+    """release_timestamp / timestamp -> 'YYYY-MM-DD' (UTC)."""
+    from datetime import datetime, timezone
+    for k in ("release_timestamp", "timestamp"):
+        try:
+            if info.get(k):
+                return datetime.fromtimestamp(int(info[k]), tz=timezone.utc).date().isoformat()
+        except (ValueError, OSError, OverflowError, TypeError):
+            pass
+    return None
 
 
 def parse_match(info: dict) -> dict:
@@ -462,10 +533,10 @@ def parse_match(info: dict) -> dict:
     if not chan_teams and len(title_teams) == 1 and _is_opponent_mention(title, title_teams[0]):
         team, home, away = None, None, title_teams[0]  # "pre-Chelsea", "previews Chelsea": Chelsea rakip
     manager = find_manager(title, title_teams + chan_teams)
-    d = info.get("upload_date") or ""
+    d = str(info.get("upload_date") or "")
     date = f"{d[:4]}-{d[4:6]}-{d[6:8]}" if re.fullmatch(r"\d{8}", d) else None
     # tarafsız kanal (Sky, BBC...): toplantının sahibi hocanın takımı, başlıkta ilk yazılan takım değil
-    mt = manager_team(manager, date)
+    mt = manager_team(manager, date or _ts_date(info))
     if mt and not chan_teams:
         if mt in title_teams:
             team = mt
