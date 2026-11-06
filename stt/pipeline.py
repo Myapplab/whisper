@@ -265,6 +265,7 @@ class Pipeline:
         self.hdqueued_n = 0
         self._d_need_since: float | None = None   # ana ayırma işçisinin alamadığı ayırma işi ne zamandır var
         self._w_need_since: float | None = None   # ana kartın alamadığı metin işi ne zamandır var
+        self.helper_disabled = ""                  # dolu = yardımcı kart kapatıldı (ör. ekran sürücüsü çöktü), sebep
         self._h_batch: dict[str, int] = {}       # yardımcı -> şu an yüklü modelin toplu boyutu
         self._ecfg: dict = {}
         self.idle: set[str] = set()          # boşta olduğunu bildiren işçiler
@@ -361,8 +362,12 @@ class Pipeline:
             on_display = int(dev.split(":")[1]) in (self._ecfg.get("display_gpus") or [])
             pct = self.cfg.display_gpu_limit_pct if on_display else self.cfg.gpu_limit_pct
             frac = pct / 100 if pct and 0 < pct < 100 else None
+        from .engines import diar_batch_size
         from .tune import load_tuned
-        self.dpool = WorkerPool([dev], {**self._ecfg, "role": "diar", "diar_gpu_frac": frac,
+        gb = (self._ecfg.get("gpu_mem") or {}).get(int(dev.split(":")[1])) if dev.startswith("cuda") else None
+        batch = diar_batch_size(self.cfg.diar_batch, gb)
+        log.info("Konuşmacı ayırma toplu boyutu: %d", batch)
+        self.dpool = WorkerPool([dev], {**self._ecfg, "role": "diar", "diar_gpu_frac": frac, "diar_batch": batch,
                                         "diar_params": load_tuned(self.out_root / ".stt")}, names=["diar"])
         self.dpool.start()
         self.emit("worker", wid="diar", state="loading", name="Konuşmacı ayırma")
@@ -1106,6 +1111,9 @@ class Pipeline:
         (`_helper_check`). Başka programlar o belleği uzun süre aşarsa yardımcı kapatılır (bellek onlara kalır), yer
         açılınca sığan toplu boyutla yeniden açılır. ``self.lock`` altında çağrılır."""
         hp = self.hpool
+        if hp is not None and self.helper_disabled:
+            self._helper_stop_all()
+            return
         if hp is None or self.hqueued_n > 0:
             return  # kuyruktaki görev henüz alınmadı: ikinci görev verilmez
         surplus = sum(1 for t in self.backlog
@@ -1180,6 +1188,7 @@ class Pipeline:
                     self._h_open_free.pop(wid, None)
                 if isinstance(getattr(hp, "_ecfg", None), dict):
                     hp._ecfg = {**hp._ecfg, "helper_batch": batch}  # yeni süreç bu toplu boyutla yükler
+                self._mark_helper()
                 hp.respawn(wid)
                 self.emit("worker", wid=wid, state="loading")
                 continue
@@ -1214,6 +1223,9 @@ class Pipeline:
         (helper_reserve_gb) dışında ``HELPER_DIAR_GB`` yer olmalı; torch bellek sınırı da o boş yere göre konur.
         İşsiz kalınca kapanır (metin işi bekliyorsa ``HELPER_SWITCH_S``, yoksa ``HELPER_IDLE_PARK_S`` sonra).
         ``self.lock`` altında çağrılır."""
+        if self.helper_disabled:
+            self._helper_stop_all()
+            return
         wid, now = HELPER_DIAR, time.time()
         # yardımcıda bellek yetmemiş görev (no_helper) yardımcıya bir daha verilmez: 3090'daki işçi alır
         need = sum(1 for t in self.dbacklog if not t.get("no_helper")
@@ -1295,12 +1307,35 @@ class Pipeline:
             self.hdpool.put(t)
             break
 
+    def disable_helper(self, reason: str) -> None:
+        """Yardımcı kartı (monitörlü) bu oturumda bir daha kullanma: boştakiler hemen, çalışan görevini bitirince kapanır."""
+        with self.lock:
+            self.helper_disabled = reason or "kapatıldı"
+            self._helper_stop_all()
+
+    def _helper_stop_all(self) -> None:
+        note = "kapatıldı: " + self.helper_disabled
+        for pool in (self.hpool, self.hdpool):
+            for wid in (list(pool.workers) if pool is not None else []):
+                if wid in self._h_parked:
+                    self._helper_note(wid, note)
+                    continue
+                queued = self.hqueued_n if pool is self.hpool else self.hdqueued_n
+                if wid in self.idle and wid not in self.inflight and not queued:
+                    self._park_helper(wid, self.helper_disabled)
+                    self._helper_note(wid, note)
+
+    def _mark_helper(self) -> None:
+        from .gpuguard import mark_helper_open
+        mark_helper_open(self.out_root / ".stt")
+
     def _open_hdiar(self, frac: float | None) -> None:
         """Yardımcı kartta konuşmacı ayırma işçisini aç (model ilk görevde yüklenir)."""
         wid = HELPER_DIAR
         dev = self.helper_devices[0]
         from .tune import load_tuned
-        ecfg = {**self._ecfg, "role": "diar", "diar_gpu_frac": frac,
+        # yardımcı kartta bellek sınırlı (ayrılan bellek dışı): küçük toplu boyut (ayarda sayı varsa o)
+        ecfg = {**self._ecfg, "role": "diar", "diar_gpu_frac": frac, "diar_batch": self.cfg.diar_batch or 8,
                 "diar_params": load_tuned(self.out_root / ".stt")}
         ecfg.pop("helper", None)
         del self._h_parked[wid]
@@ -1308,6 +1343,7 @@ class Pipeline:
         self._h_last[wid] = time.time()
         log.info("[%s] yardımcı kartta konuşmacı ayırma açılıyor (%s, bellek sınırı %s; %.1f GB YouTube / tarayıcıya "
                  "ayrıldı)", wid, dev, f"%{round(frac * 100)}" if frac else "yok", self.cfg.helper_reserve_gb)
+        self._mark_helper()
         if self.hdpool is None:
             self.hdpool = WorkerPool([dev], ecfg, names=[wid])
             self.hdpool.start()

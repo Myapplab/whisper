@@ -23,7 +23,9 @@ TOPICS = {
               "media conference", "basın toplantısı", "basin toplantisi", "maç öncesi", "maç sonrası",
               "mətbuat konfransı", "rueda de prensa", "conferencia de prensa", "conférence de presse",
               "pressekonferenz", "conferenza stampa", "conferência de imprensa", "persconferentie",
-              "пресс-конференция", "press talk", "pre-game", "post-game"),
+              "пресс-конференция", "press talk", "pre-game", "post-game",
+              # kulüp kanallarında basın toplantısı başka adlarla da yükleniyor (Man City: "MANAGER'S PREVIEW: Pep ...")
+              "manager's preview", "managers preview", "manager preview", "head coach preview"),
     "roportaj": ("interview", "röportaj", "reaction", "speaks", "reacts", "müsahibə", "entrevista", "intervista"),
     "hepsi": (),
 }
@@ -72,6 +74,23 @@ def is_collection_url(url: str) -> bool:
         return "/video/c" in path or "/videos" in path
     if host.endswith("twitch.tv"):
         return path.rstrip("/").endswith("/videos")
+    return False
+
+
+def is_playlist_url(url: str) -> bool:
+    """Oynatma listesi linki mi (kanal değil)? Liste kullanıcının seçtiği videolardır: konu süzgeci uygulanmaz,
+    işlenmemişlerin hepsi seçili gelir. YouTube'da ``list=`` (``/playlist`` ya da ``watch?v=..&list=``; otomatik
+    "Mix" listeleri RD.. hariç), Dailymotion ``/playlist/``, Vimeo showcase/album."""
+    p = urlsplit((url or "").strip())
+    host = (p.hostname or "").lower().removeprefix("www.").removeprefix("m.").removeprefix("music.")
+    q = parse_qs(p.query)
+    if host.endswith("youtube.com") or host == "youtu.be":
+        lid = (q.get("list") or [""])[0]
+        return bool(lid) and not lid.startswith("RD")
+    if host.endswith("dailymotion.com"):
+        return p.path.startswith("/playlist/")
+    if host.endswith("vimeo.com"):
+        return bool(re.match(r"^/(showcase|album)/", p.path))
     return False
 
 
@@ -142,6 +161,71 @@ def list_videos(url: str, cfg, limit: int | None = None) -> dict:
         raise RuntimeError("Liste alınamadı: " + " | ".join(errors))
     items.sort(key=lambda e: e.get("date") or "", reverse=True)  # tarihsizler sırasını korur (zaten yeniden eskiye)
     return {"title": re.sub(r"\s+-\s+(Videos|Live|Videolar)$", "", title), "channel": channel, "items": items}
+
+
+# ------------------------------------------------------------------ kanalda basın toplantısı bulucu (deneme)
+PRESSER_QUERIES = ("press conference", "pre-match", "post-match", "manager's preview", "presser")
+
+
+def channel_root(url: str) -> str | None:
+    """YouTube kanal linki -> kök (https://www.youtube.com/@Ad); kanal değilse None."""
+    p = urlsplit((url or "").strip())
+    host = (p.hostname or "").lower()
+    if "youtube.com" not in host:
+        return None
+    m = re.match(r"^(/(?:@[^/]+|channel/[^/]+|c/[^/]+|user/[^/]+))(/.*)?$", p.path or "")
+    return f"https://www.youtube.com{m.group(1)}" if m else None
+
+
+def find_pressers(url: str, cfg, limit: int | None = None, queries=PRESSER_QUERIES) -> dict:
+    """DENEME: kanalın tamamında basın toplantılarını bul. Normal listeleme kanalın son ``channel_max`` videosuna
+    bakar; bu ise (1) kanal içi YouTube aramasını (her sorgu ayrı, ``/search?query=``) ve (2) adında basın toplantısı
+    geçen oynatma listelerini tarar, sonuçları birleştirir. Konu süzgeci (``select``) sonra yine uygulanır.
+    Döner: list_videos ile aynı biçim + 'sources' (nereden kaç video geldi)."""
+    from concurrent.futures import ThreadPoolExecutor
+    from urllib.parse import quote
+
+    from .fetch import ytdlp_info
+    base = channel_root(url)
+    if not base:
+        raise RuntimeError("Basın toplantısı bulucu yalnız YouTube kanal linkinde çalışır (ör. youtube.com/@Arsenal)")
+    limit = int(limit or cfg.channel_max)
+
+    def flat(u, n):
+        try:
+            return ytdlp_info(u, cfg.cookies_browser, flat=True, extra={"playlistend": n}), None
+        except Exception as e:  # noqa: BLE001
+            return None, str(e)[:200]
+    targets = [(f"arama: {q}", f"{base}/search?query={quote(q)}") for q in queries]
+    info, _ = flat(base + "/playlists", 300)
+    kws = _prep(TOPICS["basin"])
+    for e in (info or {}).get("entries") or []:
+        title, purl = (e or {}).get("title") or "", (e or {}).get("url") or ""
+        if purl and _hit(f" {_norm(title)} ", kws):
+            targets.append((f"liste: {title}", purl))
+    targets = targets[:16]  # aşırı istek olmasın (YouTube engelleyebilir)
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        results = list(ex.map(lambda t: flat(t[1], limit), targets))
+    title, channel, items, seen, sources, errors = "", "", [], set(), {}, []
+    for (label, _u), (inf, err) in zip(targets, results):
+        if inf is None:
+            errors.append(f"{label}: {err}")
+            continue
+        channel = channel or inf.get("channel") or inf.get("uploader") or ""
+        n = 0
+        for e in _entries(inf):
+            k = e.get("id") or e["url"]
+            if k not in seen:
+                seen.add(k)
+                items.append(e)
+                n += 1
+        sources[label] = n
+    if not items and errors:
+        raise RuntimeError("Basın toplantısı aranamadı: " + " | ".join(errors[:3]))
+    items.sort(key=lambda e: e.get("date") or "", reverse=True)
+    log.info("Basın toplantısı bulucu (%s): %d video; %s", base, len(items),
+             ", ".join(f"{k}={v}" for k, v in sources.items()))
+    return {"title": channel or base, "channel": channel, "items": items, "sources": sources}
 
 
 def keywords_for(topic: str | None, custom: str | None = None) -> list[str]:

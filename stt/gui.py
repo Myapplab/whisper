@@ -308,12 +308,39 @@ class App:
             self._upd_checked = True
             threading.Thread(target=self._auto_update_check, name="guncelleme", daemon=True).start()
             threading.Thread(target=self._follow_loop, name="takip", daemon=True).start()
+            threading.Thread(target=self._display_guard, name="ekran-koruma", daemon=True).start()
         return {"version": __version__, "settings": self.get_settings(), "engine": self._engine_state,
                 "dataset": self.dataset(), "pending": [{"uid": x["uid"], "title": x["title"], "source": x["source"]}
                                                        for x in self._pending],
                 "follows": self.follow_list()}
 
     # ---------------------------------------------------------- güncelleme
+    def _display_guard(self, events: list | None = None) -> dict | None:
+        """Yardımcı kart (monitörlü 3080) açıkken ekran sürücüsü çöktüyse / bilgisayar kapandıysa yardımcıyı kapat.
+        Kullanıcıda iki kez ekran karardı ("HDMI sinyali yok"); sebep kesin değil, ama monitörlü karta yük ilk şüpheli."""
+        from .gpuguard import clear_mark, describe, display_events, fmt_time, helper_crash
+        if (self._cfg.gpus or "").lower() != "yardim":
+            return None
+        if events is None:
+            events = display_events(14)
+        hit = helper_crash(self._state_dir(), events)
+        if not hit:
+            return None
+        what = "ekran sürücüsü çöktü" if hit["kind"] == "driver" else "bilgisayar beklenmedik kapandı"
+        save_settings({"gpus": "auto"})
+        self._cfg = load_config()
+        if self._pipe is not None:
+            self._pipe.cfg = self._cfg
+            self._pipe.disable_helper(what)
+        self._restart.set()  # işler bitince motor önerilen kart düzeniyle açılır
+        clear_mark(self._state_dir())
+        msg = (f"Yardımcı kart (monitörlü) kullanılırken {what} ({fmt_time(hit['t'])}). Güvenlik için yardımcı kapatıldı "
+               "(Ayarlar › Ekran kartı kullanımı: Önerilen). Ekran kartı hız aşırtması (MSI Afterburner) varsa Reset'e "
+               "basın. Ayrıntı: Kontrol. Olaylar: " + describe(events))
+        log.warning("%s", msg)
+        self._push({"type": "notice", "text": msg})
+        return hit
+
     def _auto_update_check(self) -> None:
         time.sleep(3)
         info = self.update_check()
@@ -423,6 +450,12 @@ class App:
             upd["diar_agc"] = {"on": True, "off": False}.get(s["diar_agc"], "")
         if "webhook_url" in s:
             upd["webhook_url"] = (s.get("webhook_url") or "").strip()
+        if upd.get("gpus") == "yardim" and (self._cfg.gpus or "").lower() != "yardim":
+            try:  # yeniden açıldı: eski çökmeler bu kez sayılmasın
+                from .gpuguard import clear_mark
+                clear_mark(self._state_dir())
+            except Exception:  # noqa: BLE001
+                pass
         save_settings(upd)
         old = (str(self._cfg.out_dir), self._cfg.hf_token, self._cfg.gpus, self._cfg.diar_engine, self._cfg.diar_agc)
         old_port = self._cfg.api_port
@@ -618,18 +651,26 @@ class App:
 
     # ---------------------------------------------------------- kanal / oynatma listesi
     def list_channel(self, url: str, opts: dict) -> dict:
-        from .channel import TOPIC_LABELS, collection_name, list_videos, select
+        from .channel import TOPIC_LABELS, collection_name, find_pressers, is_playlist_url, list_videos, select
         url = (url or "").strip()
         if not url:
             return {"ok": False, "error": "Kanal ya da oynatma listesi linki girin."}
+        finder = bool(opts.get("find")) and not is_playlist_url(url)
         try:
-            data = list_videos(url, self._cfg, limit=int(opts.get("limit") or self._cfg.channel_max))
+            if finder:  # deneme: kanalın tamamında arama + basın toplantısı listeleri
+                data = find_pressers(url, self._cfg, limit=int(opts.get("limit") or self._cfg.channel_max))
+            else:
+                data = list_videos(url, self._cfg, limit=int(opts.get("limit") or self._cfg.channel_max))
         except Exception as e:  # noqa: BLE001
             from .fetch import explain_error
             return {"ok": False, "error": explain_error(str(e))}
         use_ai = bool(opts.get("ai")) and self.llm().available()
         topic = opts.get("topic") or "basin"
-        items = select(data["items"], topic, opts.get("custom"), opts.get("exclude"),
+        playlist = is_playlist_url(url)
+        # oynatma listesi kullanıcının seçtiği videolardır: konu süzgeci yok (yalnız "geçerse alma" ve özel kelimeler);
+        # işlenmemişlerin hepsi seçili gelir (eskiden "MANAGER'S PREVIEW" gibi başlıklar tek tek işaretleniyordu)
+        sel_topic = "hepsi" if playlist else topic
+        items = select(data["items"], sel_topic, opts.get("custom"), opts.get("exclude"),
                        llm=self.llm() if use_ai else None,
                        llm_topic=opts.get("custom") or ("" if topic == "hepsi" else TOPIC_LABELS.get(topic, "")))
         coll = collection_name(data.get("channel") or data.get("title") or url, topic, opts.get("custom"))
@@ -641,7 +682,8 @@ class App:
         except Exception:  # noqa: BLE001
             log.debug("işlenmiş videolar okunamadı", exc_info=True)
         return {"ok": True, "title": data.get("title"), "channel": data.get("channel"), "items": items,
-                "matched": sum(1 for e in items if e.get("match")), "collection": coll, "ai": use_ai}
+                "matched": sum(1 for e in items if e.get("match")), "collection": coll, "ai": use_ai,
+                "playlist": playlist, "finder": finder, "sources": data.get("sources") or {}}
 
     def start_selected(self, urls: list[str], opts: dict) -> dict:
         msg = self._busy_msg()

@@ -43,7 +43,8 @@ class Config:
     display_gpu_limit_pct: int = 70      # monitörlü kart (ör. RTX 3080)
     ram_limit_pct: int = 70              # boş RAM'in en çok bu kadarı; yetmezse bekler, sonra tekrar dener
     diar_cpu: bool = False               # konuşmacı ayırma işlemcide (CPU) yapılabilsin mi (yavaş, fan çok döner)
-    diar_batch: int = 8                  # konuşmacı ayırma toplu boyutu (küçük = daha az bellek, biraz yavaş)
+    diar_batch: int = 0                  # konuşmacı ayırma toplu boyutu; 0 = karta göre (24 GB: 32, 10-12 GB: 16, diğer 8).
+                                         # Sonucu değiştirmez (parçalar tek tek hesaplanır), yalnız hız / bellek
     fill_gaps: bool = True               # metinde uzun boşluk kalırsa (müzik altında konuşma) o kısım VAD'siz tekrar
     worker_restarts: int = 6             # art arda en fazla bu kadar yeniden başlatma (başarılı görev sayacı sıfırlar)
     # bölme

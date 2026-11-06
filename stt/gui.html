@@ -289,12 +289,13 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
         <div class="field"><label for="chExcl">Başlıkta geçerse alma</label>
           <input class="txt" id="chExcl" placeholder="ör. women, u21, academy"></div>
         <div class="row"><label class="n hint">En fazla <input type="number" id="chMax" min="5" max="5000" value="200" style="width:80px" class="txt"> video</label></div>
+        <label class="toggle"><input type="checkbox" id="chFind"><span>Kanalın tamamında basın toplantılarını ara (deneme)<small>Yalnız son videolara değil: kanal içi arama ve adında basın toplantısı geçen oynatma listeleri taranır. Daha yavaş; yalnız YouTube kanal linkinde.</small></span></label>
         <label class="toggle" id="chAiRow"><input type="checkbox" id="chAi"><span>Yapay zekâ ile seç<small>Başlıkları konuya göre yapay zekâ süzer (Ayarlar'da anahtar gerekir)</small></span></label>
         <button class="btn" id="btnList" type="button" hidden>Yeniden listele</button>
         <div class="hint" id="chInfo"></div>
         <div class="clist" id="chList" hidden></div>
         <div class="row" id="chActs" hidden>
-          <button class="linkbtn" id="chAll" type="button">Uyanları seç</button>
+          <button class="linkbtn" id="chAll" type="button">İşlenmemişleri seç</button>
           <button class="linkbtn" id="chNone" type="button">Hiçbiri</button>
           <span class="spacer"></span>
           <label class="hint"><input type="checkbox" id="chBack"> mevcutları da işle</label>
@@ -568,7 +569,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     for (const x of $("#chTopic").children) x.setAttribute("aria-pressed", String(x === b));
   });
   const chOpts = () => ({ topic: state.chTopic, custom: $("#chWords").value, exclude: $("#chExcl").value,
-    limit: parseInt($("#chMax").value, 10) || 200, ai: $("#chAi").checked });
+    limit: parseInt($("#chMax").value, 10) || 200, ai: $("#chAi").checked, find: $("#chFind").checked });
   $("#chUrl").addEventListener("input", () => { state.ch = null; $("#chList").hidden = true; $("#chActs").hidden = true; $("#btnList").hidden = true; $("#chInfo").textContent = ""; setMode("channel"); });
   async function listChannel() {
     const u = $("#chUrl").value.trim(); if (!u) { toast("Kanal ya da oynatma listesi linkini girin."); return; }
@@ -576,13 +577,13 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     const r = await call("list_channel", u, chOpts());
     $("#btnList").disabled = $("#btnStart").disabled = false;
     if (!r || !r.ok) { $("#chInfo").textContent = (r && r.error) || "Listelenemedi."; return; }
-    state.ch = r; state.chSel = new Set(r.items.filter(e => e.match && !e.done).map(e => e.url));
+    state.ch = r; state.chSel = chPick(r);
     renderChannel(); setMode("channel");
   }
   function renderChannel() {
     const r = state.ch, l = $("#chList"); l.replaceChildren();
     const done = r.items.filter(e => e.done).length;
-    $("#chInfo").textContent = (r.channel || r.title || "") + ": " + r.items.length + " video, konuya uyan " + r.matched + (done ? " (" + done + " tanesi daha önce işlendi)" : "") + (r.ai ? " — yapay zekâ seçti" : "");
+    $("#chInfo").textContent = (r.channel || r.title || "") + ": " + r.items.length + " video" + (r.playlist ? " (oynatma listesi: işlenmemişlerin hepsi seçildi)" : ", konuya uyan " + r.matched) + (done ? " — " + done + " tanesi daha önce işlendi" : "") + (r.ai ? " — yapay zekâ seçti" : "") + (r.finder ? " — kanal tarandı: " + Object.entries(r.sources || {}).map(([k, v]) => k + " " + v).join(", ") : "");
     for (const e of r.items) {
       const cb = el("input", { type: "checkbox" }); cb.checked = state.chSel.has(e.url);
       cb.onchange = () => { cb.checked ? state.chSel.add(e.url) : state.chSel.delete(e.url); setMode("channel"); };
@@ -593,7 +594,9 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     l.hidden = !r.items.length; $("#chActs").hidden = !r.items.length; $("#btnList").hidden = false;
   }
   $("#btnList").onclick = listChannel;
-  $("#chAll").onclick = () => { state.chSel = new Set(state.ch.items.filter(e => e.match && !e.done).map(e => e.url)); renderChannel(); setMode("channel"); };
+  // işlenmemiş (ve yaklaşan canlı yayın olmayan) uyanlar; oynatma listesinde konu süzgeci yok: hepsi uyar
+  function chPick(r) { return new Set(r.items.filter(e => e.match && !e.done && !e.live).map(e => e.url)); }
+  $("#chAll").onclick = () => { state.chSel = chPick(state.ch); renderChannel(); setMode("channel"); };
   $("#chNone").onclick = () => { state.chSel.clear(); renderChannel(); setMode("channel"); };
   async function startChannel() {
     const urls = state.ch.items.filter(e => state.chSel.has(e.url)).map(e => e.url);
@@ -1121,6 +1124,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
         renderGpus({ state: "ready" }); return;
       }
       case "fatal": $("#bannerText").textContent = ev.error; $("#banner").classList.add("show"); return;
+      case "notice": $("#bannerText").textContent = ev.text; $("#banner").classList.add("show"); toast(ev.text.slice(0, 140)); return;
       case "update": onUpdate(ev); return;
       case "train": onTrain(ev); return;
       case "dropped": state.files.push(...ev.paths); renderChips(); setMode("links"); toast(ev.paths.length + " dosya eklendi"); return;

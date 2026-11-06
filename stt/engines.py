@@ -35,6 +35,21 @@ def auto_batch_size(kind: str, vram_gb: float | None) -> int:
     return 16 if vram_gb >= 20 else 8 if vram_gb >= 9 else 4
 
 
+def diar_batch_size(setting: int | None, vram_gb: float | None) -> int:
+    """Konuşmacı ayırma toplu boyutu: ayarda sayı varsa o; yoksa karta göre. pyannote her parçayı ayrı hesaplar
+    (parçalar aynı uzunlukta, maskeli): toplu boyut sonucu değiştirmez, yalnız hız ve belleği. 1.9.14'e dek hep 8'di;
+    3090'da (24 GB) ayırma darboğazdı."""
+    try:
+        n = int(setting or 0)
+    except (TypeError, ValueError):
+        n = 0
+    if n > 0:
+        return n
+    if not vram_gb:
+        return 8
+    return 32 if vram_gb >= 20 else 16 if vram_gb >= 9 else 8
+
+
 def _smi(query: str) -> list[list[str]]:
     import shutil
     import subprocess

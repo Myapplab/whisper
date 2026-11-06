@@ -145,6 +145,18 @@ def run_doctor(cfg, deep: bool = False) -> int:
                 add(OK, f"Kart {i}", f"{g['name']} ({mon}) -> {st}  [gpus={cfg.gpus}]")
         except Exception as e:  # noqa: BLE001
             add(WARN, "Kart seçimi", str(e)[:120])
+        try:  # ekran kararması / "HDMI sinyali yok": Windows olay günlüğündeki sürücü çökmeleri
+            from .gpuguard import describe, display_events
+            ev = display_events(14)
+            if os.name != "nt":
+                pass
+            elif ev:
+                add(WARN, "Ekran sürücüsü", "Son 14 gün: " + describe(ev) + ". Olası sebepler: monitörlü karta yük "
+                    "(Ayarlar › Ekran kartı: Önerilen), MSI Afterburner hız aşırtması (Reset), güç kaynağı.")
+            else:
+                add(OK, "Ekran sürücüsü", "son 14 günde çökme / beklenmedik kapanma yok")
+        except Exception as e:  # noqa: BLE001
+            add(WARN, "Ekran sürücüsü", f"olay günlüğü okunamadı: {str(e)[:100]}")
 
     try:
         import faster_whisper
