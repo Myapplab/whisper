@@ -41,7 +41,10 @@ class State:
         if not row:
             return None
         d = dict(zip(("key", "source", "status", "title", "out_dir", "error", "info", "updated"), row))
-        d["info"] = json.loads(d["info"] or "{}")
+        try:
+            d["info"] = json.loads(d["info"] or "{}")
+        except ValueError:  # bozuk kayıt uygulamayı düşürmesin
+            d["info"] = {}
         return d
 
     def is_done(self, key: str) -> bool:

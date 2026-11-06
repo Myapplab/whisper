@@ -4,6 +4,9 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 
 
+REPEAT_GAP = 2.0  # sn: bundan uzak aynı cümle tekrar döngüsü sayılmaz
+
+
 def merge_chunks(parts: list[dict]) -> tuple[list[dict], str | None]:
     segs: list[dict] = []
     lang_dur: Counter = Counter()
@@ -22,7 +25,9 @@ def merge_chunks(parts: list[dict]) -> tuple[list[dict], str | None]:
         if out and s["text"] == out[-1]["text"] and s["start"] < out[-1]["end"]:
             continue
         # Whisper tekrar döngüsü: aynı uzun cümle art arda (ör. 8 kez) yazılmışsa bir kez tut
-        if out and len(s["text"]) > 15 and _norm(s["text"]) == _norm(out[-1]["text"]):
+        # (yalnızca bitişikse: dakikalar sonra aynı cümle gerçekten yeniden söylenmiş olabilir)
+        if (out and len(s["text"]) > 15 and _norm(s["text"]) == _norm(out[-1]["text"])
+                and s["start"] - out[-1]["end"] < REPEAT_GAP):
             out[-1] = {**out[-1], "end": max(out[-1]["end"], s["end"])}
             continue
         out.append(s)

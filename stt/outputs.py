@@ -183,19 +183,24 @@ def _cues_from_text(seg: dict) -> list[tuple[float, float, str]]:
 
 
 def to_srt(segments: list[dict], diarized: bool) -> str:
-    lines, n, prev_spk = [], 0, object()
+    cues, prev_spk = [], object()
     for seg in segments:
-        cues = _cues_from_words(seg) if seg.get("words") else _cues_from_text(seg)
-        for i, (a, b, text) in enumerate(cues):
+        parts = _cues_from_words(seg) if seg.get("words") else _cues_from_text(seg)
+        first = True
+        for a, b, text in parts:
             if not text:
                 continue
-            if diarized and seg.get("speaker") and (seg.get("speaker") != prev_spk) and i == 0:
-                text = f"[{seg['speaker']}] {text}"
-                prev_spk = seg.get("speaker")
-            n += 1
-            b = max(b, a + 0.3)
-            lines.append(f"{n}\n{fmt_ts(a)} --> {fmt_ts(b)}\n{_wrap(text)}\n")
-    return "\n".join(lines)
+            spk = seg.get("speaker")
+            if diarized and spk and spk != prev_spk and first:
+                text = f"[{spk}] {text}"
+                prev_spk = spk
+            first = False
+            cues.append([a, max(b, a + 0.3), text])
+    # altyazılar üst üste binmesin (oynatıcılar iki satırı birden gösterir): bir sonrakinin başında bitir
+    for cur, nxt in zip(cues, cues[1:]):
+        if cur[1] > nxt[0] > cur[0]:
+            cur[1] = nxt[0]
+    return "\n".join(f"{n}\n{fmt_ts(a)} --> {fmt_ts(b)}\n{_wrap(text)}\n" for n, (a, b, text) in enumerate(cues, 1))
 
 
 # ------------------------------------------------------------------ özet

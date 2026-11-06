@@ -3,11 +3,13 @@ from __future__ import annotations
 import glob
 import hashlib
 import logging
+import math
 import os
 import re
 import shutil
 import site
 import sys
+import time
 import unicodedata
 from pathlib import Path
 
@@ -209,8 +211,16 @@ def slugify(s: str, maxlen: int = 80) -> str:
     return (s[:maxlen].rstrip("._-")) or "kayit"
 
 
+def _finite(sec) -> float:
+    try:
+        sec = float(sec)
+    except (TypeError, ValueError):
+        return 0.0
+    return sec if math.isfinite(sec) and sec > 0 else 0.0
+
+
 def fmt_ts(sec: float, sep: str = ",") -> str:
-    sec = max(0.0, sec)
+    sec = _finite(sec)
     ms = int(round(sec * 1000))
     h, ms = divmod(ms, 3_600_000)
     m, ms = divmod(ms, 60_000)
@@ -219,7 +229,7 @@ def fmt_ts(sec: float, sep: str = ",") -> str:
 
 
 def fmt_clock(sec: float) -> str:
-    sec = int(max(0, sec))
+    sec = int(_finite(sec))
     h, r = divmod(sec, 3600)
     m, s = divmod(r, 60)
     return f"{h:d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
@@ -233,7 +243,19 @@ def atomic_write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    replace_retry(tmp, path)
+
+
+def replace_retry(src: Path, dst: Path, tries: int = 5) -> None:
+    """os.replace; Windows'ta virüs tarayıcı / arama dizini dosyayı bir anlığına kilitlerse birkaç kez dene."""
+    for i in range(tries):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if i + 1 == tries:
+                raise
+            time.sleep(0.2 * (i + 1))
 
 
 # Windows süreç bayrakları: konsol penceresi açılmasın / düşük öncelik (bilgisayar akıcı kalsın)
@@ -284,6 +306,6 @@ def write_jsonl_csv(jl: Path, csv_path: Path, rows: list[dict], fields: list[str
         w.writeheader()
         w.writerows(rows)
     try:
-        tmp.replace(csv_path)
+        replace_retry(tmp, csv_path, tries=3)
     except PermissionError:
         log.warning("%s açık (Excel?); güncel tablo %s olarak kaldı.", csv_path.name, tmp.name)

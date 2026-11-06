@@ -268,7 +268,13 @@ def safe_filename(s: str, maxlen: int = 110) -> str:
     s = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', " ", s)
     s = re.sub(r"[^\w\s.,'&()\-–]+", " ", s)  # emoji vb.
     s = re.sub(r"\s+", " ", s).strip(" .-")
-    return s[:maxlen].rstrip(" .-") or "kayit"
+    s = s[:maxlen].rstrip(" .-") or "kayit"
+    if s.split(".")[0].strip().upper() in _RESERVED:  # Windows bu adlarla dosya/klasör açamaz (CON, NUL, COM1...)
+        s = f"_{s}"
+    return s
+
+
+_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(10)), *(f"LPT{i}" for i in range(10))}
 
 
 def display_name(match: dict, fallback: str) -> str:
