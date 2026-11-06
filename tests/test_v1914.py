@@ -150,9 +150,9 @@ def test_disable_helper_parks_and_never_reopens(tmp_path, monkeypatch):
 # ---------------------------------------------------------------- hızlandırma
 def test_diar_batch_by_card():
     from stt.engines import diar_batch_size
-    assert diar_batch_size(0, 24.0) == 32 and diar_batch_size(0, 10.0) == 16 and diar_batch_size(0, 6.0) == 8
-    assert diar_batch_size(0, None) == 8 and diar_batch_size(4, 24.0) == 4        # ayarda sayı varsa o
-    assert diar_batch_size("x", 24.0) == 32
+    # 1.9.16: kararlılık doğrulanana dek otomatik değer yine 8 (kullanıcıda bilgisayar yeniden başlıyordu)
+    assert diar_batch_size(0, 24.0) == 8 and diar_batch_size(0, None) == 8
+    assert diar_batch_size(32, 24.0) == 32 and diar_batch_size("x", 24.0) == 8   # ayarda sayı varsa o
 
 
 def test_main_diar_pool_uses_card_batch(tmp_path, monkeypatch):
@@ -172,7 +172,7 @@ def test_main_diar_pool_uses_card_batch(tmp_path, monkeypatch):
     p.devices = ["cuda:1"]
     p._ecfg = {"gpu_mem": {0: 10.0, 1: 24.0}, "display_gpus": [0]}
     p._start_diar_pool()
-    assert made["diar_batch"] == 32
+    assert made["diar_batch"] == 8
     p2 = Pipeline(Config(out_dir=tmp_path, diar_batch=8))
     p2.devices = ["cuda:1"]
     p2._ecfg = {"gpu_mem": {1: 24.0}}
@@ -741,3 +741,40 @@ def test_guard_drops_display_main_worker(tmp_path):
     p.pool.dead.add("cuda:0")
     p._health()
     assert "cuda:0" not in p.pool.respawned                              # yeniden açılmaz
+
+
+
+# ---------------------------------------------------------------- 1.9.16: STT çalışırken yeniden başlama
+def test_restart_reason_and_busy_window(tmp_path):
+    import json as _j
+
+    from stt.gpuguard import crash_while_busy, mark_busy, parse_events, reset_busy_marks, restart_reason
+    now = int(time.time())
+    ev = parse_events(_j.dumps([
+        {"t": now - 5, "id": 41, "p": "Microsoft-Windows-Kernel-Power", "m": "The system has rebooted", "bc": 278},
+        {"t": now - 4, "id": 1001, "p": "Microsoft-Windows-WER-SystemErrorReporting",
+         "m": "The computer has rebooted from a bugcheck. The bugcheck was: 0x00000116 (0x1, 0x2)."}]))
+    assert [e["kind"] for e in ev] == ["reset", "bsod"]
+    assert "0x116" in restart_reason(ev) and "VIDEO_TDR_FAILURE" in restart_reason(ev)
+    power = parse_events(_j.dumps({"t": now, "id": 41, "p": "Microsoft-Windows-Kernel-Power", "m": "x", "bc": 0}))
+    assert "güç kaynağı" in restart_reason(power)
+    assert crash_while_busy(tmp_path, ev) == []                 # STT hiç iş yapmadı
+    mark_busy(tmp_path, True)                                   # iş sürerken bilgisayar kapandı (aralık açık kaldı)
+    assert len(crash_while_busy(tmp_path, ev)) == 2
+    reset_busy_marks(tmp_path)
+    mark_busy(tmp_path, True)
+    mark_busy(tmp_path, False)
+    assert crash_while_busy(tmp_path, [{"t": now + 7200, "kind": "reset"}]) == []   # iş bittikten çok sonra
+
+
+def test_crash_check_notice_once(tmp_path):
+    import stt.gui as gui
+    from stt.gpuguard import mark_busy
+    app = gui.App.__new__(gui.App)
+    app._state_dir = lambda: tmp_path
+    pushed = []
+    app._push = pushed.append
+    mark_busy(tmp_path, True)
+    ev = [{"t": int(time.time()), "kind": "reset", "id": 41, "p": "Microsoft-Windows-Kernel-Power", "m": "", "bc": 0}]
+    assert app._crash_check(ev) and "Afterburner" in pushed[-1]["text"]
+    assert app._crash_check(ev) == []                           # bir kez söylenir

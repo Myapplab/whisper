@@ -937,6 +937,11 @@ class Pipeline:
         if busy != getattr(self, "_awake", False):  # yalnız değişince (pump hep aynı iş parçacığında döner)
             self._awake = busy
             keep_awake(busy)
+            try:  # iş sürerken bilgisayar yeniden başlarsa bir sonraki açılışta sebebiyle söylenir (gpuguard)
+                from .gpuguard import mark_busy
+                mark_busy(self.out_root / ".stt", busy)
+            except Exception:  # noqa: BLE001
+                pass
 
     def _safe_msg(self, msg: dict) -> None:
         """İşçi mesajını işle; beklenmedik hata (disk dolu, bozuk veri...) yalnız o videoyu düşürür.
@@ -2171,9 +2176,10 @@ class Pipeline:
 
     def kill(self) -> None:
         """Uygulama kapanıyor: canlı kayıtları ve işçi süreçlerini HEMEN durdur (beklemeden)."""
-        try:  # düzgün kapanış: monitörlü kartın açık aralığı kapansın (ekran koruması)
-            from .gpuguard import mark_helper_closed
+        try:  # düzgün kapanış: monitörlü kartın / iş yapmanın açık aralığı kapansın (ekran koruması)
+            from .gpuguard import mark_busy, mark_helper_closed
             mark_helper_closed(self.out_root / ".stt")
+            mark_busy(self.out_root / ".stt", False)
         except Exception:  # noqa: BLE001
             pass
         for job in list(self.jobs.values()):
@@ -2190,9 +2196,10 @@ class Pipeline:
 
     def close(self):
         self._closing = True  # sıra bekleyen hazırlık iş parçacıkları çıksın (komut satırı kapanışta asılı kalmasın)
-        try:  # düzgün kapanış: monitörlü kartın açık aralığı kapansın (ekran koruması)
-            from .gpuguard import mark_helper_closed
+        try:  # düzgün kapanış: monitörlü kartın / iş yapmanın açık aralığı kapansın (ekran koruması)
+            from .gpuguard import mark_busy, mark_helper_closed
             mark_helper_closed(self.out_root / ".stt")
+            mark_busy(self.out_root / ".stt", False)
         except Exception:  # noqa: BLE001
             pass
         self.prep.shutdown(wait=False, cancel_futures=True)

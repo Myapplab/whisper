@@ -27,10 +27,12 @@ $a = @(Get-WinEvent -FilterHashtable @{LogName='System'; ProviderName='nvlddmkm'
                  ($_.ProviderName -eq 'Microsoft-Windows-Kernel-Power' -and $_.Id -eq 41) -or ($_.ProviderName -eq 'EventLog' -and $_.Id -eq 6008) })
 $b = @(Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='Windows Error Reporting'; Id=1001; StartTime=$s} |
   Where-Object { $_.Message -match 'LiveKernelEvent' })
-@($a + $b) | Select-Object -First 100 | ForEach-Object {
+$c = @(Get-WinEvent -FilterHashtable @{LogName='System'; ProviderName='Microsoft-Windows-WER-SystemErrorReporting'; Id=1001; StartTime=$s})
+@($a + $b + $c) | Select-Object -First 100 | ForEach-Object {
   $m = if ($_.Message) { ($_.Message -replace '\s+', ' ') } else { '' }
+  $bc = if ($_.Id -eq 41 -and $_.Properties.Count -gt 0) { [int64]$_.Properties[0].Value } else { $null }
   [pscustomobject]@{ t = ([DateTimeOffset]$_.TimeCreated).ToUnixTimeSeconds(); id = $_.Id; p = $_.ProviderName;
-                     m = $m.Substring(0, [Math]::Min(240, $m.Length)) }
+                     m = $m.Substring(0, [Math]::Min(240, $m.Length)); bc = $bc }
 } | ConvertTo-Json -Compress
 """
 
@@ -44,6 +46,8 @@ def classify(ev: dict) -> str:
         return "driver" if any(c in m for c in ("141", "117", "1a8", "VIDEO", "Video")) else ""
     if (p.endswith("Kernel-Power") and i == 41) or (p == "EventLog" and i == 6008):
         return "reset"
+    if p.endswith("WER-SystemErrorReporting") and i == 1001:
+        return "bsod"
     return ""
 
 
@@ -62,7 +66,9 @@ def parse_events(text: str) -> list[dict]:
         if not isinstance(r, dict):
             continue
         try:
-            r = {"t": int(r.get("t")), "id": int(r.get("id") or 0), "p": str(r.get("p") or ""), "m": str(r.get("m") or "")}
+            bc = r.get("bc")
+            r = {"t": int(r.get("t")), "id": int(r.get("id") or 0), "p": str(r.get("p") or ""), "m": str(r.get("m") or ""),
+                 "bc": int(bc) if bc not in (None, "") else None}
         except (TypeError, ValueError):
             continue
         r["kind"] = classify(r)
@@ -89,20 +95,100 @@ def fmt_time(t: int) -> str:
     return time.strftime("%d.%m %H:%M", time.localtime(t))
 
 
+# mavi ekran kodu -> sebep (Microsoft hata kodu başvurusu)
+BUGCHECKS = {
+    0x116: "VIDEO_TDR_FAILURE: ekran kartı yanıt vermedi (çoğu zaman hız aşırtma, ısı ya da güç)",
+    0x117: "VIDEO_TDR_TIMEOUT: ekran kartı yanıt vermedi",
+    0x119: "VIDEO_SCHEDULER_INTERNAL_ERROR: ekran kartı sürücüsü",
+    0x10E: "VIDEO_MEMORY_MANAGEMENT_INTERNAL: ekran kartı belleği (bellek hız aşırtması?)",
+    0x124: "WHEA_UNCORRECTABLE_ERROR: donanım hatası (hız aşırtma, güç kaynağı ya da ısı)",
+    0x1A: "MEMORY_MANAGEMENT: bilgisayar belleği (RAM) / sürücü",
+    0x50: "PAGE_FAULT_IN_NONPAGED_AREA: bellek / sürücü",
+    0xD1: "DRIVER_IRQL_NOT_LESS_OR_EQUAL: bir sürücü",
+    0x133: "DPC_WATCHDOG_VIOLATION: bir sürücü takıldı",
+}
+
+
+def bugcheck_code(ev: dict) -> int | None:
+    """Olaydan mavi ekran kodu: Kernel-Power 41 'BugcheckCode' alanı ya da WER iletisindeki 0x... ."""
+    if ev.get("bc"):
+        return int(ev["bc"])
+    import re
+    m = re.search(r"bugcheck was:?\s*(0x[0-9a-fA-F]+)", ev.get("m") or "")
+    return int(m.group(1), 16) if m else None
+
+
+def restart_reason(events: list[dict]) -> str:
+    """Beklenmedik yeniden başlamaların sebebi (Türkçe, kısa): mavi ekran kodu varsa o, yoksa güç kesilmesi."""
+    rs = [e for e in events if e["kind"] in ("reset", "bsod")]
+    if not rs:
+        return ""
+    codes = [c for c in (bugcheck_code(e) for e in rs) if c]
+    if codes:
+        c = max(set(codes), key=codes.count)
+        return f"mavi ekran 0x{c:X} — " + BUGCHECKS.get(c, "bilinmeyen kod")
+    return ("mavi ekran kaydı yok: bilgisayar bir anda kapanıp açılmış (çoğu zaman güç kaynağı yetmedi / ekran kartının "
+            "anlık güç çekişi, ya da donma sonrası güç düğmesi)")
+
+
 def describe(events: list[dict]) -> str:
     drv = [e for e in events if e["kind"] == "driver"]
-    rst = [e for e in events if e["kind"] == "reset"]
+    rst = [e for e in events if e["kind"] in ("reset", "bsod")]
     parts = []
     if drv:
         parts.append(f"ekran sürücüsü {len(drv)} kez takıldı/çöktü (" + ", ".join(fmt_time(e["t"]) for e in drv[-5:]) + ")")
     if rst:
-        parts.append(f"bilgisayar {len(rst)} kez beklenmedik kapandı (" + ", ".join(fmt_time(e["t"]) for e in rst[-5:]) + ")")
+        resets = [e for e in rst if e["kind"] == "reset"] or rst
+        parts.append(f"bilgisayar {len(resets)} kez beklenmedik yeniden başladı (" + ", ".join(fmt_time(e["t"]) for e in resets[-5:])
+                     + "; " + restart_reason(rst) + ")")
     return "; ".join(parts)
 
 
 # ------------------------------------------------------------------ yardımcı kart koruması
-def _mark_path(state_dir: Path) -> Path:
-    return Path(state_dir) / "yardimci_acik.json"
+def _mark_path(state_dir: Path, name: str = "yardimci_acik") -> Path:
+    return Path(state_dir) / f"{name}.json"
+
+
+def mark_busy(state_dir: Path, busy: bool) -> None:
+    """STT iş yaparken (ekran kartları yükte) aralığı: bilgisayar bu sırada yeniden başladıysa sonraki açılışta söylenir."""
+    try:
+        p = _mark_path(state_dir, "isleme")
+        try:
+            wins = json.loads(p.read_text(encoding="utf-8")).get("windows") or []
+        except Exception:  # noqa: BLE001
+            wins = []
+        if busy and not (wins and wins[-1][1] is None):
+            wins.append([int(time.time()), None])
+        elif not busy and wins and wins[-1][1] is None:
+            wins[-1][1] = int(time.time())
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"windows": wins[-50:]}), encoding="utf-8")
+    except OSError:
+        log.debug("işleme zamanı yazılamadı", exc_info=True)
+
+
+def crash_while_busy(state_dir: Path, events: list[dict]) -> list[dict]:
+    """STT iş yaparken olan yeniden başlamalar / mavi ekranlar (aralık kapanmamışsa bilgisayar o sırada kapanmıştır)."""
+    try:
+        wins = json.loads(_mark_path(state_dir, "isleme").read_text(encoding="utf-8")).get("windows") or []
+    except Exception:  # noqa: BLE001
+        return []
+    out = []
+    for e in events:
+        if e["kind"] not in ("reset", "bsod"):
+            continue
+        for a, b in wins:
+            if a - 60 <= e["t"] <= (b if b is not None else time.time()) + 600:  # yeniden başlama kaydı açılışta yazılır
+                out.append(e)
+                break
+    return out
+
+
+def reset_busy_marks(state_dir: Path) -> None:
+    try:
+        _mark_path(state_dir, "isleme").unlink()
+    except OSError:
+        pass
 
 
 def _read(state_dir: Path) -> dict | None:

@@ -38,6 +38,16 @@ E.2 (C5) ve aşağıdaki K5 planı. **(1.9.5'ten kalan):** kullanıcı Güncelle
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
+- 1.9.16 (Claude; 554 test): kullanıcı "Önerilen"e aldı, **bilgisayar sürekli yeniden başlıyor** (yalnız 3090 yükte).
+  Uygulama Windows açılışında kendiliğinden başlamıyor, bekleyen işler "Devam et" istemeden başlamıyor (döngü
+  uygulamadan değil). Büyük olasılıkla donanım kararsızlığı: 3090 hız aşırtması (bellek +1441 / çekirdek +143) ya da
+  güç kaynağı. Yapılanlar: (1) 1.9.14'te 3090 ayırma toplu boyutu 32'ye çıkmıştı (kartı daha sürekli tam yükte
+  tutar) → kararlılık doğrulanana dek yine 8 (`diar_batch` stt.toml'da 32 yapılabilir). (2) `gpuguard`: mavi ekran
+  kayıtları (WER-SystemErrorReporting 1001, Kernel-Power 41 BugcheckCode) ve `restart_reason` (0x116 ekran kartı,
+  0x124 donanım, kod yoksa güç kesilmesi); STT iş yaparken aralığı (`mark_busy`, `.stt/isleme.json`); açılışta STT
+  çalışırken yeniden başladıysa sebebiyle uyarı (`App._crash_check`). Kullanıcıya: STT'yi kapatıp Afterburner Reset +
+  Save + "Apply overclocking at system startup" kapalı, Power Limit %75; PowerShell ile son yeniden başlama kayıtları;
+  güç kaynağı kaç W. DENENMEDİ: Windows (PowerShell sorgusu dahil).
 - 1.9.15 (Claude; 552 test; bağımsız inceleme 5 hata buldu, düzeltildi: RAM beklemesinin 10 dk sınırı sıfırlanıyordu, RAM azken ayırma 3080'e kayıyordu, monitör bilgisi bilinmeyince koruma kapalıydı, eski çökme kuralı motorun yazdığı dosyayla bozuluyordu, 'Hepsi' modunda koruma sonrası 3080 çalışmaya devam ediyordu -> artık ilk görevinde kapatılıyor): kullanıcı: **"ekran tamamen kararıyor ve bir daha açılmıyor, 5 kez üst üste"** (3080
   yardımcı moddayken; 1.9.13). Yapılanlar: (1) koruma işaret dosyası yoksa (1.9.13 işaret yazmıyordu) son 3 günün
   çökmelerini sayar; "Hepsi" ve elle kart numarası da korunur (`gpuguard.display_card_used`); monitörlü kart ana kart

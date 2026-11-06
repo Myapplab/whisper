@@ -318,6 +318,10 @@ class App:
     def _display_guard_loop(self) -> None:
         """Açılışta ve yardımcı kart modundayken 10 dk'da bir (sürücü çöküp kendini toparlarsa uygulama açık kalır)."""
         time.sleep(5)
+        try:
+            self._crash_check()
+        except Exception:  # noqa: BLE001
+            log.debug("yeniden başlama denetlenemedi", exc_info=True)
         while not self._stop.is_set():
             try:
                 self._display_guard()
@@ -325,6 +329,24 @@ class App:
                 log.debug("ekran koruması denetlenemedi", exc_info=True)
             if self._stop.wait(600):
                 return
+
+    def _crash_check(self, events: list | None = None) -> list:
+        """STT iş yaparken bilgisayar yeniden başladıysa (kullanıcıda "sürekli restart") açılışta sebebiyle söyle:
+        mavi ekran kodu (ör. 0x116 ekran kartı) ya da kayıtsız kapanma (güç kaynağı). Bir kez söylenir."""
+        from .gpuguard import crash_while_busy, display_events, fmt_time, reset_busy_marks, restart_reason
+        if events is None:
+            events = display_events(7)
+        hits = crash_while_busy(self._state_dir(), events)
+        if not hits:
+            return []
+        reset_busy_marks(self._state_dir())
+        msg = (f"STT çalışırken bilgisayar {len(hits)} kez yeniden başladı (son: {fmt_time(hits[-1]['t'])}; sebep: "
+               f"{restart_reason(hits)}). Bu bir donanım kararsızlığıdır: 1) MSI Afterburner'da Reset'e, sonra Save'e basın "
+               "(hız aşırtma kapansın); 2) Afterburner'da Power Limit'i %75'e indirip Save; 3) güç kaynağı iki ekran "
+               "kartına yetmiyor olabilir. Düzelene dek uzun kuyruk başlatmayın.")
+        log.warning("%s", msg)
+        self._push({"type": "notice", "text": msg})
+        return hits
 
     def _display_guard(self, events: list | None = None, info: dict | None = None) -> dict | None:
         """Monitörlü karta (3080) iş veren bir kart ayarında (yardımcı / hepsi / elle) ekran sürücüsü çöktüyse ya da

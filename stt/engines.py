@@ -45,9 +45,9 @@ def diar_batch_size(setting: int | None, vram_gb: float | None) -> int:
         n = 0
     if n > 0:
         return n
-    if not vram_gb:
-        return 8
-    return 32 if vram_gb >= 20 else 16 if vram_gb >= 9 else 8
+    # 1.9.14'te 24 GB kartta 32 yapılmıştı; kullanıcıda bilgisayar sürekli yeniden başlamaya başlayınca (3090'da hız
+    # aşırtma var) kararlılık doğrulanana dek eski değere (8) dönüldü. Hız için stt.toml: diar_batch = 32.
+    return 8
 
 
 def _smi(query: str) -> list[list[str]]:
