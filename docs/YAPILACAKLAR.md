@@ -38,7 +38,7 @@ E.2 (C5) ve aşağıdaki K5 planı. **(1.9.5'ten kalan):** kullanıcı Güncelle
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
-- 1.9.15 (Claude; 548 test): kullanıcı: **"ekran tamamen kararıyor ve bir daha açılmıyor, 5 kez üst üste"** (3080
+- 1.9.15 (Claude; 552 test; bağımsız inceleme 5 hata buldu, düzeltildi: RAM beklemesinin 10 dk sınırı sıfırlanıyordu, RAM azken ayırma 3080'e kayıyordu, monitör bilgisi bilinmeyince koruma kapalıydı, eski çökme kuralı motorun yazdığı dosyayla bozuluyordu, 'Hepsi' modunda koruma sonrası 3080 çalışmaya devam ediyordu -> artık ilk görevinde kapatılıyor): kullanıcı: **"ekran tamamen kararıyor ve bir daha açılmıyor, 5 kez üst üste"** (3080
   yardımcı moddayken; 1.9.13). Yapılanlar: (1) koruma işaret dosyası yoksa (1.9.13 işaret yazmıyordu) son 3 günün
   çökmelerini sayar; "Hepsi" ve elle kart numarası da korunur (`gpuguard.display_card_used`); monitörlü kart ana kart
   olarak kullanıldığında da aralık yazılır. (2) Kontrol monitörlü karta CUDA bağlamı açmıyor (CUDA_VISIBLE_DEVICES);

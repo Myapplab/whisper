@@ -143,6 +143,10 @@ def run_doctor(cfg, deep: bool = False) -> int:
                 "Sürücüyü yeniden kurun / Aygıt Yöneticisi'nde 3080'i kontrol edin; "
                 "PowerShell: nvidia-smi -L ; echo $env:CUDA_VISIBLE_DEVICES")
         add(OK, "GPU sırası", "cuda:N = nvidia-smi N (PCI sırası)")
+        gi: dict = {}
+        if hidden:
+            add(OK, "Not", f"Kontrol monitörlü karta dokunmasın diye yalnız boş kart(lar) {hidden} denendi; yukarıdaki "
+                "torch/ctranslate2 satırlarında numaralar bu yüzden 0'dan başlar (uygulama kartları kendisi seçer).")
         try:
             from .engines import gpu_info
             from .pipeline import detect_devices, helper_devices

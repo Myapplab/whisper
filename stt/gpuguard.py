@@ -105,20 +105,28 @@ def _mark_path(state_dir: Path) -> Path:
     return Path(state_dir) / "yardimci_acik.json"
 
 
-def _read_windows(state_dir: Path) -> list[list]:
+def _read(state_dir: Path) -> dict | None:
     try:
         data = json.loads(_mark_path(state_dir).read_text(encoding="utf-8"))
-        wins = data.get("windows") if isinstance(data, dict) else None
-        return [w for w in wins if isinstance(w, list) and len(w) == 2] if isinstance(wins, list) else []
+        return data if isinstance(data, dict) else None
     except Exception:  # noqa: BLE001
-        return []
+        return None
 
 
-def _write_windows(state_dir: Path, wins: list[list]) -> None:
+def _read_windows(state_dir: Path) -> list[list]:
+    wins = (_read(state_dir) or {}).get("windows")
+    return [w for w in wins if isinstance(w, list) and len(w) == 2] if isinstance(wins, list) else []
+
+
+def _write_windows(state_dir: Path, wins: list[list], since=...) -> None:
+    """since: kullanıcının modu seçtiği / korumanın sıfırlandığı an; None = bilinmiyor (eski sürüm: son
+    LEGACY_DAYS günün çökmeleri de sayılır). Verilmezse dosyadaki korunur."""
     try:
+        if since is ...:
+            since = (_read(state_dir) or {}).get("since")
         p = _mark_path(state_dir)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps({"windows": wins[-50:]}), encoding="utf-8")
+        p.write_text(json.dumps({"windows": wins[-50:], "since": since}), encoding="utf-8")
     except OSError:
         log.debug("yardımcı kart zamanı yazılamadı", exc_info=True)
 
@@ -151,25 +159,28 @@ def helper_crash(state_dir: Path, events: list[dict]) -> dict | None:
     İşaret dosyası HİÇ yoksa (kullanıcı 1.9.13'te yardımcıyla 5 kez üst üste kararma yaşadı; o sürüm işaret yazmıyordu)
     son ``LEGACY_DAYS`` gündeki çökmeler sayılır. Kullanıcı modu yeniden seçince (``clear_mark``) boş dosya yazılır:
     eski çökmeler bir daha sayılmaz."""
-    if not _mark_path(state_dir).exists():
-        old = [e for e in events if e["t"] >= time.time() - LEGACY_DAYS * 86400]
-        return max(old, key=lambda e: e["t"]) if old else None
+    data = _read(state_dir)
+    hits: list[dict] = []
+    if data is None or data.get("since") is None:
+        # eski sürüm / ilk kez: motor bu oturumda dosyayı oluşturmuş olsa da (aralık yazıldı) karar korunur
+        hits += [e for e in events if e["t"] >= time.time() - LEGACY_DAYS * 86400]
     wins = _read_windows(state_dir)
-    if not wins:
-        return None
-    hits = [e for e in events for a, b in wins if a - 60 <= e["t"] <= (b if b is not None else time.time()) + 120]
+    hits += [e for e in events for a, b in wins if a - 60 <= e["t"] <= (b if b is not None else time.time()) + 120]
     return max(hits, key=lambda e: e["t"]) if hits else None
 
 
-def clear_mark(state_dir: Path) -> None:
-    """Yeni başlangıç: aralıklar silinir (dosya boş kalır; "dosya yok" kuralı bir daha işlemez)."""
-    _write_windows(state_dir, [])
+def clear_mark(state_dir: Path, keep_open: bool = False) -> None:
+    """Yeni başlangıç: eski aralıklar ve "son 3 gün" kuralı silinir (since = şimdi). keep_open: monitörlü kart hâlâ
+    çalışıyorsa açık aralık yeni başlangıçla sürer (ikinci kararma da kaydedilsin)."""
+    now = int(time.time())
+    _write_windows(state_dir, [[now, None]] if keep_open else [], since=now)
 
 
 def display_card_used(gpus: str | None, info: dict) -> bool:
     """Bu kart ayarı monitörün bağlı olduğu ekran kartına iş veriyor mu (yardımcı, hepsi, elle kart numarası)."""
     from .pipeline import detect_devices, helper_devices
-    disp = {i for i, g in (info or {}).items() if g.get("display")}
+    # display None (bilinmiyor: aynı adlı iki kart, sürücü alanı desteklemiyor) = monitörlü olabilir
+    disp = {i for i, g in (info or {}).items() if g.get("display") is not False}
     if not disp:
         return False
     used = detect_devices(gpus or "auto", info) + helper_devices(gpus or "auto", info)

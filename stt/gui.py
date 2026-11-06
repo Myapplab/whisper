@@ -349,7 +349,8 @@ class App:
             self._pipe.cfg = self._cfg
             self._pipe.disable_helper(what)
         self._restart.set()  # işler bitince motor önerilen kart düzeniyle açılır (monitörlü karta iş yok)
-        clear_mark(self._state_dir())
+        # monitörlü kart ana işçi olarak görevini bitirene dek çalışıyorsa aralık açık kalsın (ikinci kararma sayılsın)
+        clear_mark(self._state_dir(), keep_open=bool(self._pipe is not None and getattr(self._pipe, "_drop_wids", None)))
         msg = (f"Monitörlü ekran kartı (3080) iş yaparken {what} ({fmt_time(hit['t'])}). Güvenlik için ekran kartı "
                "kullanımı 'Önerilen'e alındı: monitörlü karta iş verilmeyecek. İki kartı da tam güçle ve ekran kararmadan "
                "kullanmanın yolu monitör kablosunu anakarttaki (Intel) çıkışa takmak; ayrıntı Kontrol'de. MSI Afterburner'da "

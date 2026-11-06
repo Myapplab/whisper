@@ -539,7 +539,11 @@ def test_guard_ignores_old_marker_format(tmp_path):
                                                             "last": int(_t.time()) - 5 * 86400}))
     ev = parse_events(json.dumps({"t": int(_t.time()) - 86400, "id": 13, "p": "nvlddmkm",
                                   "m": "\\Device\\Video5 Graphics Exception: ESR 0x404490=0x80000002"}))
-    assert helper_crash(tmp_path, ev) is None, "event 4 days after last helper use still triggers"
+    # 1.9.14'ün eski biçimi ("since" yok): "son 3 gün" kuralı bir kez işler (1.9.13/14'teki kararmalar sayılsın)
+    assert helper_crash(tmp_path, ev) is not None
+    from stt.gpuguard import clear_mark
+    clear_mark(tmp_path)
+    assert helper_crash(tmp_path, ev) is None
 
 
 def test_guard_window_new_format(tmp_path):
@@ -547,8 +551,9 @@ def test_guard_window_new_format(tmp_path):
     sırada kapandı) sayılır."""
     import time as _t
 
-    from stt.gpuguard import helper_crash, mark_helper_closed, mark_helper_open
+    from stt.gpuguard import clear_mark, helper_crash, mark_helper_closed, mark_helper_open
     now = int(_t.time())
+    clear_mark(tmp_path)                                                               # mod seçildi (since = şimdi)
     mark_helper_open(tmp_path)
     mark_helper_closed(tmp_path)
     assert helper_crash(tmp_path, [{"t": now + 3600, "kind": "driver"}]) is None     # kapandıktan 1 saat sonra
@@ -584,6 +589,9 @@ def test_guard_counts_legacy_crashes_without_marker(tmp_path):
     ev = [{"t": now - 3600, "kind": "reset"}, {"t": now - 10 * 86400, "kind": "driver"}]
     assert helper_crash(tmp_path, ev)["t"] == now - 3600
     assert helper_crash(tmp_path, [{"t": now - 10 * 86400, "kind": "driver"}]) is None
+    from stt.gpuguard import mark_helper_open
+    mark_helper_open(tmp_path)                    # inceleme: motor açılışta dosyayı yazsa da eski karar korunur
+    assert helper_crash(tmp_path, ev)["t"] == now - 3600
     clear_mark(tmp_path)                                                   # kullanıcı modu yeniden seçti
     assert helper_crash(tmp_path, ev) is None
 
@@ -674,3 +682,62 @@ def test_low_ram_diar_given_after_max_wait(tmp_path, monkeypatch):
     p._dmem_at = 0
     p._dmem_since = time.time() - pl.DIAR_MEM_MAX_WAIT_S - 1
     assert p._diar_mem_ok() is True                                                    # sonsuza dek beklemez
+
+
+
+def test_display_unknown_still_guarded():
+    from stt.gpuguard import display_card_used
+    unk = {0: {"name": "RTX 3080", "gb": 10, "display": None}, 1: {"name": "RTX 3090", "gb": 24, "display": None}}
+    assert display_card_used("yardim", unk) and display_card_used("all", unk)
+
+
+def test_mem_wait_forced_until_dispatched(tmp_path, monkeypatch):
+    """İnceleme: 10 dk sınırı dolunca kart o an meşgulse süre sıfırlanıyor, ayırma kuyruk bitene dek bekliyordu."""
+    import stt.pipeline as pl
+    import stt.util as u
+    from stt.pipeline import Job, Pipeline
+    from stt.sources import Item
+    p = Pipeline(Config(out_dir=tmp_path))
+    it = Item("url", "https://x/d", key="u_d")
+    p.jobs["u_d"] = Job(it, tmp_path / "wd", status="run", info={"duration_s": 600})
+    p.dbacklog.append({"id": "u_d:d", "kind": "diarize", "job": "u_d"})
+    monkeypatch.setattr(u, "memory_status", lambda: {"ram_total": 24, "ram_free": 1.0, "commit_total": 30, "commit_free": 1.0})
+    p._dmem_since = time.time() - pl.DIAR_MEM_MAX_WAIT_S - 1
+    assert p._diar_mem_ok() is True
+    for _ in range(3):                                   # görev verilmeden yeniden ölçülse de açık kalır
+        p._dmem_at = 0
+        assert p._diar_mem_ok() is True
+
+
+def test_low_ram_does_not_push_diar_to_monitor_card(tmp_path, monkeypatch):
+    from test_v199 import FakeDiarPool, _diar_pipe
+    p, ds = _diar_pipe(tmp_path, monkeypatch)
+    p._h_probe.clear()
+    p.load = {"util": 0, "used_mb": 1500.0, "total_mb": 10240.0}
+    p._dmem_ok = False                                   # RAM bekleniyor
+    p._dmem_at = time.time()
+    for _ in range(3):
+        p._dispatch()
+    assert FakeDiarPool.made == []
+
+
+def test_guard_drops_display_main_worker(tmp_path):
+    """'Hepsi' modunda koruma devreye girince monitörlü karttaki ana işçi ilk görevinde kapatılır, görev geri döner."""
+    from test_stability import FakePool, _job, _pipe
+    p = _pipe(tmp_path, ("cuda:0", "cuda:1"))
+    p.pool._spec = {"cuda:0": "cuda:0", "cuda:1": "cuda:1"}
+    p.pool.stopped = []
+    p.pool.stop = lambda w, idle=False: p.pool.stopped.append((w, idle))
+    p._ecfg = {"display_gpus": [0]}
+    job, tasks = _job(p, tmp_path, n=3)
+    p._on_msg({"type": "ready", "wid": "cuda:0"})
+    p._on_msg({"type": "ready", "wid": "cuda:1"})
+    p.disable_helper("ekran sürücüsü çöktü")
+    assert p._drop_wids == {"cuda:0"}
+    p._dispatch()
+    p._on_msg({"type": "start", "wid": "cuda:0", "tid": tasks[0]["id"]})
+    assert p.pool.stopped == [("cuda:0", False)] and "cuda:0" in p.fatal
+    assert p.backlog[0]["id"] == tasks[0]["id"]                          # görev öbür karta kaldı
+    p.pool.dead.add("cuda:0")
+    p._health()
+    assert "cuda:0" not in p.pool.respawned                              # yeniden açılmaz

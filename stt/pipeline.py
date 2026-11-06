@@ -285,6 +285,8 @@ class Pipeline:
         self._dmem_at = 0.0          # ayırma için RAM denetimi (ana süreçte): son ölçüm zamanı
         self._dmem_ok = True
         self._dmem_since: float | None = None
+        self._dmem_forced = False    # bekleme sınırı doldu: ayırma görevi verilene dek RAM'e bakılmaz
+        self._drop_wids: set[str] = set()  # ekran koruması: ilk görevinde kapatılacak (monitörlü kart) ana işçiler
 
     # ---------------------------------------------------------- başlatma
     def start(self):
@@ -1012,13 +1014,17 @@ class Pipeline:
                 waited = now - (self._dmem_since or now)
                 ok = min(ram, m["commit_free"]) >= need or (ram >= need and m["commit_free"] >= 1.0 and waited >= 60)
                 if not ok and waited >= DIAR_MEM_MAX_WAIT_S:
-                    log.warning("Konuşmacı ayırma için bellek %d dk'dır yetmiyor; yine de deneniyor", waited // 60)
-                    ok = True
+                    if not self._dmem_forced:
+                        log.warning("Konuşmacı ayırma için bellek %d dk'dır yetmiyor; yine de deneniyor", waited // 60)
+                    self._dmem_forced = True  # görev verilene dek açık kalır (kart o an meşgulse süre sıfırlanmasın)
+                    self._dmem_ok = True
+                    return True
                 elif not ok and self._dmem_since is None:
                     log.warning("Konuşmacı ayırma RAM bekliyor (~%.1f GB gerekli; boş RAM %.1f GB, sanal bellek %.1f GB): "
                                 "bu sırada ekran kartı metin çevirmeye devam ediyor", need, m["ram_free"], m["commit_free"])
         if ok:
             self._dmem_since = None
+            self._dmem_forced = False
         elif self._dmem_since is None:
             self._dmem_since = now
         self._dmem_ok = ok
@@ -1070,6 +1076,7 @@ class Pipeline:
                     continue
                 self.dqueued_n += 1
                 self.dpool.put(t)
+                self._dmem_since, self._dmem_forced, self._dmem_at = None, False, 0.0  # sonraki görev için yeniden
             if self.hpool is not None:
                 self._helper_diar_dispatch()
 
@@ -1305,6 +1312,8 @@ class Pipeline:
         # yardımcıda bellek yetmemiş görev (no_helper) yardımcıya bir daha verilmez: 3090'daki işçi alır
         need = sum(1 for t in self.dbacklog if not t.get("no_helper")
                    and self.jobs.get(t["job"]) is not None and self.jobs[t["job"]].status == "run")
+        if not self._dmem_ok:
+            need = 0  # RAM yetmediği için bekleyen ayırma yardımcıya (monitörlü karta) itilmesin
         if need:
             if self._d_need_since is None:
                 self._d_need_since = now
@@ -1383,10 +1392,39 @@ class Pipeline:
             break
 
     def disable_helper(self, reason: str) -> None:
-        """Yardımcı kartı (monitörlü) bu oturumda bir daha kullanma: boştakiler hemen, çalışan görevini bitirince kapanır."""
+        """Monitörlü kartı bu oturumda bir daha kullanma: yardımcı işçiler (boştakiler hemen, çalışan görevini bitirince)
+        kapanır; monitörlü kart ANA işçiyse ("Hepsi" / elle numara) bir sonraki görevini aldığı an kapatılır, görev
+        öbür karta döner (boştaki işçi ortak kuyruktan kapatma işaretiyle güvenle kapatılamaz: işareti başkası alabilir)."""
         with self.lock:
             self.helper_disabled = reason or "kapatıldı"
             self._helper_stop_all()
+            disp = set(self._ecfg.get("display_gpus") or [])
+            spec = getattr(self.pool, "_spec", {}) or {}
+            self._drop_wids = {w for w, d in spec.items() if str(d).startswith("cuda:") and int(str(d).split(":")[1]) in disp}
+            others = [w for w in spec if w not in self._drop_wids and w not in self.fatal]
+            if not others:
+                self._drop_wids = set()  # tek kart monitörlü: kapatılırsa hiç işçi kalmaz (uyarı yeter)
+            for w in list(self._drop_wids):
+                if w in self.inflight:
+                    self._drop_worker(w)
+
+    def _drop_worker(self, wid: str) -> None:
+        """Görevdeki (kuyruk kilidini tutmayan) monitörlü kart işçisini kapat; görevi geri sıraya koy, yeniden açma."""
+        self._drop_wids.discard(wid)
+        self.fatal.add(wid)
+        self.worker_errors[wid] = "ekran koruması: monitörlü kart kapatıldı"
+        cur = self.inflight.pop(wid, None)
+        self.idle.discard(wid)
+        if self.pool is not None:
+            self.pool.stop(wid)
+        if cur:
+            task = self.tasks.get(cur[0])
+            job = self.jobs.get(task["job"]) if task else None
+            if task and job and job.status == "run":
+                with self.lock:
+                    (self.dbacklog if task["kind"] == "diarize" else self.backlog).appendleft(task)
+        log.warning("[%s] ekran koruması: monitörlü karttaki işçi kapatıldı, görevi öbür karta kaldı", wid)
+        self.emit("worker", wid=wid, state="error", error="Ekran koruması: monitörlü kart kapatıldı")
 
     def _helper_stop_all(self) -> None:
         note = "kapatıldı: " + self.helper_disabled
@@ -1501,6 +1539,13 @@ class Pipeline:
         if typ == "start":
             self.inflight[wid] = (m["tid"], time.time())
             self.idle.discard(wid)
+            if wid in self._drop_wids:  # ekran koruması: monitörlü kart işçisi görev aldı -> kapat (görev geri döner)
+                if wid == "diar":
+                    self.dqueued_n = max(0, self.dqueued_n - 1)
+                else:
+                    self.queued_n = max(0, self.queued_n - 1)
+                self._drop_worker(wid)
+                return
             if wid == "diar":
                 self.dqueued_n = max(0, self.dqueued_n - 1)
             elif self._is_helper(wid):
