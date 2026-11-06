@@ -4,6 +4,11 @@ Kullanıcı iki Claude hesabıyla (iki profil) sırayla çalışır: biri sını
 Ortak hafıza bu dosyadır. **Oturum sonunda güncelle** (Son durum + liste) ve `main`'e push et.
 
 ## Son durum
+- Sürüm 1.8.7: kullanıcı ekranı: 38 dk podcast'te ayırma "CUDA error: out of memory" ile düştü, aynı anda Chrome
+  "Not enough memory" diyordu (RAM + sanal bellek dolu → CUDA da OOM verir). Eskiden OOM hiç tekrar denenmiyor,
+  "NVIDIA sürücüsünü güncelleyin" deniyordu. Artık OOM = bellek hatası yolu (`pipeline.is_oom`): ayırma süreci
+  kapanır, metin bitince 60/120 sn sonra tekrar (2.'de müzik ayıklamasız); sonunda bellek ipucu (sayfa dosyası).
+  `wait_memory`: sanal bellek 1 GB altındaysa beklemeye devam. Sürerse sayfa dosyası "sistem yönetsin" yapılsın.
 - Sürüm 1.8.6 (senaryo turu 3, `tests/test_sim3.py`, 164 test): metin birleştirmede dakikalar arayla söylenen aynı
   cümle artık tek 10 dk'lık segmente dönmüyor (`merge.REPEAT_GAP`); tekrar döngüsü kelimelerden de atılıyor (konuşmacı
   bölününce geri geliyordu); sessizlikten sonra erken zamanlanan ilk kelime sonraki konuşmacıya (`EARLY_GAP`);

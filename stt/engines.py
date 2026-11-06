@@ -607,7 +607,7 @@ class Diarizer:
             usable = min(m["ram_free"] * self.ram_pct / 100, m["commit_free"])
             if usable >= need:
                 return
-            if m["ram_free"] * self.ram_pct / 100 >= need and time.time() - t0 >= 60:
+            if m["ram_free"] * self.ram_pct / 100 >= need and m["commit_free"] >= 1.0 and time.time() - t0 >= 60:
                 # RAM yetiyor, yalnız sanal bellek (sayfa dosyası) dolu görünüyor: Windows çoğu zaman sayfa
                 # dosyasını büyütür. 20 dk beklemek yerine dene; gerçekten yetmezse bellek hatası yolu var.
                 log.warning("Sanal bellek az (%.1f GB) ama boş RAM yeterli (%.1f GB); konuşmacı ayırma deneniyor",

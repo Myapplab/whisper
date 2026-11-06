@@ -75,10 +75,18 @@ def is_ram_error(err: str) -> bool:
                                 "paging file", "defaultcpuallocator"))
 
 
+def is_oom(err: str) -> bool:
+    """Ekran kartı (ya da sistem) belleği yetmedi: "CUDA out of memory" / "CUDA error: out of memory"."""
+    e = err.lower()
+    return "out of memory" in e or "outofmemory" in e
+
+
 def diar_hint(err: str) -> str:
     e = err.lower()
     if is_ram_error(err):
         return ram_hint(err)
+    if is_oom(err):  # sürücü sorunu değil: bellek doldu (ör. tarayıcı sekmeleri)
+        return ("Konuşmacı ayırmada bellek yetmedi (ekran kartı / bilgisayar belleği). " + ram_hint(err))
     if "cudnn" in e or "cuda error" in e:
         return ("Konuşmacı ayırma ekran kartında başarısız oldu (işlemciye geçilmedi; sonraki videoda kart "
                 "baştan açılır). Sürerse NVIDIA sürücüsünü güncelleyin; "
@@ -939,13 +947,16 @@ class Pipeline:
                 job.pending.discard(tid)
                 self._maybe_finalize(job)
                 return
-            if task["kind"] == "diarize" and n < 3 and is_ram_error(m["error"]):
-                # RAM yetmedi: ayırma sürecini kapat (belleği tamamen boşalsın), metin çevirisi bitince tekrar dene
+            if task["kind"] == "diarize" and n < 3 and (is_ram_error(m["error"]) or is_oom(m["error"])):
+                # RAM / ekran kartı belleği yetmedi (tarayıcı belleği doldurunca CUDA da "out of memory" veriyor):
+                # ayırma sürecini kapat (bellek tamamen boşalsın), metin çevirisi bitince bekleyip tekrar dene
                 wait = 60 * n
+                retry = task if n < 2 else {**task, "vocals": False}  # 2. denemede müzik ayıklamasız (o da bellek ister)
+                self.tasks[tid] = retry
                 log.warning("Konuşmacı ayırmada bellek yetmedi; metin çevirisi bitince (en erken %d sn sonra) "
                             "tekrar denenecek (%d/2): %s", wait, n, job.item.title[:60])
                 with self.lock:
-                    self.ddelayed.append((time.time() + wait, task))
+                    self.ddelayed.append((time.time() + wait, retry))
                 if self.dpool is not None and "diar" in self.dpool.workers:
                     self.dpool.respawn("diar")
                     self.idle.discard("diar")

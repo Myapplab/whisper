@@ -154,3 +154,21 @@ def test_atomic_write_retries_on_lock(tmp_path, monkeypatch):
     monkeypatch.setattr(util.time, "sleep", lambda s: None)
     util.atomic_write_text(tmp_path / "x.txt", "ok")
     assert (tmp_path / "x.txt").read_text(encoding="utf-8") == "ok" and len(n) == 3
+
+
+# ---- kullanıcı ekranı (1.8.6): "CUDA error: out of memory" ile ayırma hiç tekrar denenmeden düşüyordu
+def test_diar_cuda_oom_is_retried_later_then_memory_hint(tmp_path):
+    from test_sim import _diar_setup
+    p, job, tasks, d, fin = _diar_setup(tmp_path)
+    d["vocals"] = True
+    err = ("RuntimeError: Konuşmacı ayırma ekran kartında başarısız oldu (CUDA error: out of memory CUDA kernel "
+           "errors might be asynchronously reported)")
+    for k in (1, 2):
+        p._on_msg({"type": "start", "wid": "diar", "tid": d["id"]})
+        p._on_msg({"type": "error", "wid": "diar", "tid": d["id"], "error": err})
+        assert not job.diar_error and len(p.ddelayed) == 1 and "diar" in p.dpool.respawned
+        _, retry = p.ddelayed.pop()
+        assert retry["vocals"] is (k == 1)
+    p._on_msg({"type": "start", "wid": "diar", "tid": d["id"]})
+    p._on_msg({"type": "error", "wid": "diar", "tid": d["id"], "error": err})
+    assert "bellek yetmedi" in job.diar_error and "NVIDIA" not in job.diar_error
