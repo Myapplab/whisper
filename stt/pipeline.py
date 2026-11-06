@@ -37,6 +37,7 @@ HELPER_IDLE_PARK_S = 300.0  # bu kadar süre iş fazlası olmazsa yardımcı kap
 HELPER_OFF = "kapalı · gerekince açılır"
 HELPER_DIAR = "diar2"     # yardımcı kartta ikinci konuşmacı ayırma işçisi (3090'daki "diar" yetişemeyince)
 HELPER_DIAR_GB = 3.0      # konuşmacı ayırma işçisinin kartta kapladığı bellek (CUDA + pyannote, toplu 8; tahmin)
+HELPER_DIAR_WAIT_S = 15.0  # ayırma işi bu kadar sn ana işçide beklemedikçe yardımcıda ayırma açılmaz (açılış anı)
 HELPER_SWITCH_S = 20.0    # yardımcı kart bu kadar sn işsiz kalırsa öbür işe (metin <-> konuşmacı ayırma) geçer
 
 
@@ -400,12 +401,14 @@ class Pipeline:
         return wid == HELPER_DIAR and self.hdpool is not None
 
     def _w_on(self) -> bool:
-        """Yardımcı kartta metin işçisi açık (ya da açılıyor) mu."""
-        return self.hpool is not None and any(w not in self._h_parked for w in self.hpool.workers)
+        """Yardımcı kartta metin işçisi açık (ya da açılıyor) mu. Kalıcı düşen sayılmaz (öbür işi kilitlemesin)."""
+        return self.hpool is not None and any(w not in self._h_parked and w not in self.fatal and w not in self._h_gone
+                                              for w in self.hpool.workers)
 
     def _d_on(self) -> bool:
-        """Yardımcı kartta konuşmacı ayırma işçisi açık (ya da açılıyor) mu."""
-        return self.hdpool is not None and HELPER_DIAR not in self._h_parked
+        """Yardımcı kartta konuşmacı ayırma işçisi açık (ya da açılıyor) mu. Kalıcı düşen sayılmaz."""
+        return self.hdpool is not None and HELPER_DIAR not in self._h_parked and HELPER_DIAR not in self.fatal \
+            and HELPER_DIAR not in self._h_gone
 
     # ---------------------------------------------------------- olaylar (GUI)
     def emit(self, typ: str, item: Item | None = None, **data) -> None:
@@ -1212,17 +1215,22 @@ class Pipeline:
         İşsiz kalınca kapanır (metin işi bekliyorsa ``HELPER_SWITCH_S``, yoksa ``HELPER_IDLE_PARK_S`` sonra).
         ``self.lock`` altında çağrılır."""
         wid, now = HELPER_DIAR, time.time()
-        need = sum(1 for t in self.dbacklog
-                   if self.jobs.get(t["job"]) is not None and self.jobs[t["job"]].status == "run")
+        # yardımcıda bellek yetmemiş görev (no_helper) yardımcıya bir daha verilmez: 3090'daki işçi alır
+        need = sum(1 for t in self.dbacklog if not t.get("no_helper")
+                   and self.jobs.get(t["job"]) is not None and self.jobs[t["job"]].status == "run")
         if need:
             if self._d_need_since is None:
                 self._d_need_since = now
         else:
             self._d_need_since = None
-        if wid in self.fatal:
+        if wid in self.fatal or wid in self._h_gone:
             return
         if wid in self._h_parked:
             if not need or self._w_on() or now < self._h_ready.get(wid, 0.0):
+                return
+            # yalnız iş gerçekten birikiyorsa: ana ayırma işçisi açılırken / yeniden başlarken bir an bekleyen işle
+            # monitörlü kartta model açılmasın
+            if now - self._d_need_since < HELPER_DIAR_WAIT_S or "diar" not in self.ready_workers:
                 return
             pr = self._h_probe.get(wid)
             if pr is None or pr[0] < max(self._h_ready.get(wid, 0.0), now - HELPER_RECHECK_S):
@@ -1248,6 +1256,8 @@ class Pipeline:
         # açık: boştaysa iş ver ya da kapan
         if wid not in self.idle or wid in self.inflight or self.hdqueued_n > 0:
             return
+        if now < self._h_ready.get(wid, 0.0):
+            return  # bellek ölçümü bekleniyor (nvidia-smi her turda çalışmasın: i3)
         if not need:
             idle_for = now - self._h_last.get(wid, now)
             w_wait = self._w_need_since is not None and now - self._w_need_since >= HELPER_SWITCH_S
@@ -1276,11 +1286,11 @@ class Pipeline:
                 return
         self._h_busy_since.pop(wid, None)
         self._helper_note(wid, "")
-        while self.dbacklog:
-            t = self.dbacklog.popleft()
+        for t in list(self.dbacklog):
             job = self.jobs.get(t["job"])
-            if not job or job.status != "run":
+            if not job or job.status != "run" or t.get("no_helper"):
                 continue
+            self.dbacklog.remove(t)
             self.hdqueued_n += 1
             self.hdpool.put(t)
             break
@@ -1467,9 +1477,12 @@ class Pipeline:
                 # yardımcı kartta bellek yetmedi (başka program aldı): görev kaybolmasın, deneme sayılmasın;
                 # 3090'daki ayırma işçisi ya da sonra yardımcı alır. Yardımcı kapanır (bellek o programa kalır).
                 job.attempts[tid] = n - 1
-                log.warning("[%s] yardımcı kartta konuşmacı ayırmaya bellek yetmedi: görev yeniden sırada", wid)
+                log.warning("[%s] yardımcı kartta konuşmacı ayırmaya bellek yetmedi: görev 3090'daki ayırmaya kaldı",
+                            wid)
+                retry = {**task, "no_helper": True}  # aynı görev yardımcıda tekrar tekrar bellek aşmasın
+                self.tasks[tid] = retry
                 with self.lock:
-                    self.dbacklog.appendleft(task)
+                    self.dbacklog.appendleft(retry)
                 self._park_helper(wid, "konuşmacı ayırmada kartta bellek yetmedi")
                 return
             if task["kind"] == "diarize" and n < 3 and (is_ram_error(m["error"]) or is_oom(m["error"])):

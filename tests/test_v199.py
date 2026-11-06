@@ -594,6 +594,7 @@ def _diar_pipe(tmp_path, monkeypatch, n_diar=3, transcribe=0):
     _ready(p, "cuda:1", "diar")
     p._dispatch()                               # ana ayırma işçisi ilk görevi alır
     p._on_msg({"type": "start", "wid": "diar", "tid": p.dpool.put_q[0]["id"]})
+    p._d_need_since = time.time() - 60          # ayırma işi bir süredir bekliyor (açılış anı değil)
     return p, ds
 
 
@@ -755,3 +756,91 @@ def test_helper_diar_fatal_returns_queued_task(tmp_path, monkeypatch):
     hd.queue_left = [t]
     p._on_msg({"type": "fatal", "wid": "diar2", "error": "ModuleNotFoundError: pyannote"})
     assert p.dbacklog[0]["id"] == t["id"] and p.hdqueued_n == 0 and p.failed_reason is None
+
+
+def test_diar2_waits_while_main_diar_starting(tmp_path, monkeypatch):
+    """İnceleme: ana ayırma işçisi daha açılırken (hazır değil) bir an bekleyen işle 3080'de model açılıyordu."""
+    p, ds = _diar_pipe(tmp_path, monkeypatch)
+    p._h_probe.clear()
+    p.load = {"util": 0, "used_mb": 1500.0, "total_mb": 10240.0}
+    p._d_need_since = time.time()                # iş az önce bekledi
+    for _ in range(3):
+        p._dispatch()
+    assert FakeDiarPool.made == []
+    p._d_need_since = time.time() - 60
+    p.ready_workers.discard("diar")               # ana işçi yeniden açılıyor
+    for _ in range(3):
+        p._dispatch()
+    assert FakeDiarPool.made == []
+    p.ready_workers.add("diar")
+    p._dispatch()
+    p._dispatch()
+    assert FakeDiarPool.made
+
+
+def test_dead_diar2_does_not_lock_text_helper(tmp_path, monkeypatch):
+    p, ds = _diar_pipe(tmp_path, monkeypatch, n_diar=2, transcribe=6)
+    p._dispatch()
+    p._dispatch()
+    assert p._d_on()
+    p._on_msg({"type": "fatal", "wid": "diar2", "error": "ModuleNotFoundError: x"})   # kalıcı
+    assert not p._d_on()
+    p.load = {"util": 0, "used_mb": 1500.0, "total_mb": 10240.0}
+    p._h_ready["cuda:0"] = 0
+    p._h_probe.clear()
+    p._dispatch()
+    p._dispatch()
+    assert p.hpool.respawned == ["cuda:0"]          # metin işçisi yine açılabiliyor
+
+
+def test_dead_text_helper_does_not_lock_diar2(tmp_path, monkeypatch):
+    p, ds = _diar_pipe(tmp_path, monkeypatch)
+    del p._h_parked["cuda:0"]
+    p._on_msg({"type": "fatal", "wid": "cuda:0", "error": "model yok"})               # kalıcı
+    assert not p._w_on()
+    p._h_probe.clear()
+    p.load = {"util": 0, "used_mb": 1500.0, "total_mb": 10240.0}
+    p._dispatch()
+    p._dispatch()
+    assert FakeDiarPool.made and p._d_on()
+
+
+def test_diar2_no_probe_storm_when_memory_busy(tmp_path, monkeypatch):
+    """İnceleme: kartta yer yokken nvidia-smi her turda çalışıyordu (i3, fan)."""
+    p, ds = _diar_pipe(tmp_path, monkeypatch)
+    p._h_probe.clear()
+    p.load = {"util": 0, "used_mb": 1500.0, "total_mb": 10240.0}
+    p._dispatch()
+    p._dispatch()
+    _ready(p, "diar2")
+    p.load = {"util": 0, "used_mb": 9900.0, "total_mb": 10240.0}     # başka program belleği aldı
+    p._h_probe.clear()
+    for _ in range(20):
+        p._dispatch()
+    assert len([x for x in p.loads]) <= 4                           # 30 sn bekleme içinde yeniden ölçülmez
+
+
+def test_diar2_oom_task_not_given_back_to_helper(tmp_path, monkeypatch):
+    p, ds = _diar_pipe(tmp_path, monkeypatch, n_diar=1)
+    p.dbacklog.append({"id": "u_dX:d", "kind": "diarize", "job": ds[0]["job"], "wav": "x"})   # ikinci görev
+    p.tasks["u_dX:d"] = p.dbacklog[-1]
+    p.jobs[ds[0]["job"]].pending.add("u_dX:d")
+    p._h_probe.clear()
+    p.load = {"util": 0, "used_mb": 1500.0, "total_mb": 10240.0}
+    p._dispatch()
+    p._dispatch()
+    hd = FakeDiarPool.made[0]
+    _ready(p, "diar2")
+    p._dispatch()
+    p._dispatch()
+    t = hd.put_q[0]
+    p._on_msg({"type": "start", "wid": "diar2", "tid": t["id"]})
+    p._on_msg({"type": "error", "wid": "diar2", "tid": t["id"], "error": "RuntimeError: CUDA out of memory"})
+    assert p.dbacklog[0].get("no_helper") is True
+    # yardımcı yeniden açılmaz (bu görev için iş "yok" sayılır); 3090'daki işçi alır
+    for _ in range(5):
+        p._h_ready["diar2"] = 0
+        p._h_probe.clear()
+        p._dispatch()
+        p._dispatch()
+    assert len(FakeDiarPool.made) == 1 and hd.respawned == []

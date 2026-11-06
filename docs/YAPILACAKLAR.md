@@ -38,7 +38,7 @@ E.2 (C5) ve aşağıdaki K5 planı. **(1.9.5'ten kalan):** kullanıcı Güncelle
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
-- 1.9.13 (Claude; kullanıcı iki kez istedi; 505 test): **yardımcı kart (3080) konuşmacı ayırmaya da geçer.** Ekranda
+- 1.9.13 (Claude; kullanıcı iki kez istedi; 510 test; bağımsız inceleme 4 hata buldu, hepsi testle düzeltildi: kalıcı düşen rol öbürünü kilitliyordu, yer yokken nvidia-smi her turda, bellek aşan görev 3080'e tekrar tekrar (artık `no_helper`), ana ayırma açılırken 3080 gereksiz açılıyordu (15 sn + ana işçi hazır)): **yardımcı kart (3080) konuşmacı ayırmaya da geçer.** Ekranda
   videolar "3/3" metin bitmiş, ayırma bekliyordu (darboğaz 3090'daki tek ayırma süreci). 3080 aynı anda tek iş yapar:
   metin ya da ayırma; hangisinde iş birikmişse (20 sn'den uzun) ona geçer. Ayrıntı GELISTIRME "1.9.13". DENENMEDİ:
   Windows, gerçek kartlar (3 GB ayırma belleği tahmin; pyannote'un 3080'de hızı bilinmiyor). KULLANICIDAN: Güncelle →

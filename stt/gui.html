@@ -693,7 +693,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
       g.append(el("div", { class: "gpu", title: "Bu kart masaüstü, tarayıcı ve oyunlar için boş bırakıldı (Ayarlar › Ekran kartı kullanımı)" }, el("i", { class: "dot", style: "background:var(--muted)" }),
         el("b", {}, sp.name), sp.gb ? el("span", { class: "mono" }, sp.gb + " GB") : null, el("span", { class: "what" }, sp.display ? "monitör · boş bırakıldı" : "boş bırakıldı")));
     }
-    const diarBusy = [...state.gpus].some(([w, x]) => x.task === "diarize" && x.state === "busy");
+    const diarBusy = [...state.gpus].some(([w, x]) => x.task === "diarize" && x.state === "busy" && !x.helper);  // 3090'daki ayırma
     for (const [wid, d] of state.gpus) {
       // metin işçisi boşken konuşmacı ayırma aynı kartta çalışıyor olabilir: "boşta" yanıltıcıydı
       const idle = d.helper ? "boşta" : diarBusy && d.task !== "diarize" ? "metin bitti · konuşmacı ayırma sürüyor" : "boşta";
