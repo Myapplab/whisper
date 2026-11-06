@@ -550,3 +550,208 @@ def test_diarize_choice_remembered(tmp_path, monkeypatch):
     r = app.save_settings({"ui_diarize": False})
     assert "ui_diarize = false" in toml.read_text(encoding="utf-8")
     assert r["ui_diarize"] is False and not app._restart.is_set()   # motor yeniden başlamaz
+
+
+# ---------------------------------------------------------------- 1.9.13: yardımcı kartta konuşmacı ayırma
+class FakeDiarPool(FakeHelperPool):
+    made: list = []
+
+    def __init__(self, devices, ecfg, threads=False, names=None, load_lock=None):
+        super().__init__(names)
+        self.devices = devices
+        self._ecfg = ecfg
+        self.started = False
+        FakeDiarPool.made.append(self)
+
+    def start(self):
+        self.started = True
+
+
+def _diar_pipe(tmp_path, monkeypatch, n_diar=3, transcribe=0):
+    import stt.pipeline as pl
+    FakeDiarPool.made = []
+    monkeypatch.setattr(pl, "WorkerPool", FakeDiarPool)
+    p, job, tasks = _pipe(tmp_path, n=max(1, transcribe))
+    if not transcribe:
+        p.backlog.clear()
+        job.pending.clear()
+    p._ecfg = {"engine": "whisper"}
+    p._h_parked["cuda:0"] = "kapalı"            # start(): ikisi de kapalı başlar
+    p._h_parked["diar2"] = "kapalı"
+    p.dpool = FakePool(["diar"])
+    p.dpool.devices = ["cuda:1"]
+    ds = []
+    for i in range(n_diar):
+        it = Item("url", f"https://x/d{i}", key=f"u_d{i}")
+        it.extra["uid"] = f"d{i}"
+        j = Job(it, tmp_path / f"wd{i}", status="run", info={"duration_s": 900})
+        p.jobs[it.key] = j
+        d = {"id": f"u_d{i}:d", "kind": "diarize", "job": it.key, "wav": "x"}
+        p.tasks[d["id"]] = d
+        j.pending.add(d["id"])
+        ds.append(d)
+    p.dbacklog = deque(ds)
+    _ready(p, "cuda:1", "diar")
+    p._dispatch()                               # ana ayırma işçisi ilk görevi alır
+    p._on_msg({"type": "start", "wid": "diar", "tid": p.dpool.put_q[0]["id"]})
+    return p, ds
+
+
+def test_helper_card_diarizes_when_diar_is_bottleneck(tmp_path, monkeypatch):
+    """Kullanıcının ekranı: metinler bitmiş (3/3), videolar konuşmacı ayırma bekliyor: 3080 ayırmaya başlar."""
+    p, ds = _diar_pipe(tmp_path, monkeypatch)
+    p.load = {"util": 0, "used_mb": 1500.0, "total_mb": 10240.0}     # 8.5 GB boş
+    p._h_probe.clear()
+    p._dispatch()                                # ölçüm
+    p._dispatch()                                # açılır
+    assert "diar2" not in p._h_parked and len(FakeDiarPool.made) == 1
+    hd = FakeDiarPool.made[0]
+    assert hd.started and hd.devices == ["cuda:0"] and hd._ecfg["role"] == "diar"
+    assert abs(hd._ecfg["diar_gpu_frac"] - (8.5 - 2.0) / 10.0) < 0.01  # torch ayrılan belleği aşmaz
+    assert p.hpool.respawned == []                                    # metin işçisi açılmadı (kart tek iş)
+    _ready(p, "diar2")
+    p._dispatch()
+    p._dispatch()
+    assert len(hd.put_q) == 1 and hd.put_q[0]["kind"] == "diarize"
+    p._on_msg({"type": "start", "wid": "diar2", "tid": hd.put_q[0]["id"]})
+    assert p.hdqueued_n == 0 and "diar2" in p.inflight
+
+
+def test_helper_diar_needs_room(tmp_path, monkeypatch):
+    p, ds = _diar_pipe(tmp_path, monkeypatch)
+    p.load = {"util": 0, "used_mb": 6000.0, "total_mb": 10240.0}     # 4.1 GB boş - 2 ayrılan < 3
+    p._h_probe.clear()
+    p._dispatch()
+    p._dispatch()
+    assert "diar2" in p._h_parked and FakeDiarPool.made == []
+    assert "kartta yer yok" in p._h_note["diar2"]
+
+
+def test_card_switches_from_text_to_diar_after_idle(tmp_path, monkeypatch):
+    p, ds = _diar_pipe(tmp_path, monkeypatch)
+    del p._h_parked["cuda:0"]                    # metin işçisi açık ve boşta
+    _ready(p, "cuda:0")
+    p.load = {"util": 0, "used_mb": 1500.0, "total_mb": 10240.0}
+    p._dispatch()
+    p._dispatch()
+    assert FakeDiarPool.made == [] and p.hpool.stopped == []         # hemen değil (aç-kapa olmasın)
+    p._d_need_since = time.time() - 60
+    p._h_last["cuda:0"] = time.time() - 60
+    p._dispatch()
+    assert p.hpool.stopped == ["cuda:0"] and p.hpool.stop_idle == [True]
+    p._dispatch()
+    p._dispatch()
+    assert FakeDiarPool.made and "diar2" not in p._h_parked
+
+
+def test_card_switches_back_to_text(tmp_path, monkeypatch):
+    p, ds = _diar_pipe(tmp_path, monkeypatch, n_diar=2, transcribe=6)
+    p._dispatch()                                # ölçüm
+    p._dispatch()                                # metne yer yok (6.1 GB boş - 2 < 5.2), ayırmaya var -> ayırma açılır
+    assert p._d_on() and not p._w_on()
+    hd = FakeDiarPool.made[0]
+    _ready(p, "diar2")
+    p.dbacklog.clear()                           # ayırma işi kalmadı, metin işi bir süredir bekliyor
+    p._w_need_since = time.time() - 60
+    p._h_last["diar2"] = time.time() - 60
+    p._dispatch()
+    assert hd.stopped == ["diar2"] and "diar2" in p._h_parked
+    p.load = {"util": 0, "used_mb": 1500.0, "total_mb": 10240.0}       # ayırma kapanınca yer açıldı
+    p._h_ready["cuda:0"] = 0
+    p._h_probe.clear()
+    p._dispatch()
+    p._dispatch()
+    assert p.hpool.respawned == ["cuda:0"] and not p._d_on()      # metin işçisi açıldı
+
+
+def test_never_both_roles_on(tmp_path, monkeypatch):
+    p, ds = _diar_pipe(tmp_path, monkeypatch, n_diar=3, transcribe=6)
+    p.load = {"util": 0, "used_mb": 1500.0, "total_mb": 10240.0}
+    for _ in range(8):
+        p._dispatch()
+        assert not (p._w_on() and p._d_on())
+
+
+def test_helper_diar_oom_requeues_and_parks(tmp_path, monkeypatch):
+    p, ds = _diar_pipe(tmp_path, monkeypatch)
+    p.load = {"util": 0, "used_mb": 1500.0, "total_mb": 10240.0}
+    p._dispatch()
+    p._dispatch()
+    hd = FakeDiarPool.made[0]
+    _ready(p, "diar2")
+    p._dispatch()
+    p._dispatch()
+    t = hd.put_q[0]
+    p._on_msg({"type": "start", "wid": "diar2", "tid": t["id"]})
+    p._on_msg({"type": "error", "wid": "diar2", "tid": t["id"],
+               "error": "RuntimeError: Konuşmacı ayırma ekran kartında başarısız oldu (CUDA out of memory)"})
+    job = p.jobs[t["job"]]
+    assert p.dbacklog[0]["id"] == t["id"] and job.attempts.get(t["id"], 0) == 0 and not job.diar_error
+    assert "diar2" in p._h_parked and hd.stop_idle == [True]
+    assert p.dpool.respawned == []               # 3090'daki ayırma işçisine dokunulmadı
+
+
+def test_helper_diar_cuda_error_respawns_only_helper(tmp_path, monkeypatch):
+    p, ds = _diar_pipe(tmp_path, monkeypatch)
+    p.load = {"util": 0, "used_mb": 1500.0, "total_mb": 10240.0}
+    p._dispatch()
+    p._dispatch()
+    hd = FakeDiarPool.made[0]
+    _ready(p, "diar2")
+    p._dispatch()
+    p._dispatch()
+    t = hd.put_q[0]
+    p._on_msg({"type": "start", "wid": "diar2", "tid": t["id"]})
+    p._on_msg({"type": "error", "wid": "diar2", "tid": t["id"], "error": "RuntimeError: CUDA error: unknown error"})
+    assert hd.respawned == ["diar2"] and hd.respawn_idle == [True] and p.dpool.respawned == []
+    assert p.dbacklog[0]["id"] == t["id"]        # yeniden denenir
+
+
+def test_cancel_kills_helper_diar_task(tmp_path, monkeypatch):
+    p, ds = _diar_pipe(tmp_path, monkeypatch)
+    p.load = {"util": 0, "used_mb": 1500.0, "total_mb": 10240.0}
+    p._dispatch()
+    p._dispatch()
+    hd = FakeDiarPool.made[0]
+    _ready(p, "diar2")
+    p._dispatch()
+    p._dispatch()
+    t = hd.put_q[0]
+    p._on_msg({"type": "start", "wid": "diar2", "tid": t["id"]})
+    job = p.jobs[t["job"]]
+    p.items[job.item.extra["uid"]] = job.item
+    assert p.cancel(job.item.extra["uid"])
+    assert hd.respawned == ["diar2"] and "diar2" not in p.inflight and p.dpool.respawned == []
+
+
+def test_helper_diar_dead_permanently_returns_queued_task(tmp_path, monkeypatch):
+    p, ds = _diar_pipe(tmp_path, monkeypatch)
+    p.load = {"util": 0, "used_mb": 1500.0, "total_mb": 10240.0}
+    p._dispatch()
+    p._dispatch()
+    hd = FakeDiarPool.made[0]
+    _ready(p, "diar2")
+    p._dispatch()
+    p._dispatch()
+    t = hd.put_q[0]
+    hd.queue_left = [t]
+    p.restarts["diar2"] = 99
+    hd.dead.add("diar2")
+    p._health()
+    assert p.dbacklog[0]["id"] == t["id"] and p.hdqueued_n == 0
+
+
+def test_helper_diar_fatal_returns_queued_task(tmp_path, monkeypatch):
+    p, ds = _diar_pipe(tmp_path, monkeypatch)
+    p._h_probe.clear()
+    p.load = {"util": 0, "used_mb": 1500.0, "total_mb": 10240.0}
+    p._dispatch()
+    p._dispatch()
+    hd = FakeDiarPool.made[0]
+    _ready(p, "diar2")
+    p._dispatch()
+    p._dispatch()
+    t = hd.put_q[0]
+    hd.queue_left = [t]
+    p._on_msg({"type": "fatal", "wid": "diar2", "error": "ModuleNotFoundError: pyannote"})
+    assert p.dbacklog[0]["id"] == t["id"] and p.hdqueued_n == 0 and p.failed_reason is None

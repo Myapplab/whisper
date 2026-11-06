@@ -396,7 +396,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
       <div class="sec">Ekran kartı</div>
       <div class="field"><label for="sGpu">Ekran kartı kullanımı</label>
         <select id="sGpu"></select>
-        <span class="hint">Önerilen ayar monitörün bağlı olduğu kartı boş bırakır (ekran kararmaz, bilgisayar donmaz). "Yardımcı" seçilirse monitörlü kart, ana kart yetişemeyince metin çevirir; konuşmacı ayırma hep ana kartta kalır. Değişiklik, sıradaki işler bitince uygulanır.</span></div>
+        <span class="hint">Önerilen ayar monitörün bağlı olduğu kartı boş bırakır (ekran kararmaz, bilgisayar donmaz). "Yardımcı" seçilirse monitörlü kart, ana kart yetişemeyince metin çevirir ya da konuşmacı ayırır (hangisinde iş birikmişse; aynı anda biri). Değişiklik, sıradaki işler bitince uygulanır.</span></div>
       <div class="field" id="sHelperRow"><label for="sHelperGb">Yardımcı kartta YouTube / tarayıcı için boş bırakılacak bellek (GB)</label>
         <input type="text" id="sHelperGb" inputmode="decimal" style="width:90px" class="txt">
         <span class="hint">Bu kadar bellek YouTube ve sekmelere kalır, geri kalanı ve kartın gücü metin çevirisine verilir. Birkaç YouTube + 10 kadar sekme için 2 GB yeterli; YouTube takılırsa artırın. Kaydedince hemen geçerli.</span></div>
@@ -696,10 +696,10 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     const diarBusy = [...state.gpus].some(([w, x]) => x.task === "diarize" && x.state === "busy");
     for (const [wid, d] of state.gpus) {
       // metin işçisi boşken konuşmacı ayırma aynı kartta çalışıyor olabilir: "boşta" yanıltıcıydı
-      const idle = d.helper ? "boşta · ana kart yetişiyor" : diarBusy && d.task !== "diarize" ? "metin bitti · konuşmacı ayırma sürüyor" : "boşta";
+      const idle = d.helper ? "boşta" : diarBusy && d.task !== "diarize" ? "metin bitti · konuşmacı ayırma sürüyor" : "boşta";
       const label = d.state === "loading" ? "yeniden başlatılıyor…" : d.state === "busy" ? (d.task === "diarize" ? "konuşmacı ayırıyor · " : "çeviriyor · ") + (d.title || "") : d.state === "error" ? "hata" : d.state === "idle" ? idle : d.state === "paused" ? (/^kapalı/.test(d.note || "") ? d.note : "bekliyor · " + (d.note || "")) : "yükleniyor…";
       g.append(el("div", { class: "gpu " + (d.state || ""), title: d.error || d.note || (d.helper ? "Yardımcı kart: yalnız ana kart yetişemeyince, düşük yükle çalışır; oyun / başka program kartı kullanınca bekler" : "") }, el("i", { class: "dot" }),
-        el("b", {}, d.name || wid), d.helper ? el("span", { class: "mono", title: "Yardımcı kart (Ayarlar › Ekran kartı kullanımı)" }, "yardımcı") : d.display ? el("span", { class: "mono", title: "Monitör bu karta bağlı: düşük yükle çalışır" }, "monitör") : null, d.gb ? el("span", { class: "mono" }, d.gb + " GB") : null, el("span", { class: "what" }, label)));
+        el("b", {}, d.name || wid), d.helper ? el("span", { class: "mono", title: "Yardımcı kart (Ayarlar › Ekran kartı kullanımı). Kart aynı anda tek iş yapar: metin ya da konuşmacı ayırma" }, d.diar ? "yardımcı · ayırma" : "yardımcı · metin") : d.display ? el("span", { class: "mono", title: "Monitör bu karta bağlı: düşük yükle çalışır" }, "monitör") : null, d.gb ? el("span", { class: "mono" }, d.gb + " GB") : null, el("span", { class: "what" }, label)));
     }
   }
 

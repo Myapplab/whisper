@@ -258,6 +258,9 @@ class App:
                     note = self._pipe._h_note.get(d) or ""  # baştan kapalı: iş fazlası çıkınca açılır
                     devs.append({"wid": d, "name": g["name"], "gb": round(g["gb"]), "display": bool(g.get("display")),
                                  "helper": True, "state": "paused" if note else None, "note": note})
+                    dnote = self._pipe._h_note.get("diar2") or ""  # aynı kartta konuşmacı ayırma (tek iş tutar)
+                    devs.append({"wid": "diar2", "name": g["name"], "gb": round(g["gb"]), "display": bool(g.get("display")),
+                                 "helper": True, "diar": True, "state": "paused" if dnote else None, "note": dnote})
                 spare = [{"name": g["name"], "gb": round(g["gb"]), "display": bool(g.get("display"))}
                          for i, g in sorted(gi.items()) if i not in used and self._pipe.devices
                          and self._pipe.devices[0] != "api"]

@@ -38,6 +38,11 @@ E.2 (C5) ve aşağıdaki K5 planı. **(1.9.5'ten kalan):** kullanıcı Güncelle
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
+- 1.9.13 (Claude; kullanıcı iki kez istedi; 505 test): **yardımcı kart (3080) konuşmacı ayırmaya da geçer.** Ekranda
+  videolar "3/3" metin bitmiş, ayırma bekliyordu (darboğaz 3090'daki tek ayırma süreci). 3080 aynı anda tek iş yapar:
+  metin ya da ayırma; hangisinde iş birikmişse (20 sn'den uzun) ona geçer. Ayrıntı GELISTIRME "1.9.13". DENENMEDİ:
+  Windows, gerçek kartlar (3 GB ayırma belleği tahmin; pyannote'un 3080'de hızı bilinmiyor). KULLANICIDAN: Güncelle →
+  kart şeridi (4 kutu: 3090, 3080 metin, 3080 ayırma, Konuşmacı ayırma) ekran görüntüsü; günlükte "[diar2]" satırları.
 - 1.9.12 (Claude; 495 test): (1) **DiariZen kurulumu Windows'ta "pesq" derlemesinde düşüyordu** (C derleyicisi yok).
   DiariZen kaynağı indirilip tarandı: pesq / pystoi hiç import edilmiyor (yalnız eğitim/ölçüm). `diarizen.SKIP_REQS`
   (pesq, pystoi, jupyterlab, pre-commit) çıkarılıp `requirements-stt.txt` ile kuruluyor. Windows'ta DENENMEDİ; başka

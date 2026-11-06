@@ -36,7 +36,7 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   alamaz (iş sonsuza dek bekler). Konuşmacı ayırma süreci bellek / CUDA hatasından sonra tam böyle yeniden açılıyordu.
   Artık `WorkerPool.stop/respawn(idle=True)` tek işçili havuzda kapanma işareti (None) gönderir
   (`test_real_queue_idle_worker_stop_keeps_queue_usable`, gerçek süreçlerle). Konuşmacı ayırma
-  yardımcıya GİTMEZ (`_diar_device` yalnız ana kartlar). Yardımcı kalıcı düşerse kuyruğundaki görev ana karta döner
+  yardımcıya gitmez (`_diar_device` yalnız ana kartlar; 1.9.13'ten beri yardımcıda İKİNCİ ayırma işçisi var, aşağı). Yardımcı kalıcı düşerse kuyruğundaki görev ana karta döner
   (`_helper_gone`). Arayüz: kart şeridinde "yardımcı" etiketi, "bekliyor · sebep". Windows'ta / gerçek kartlarda DENENMEDİ.
 - **1.9.11 yardımcı kart = "ayrılan bellek dışında tam güç":** kullanıcı istedi: 3080'de birkaç YouTube + ~10 sekme
   için bellek ayrılsın, gerisi işe verilsin. `helper_reserve_gb` (Ayarlar'da, varsayılan 2 GB, hemen geçerli).
@@ -49,6 +49,15 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   bir küçük boyut (`_helper_shrink`). Küçültme ve öğrenilen değerler 30 dk sonra varsayılana döner. Kullanım yüzdesi ölçümü ve dinlenme
   kaldırıldı (`helper_rest_s` = 0; kendi yükümüz ölçüme karışıyordu). nvidia-smi açık yardımcıda en çok 15 sn'de bir.
   GPU hesap gücü GeForce'ta bölünemez (Windows zaman paylaşımı); YouTube videoyu ayrı çözücü birimde (NVDEC) açar.
+- **1.9.13 yardımcı kartta konuşmacı ayırma:** kullanıcının ekranı: metinler bitmiş (3/3), videolar ayırma bekliyor →
+  darboğaz 3090'daki tek ayırma süreci. Yardımcı kartta ikinci ayırma işçisi `hdpool` (wid `diar2` = `HELPER_DIAR`),
+  ana "diar"ın alamadığı ayırma işi varsa (`_helper_diar_dispatch`). Kart aynı anda TEK iş tutar (metin + ayırma
+  belleğe sığmaz; aynı kartta torch + CTranslate2 da sırayla çalışmak zorunda): `_w_on` / `_d_on`; öbür işin ihtiyacı
+  `HELPER_SWITCH_S` (20 sn) sürdükçe ve bu iş o kadar işsiz kaldıkça geçilir (aç-kapa döngüsü olmasın). Açılış:
+  boş − ayrılan ≥ `HELPER_DIAR_GB` (3 GB, tahmin); torch bellek sınırı o boş yere göre. diar2'de bellek yetmezse
+  görev deneme sayılmadan `dbacklog` başına döner, işçi kapanır; CUDA hatasında yalnız o süreç yeniden açılır
+  (`_respawn_diar`); "Durdur" hangi ayırma süreci o işi yapıyorsa onu keser; kalıcı düşerse kuyruğu `dbacklog`'a döner.
+  Windows'ta / gerçek kartlarda DENENMEDİ.
 - **Konuşmacı ayırma ayrı süreçte** (`Pipeline.dpool`, wid `diar`, ilk ayırma görevinde açılır, belleği en büyük
   kartta): aynı süreçte torch + CTranslate2 → `invalid device ordinal` ve 1.2.0'da `CUDNN_STATUS_EXECUTION_FAILED`
   + `MemoryError` görüldü. `Diarizer.run`: cuDNN hatasında cuDNN kapalı tekrar dener; işlemciye geçmez (1.6.2, `diar_cpu`).

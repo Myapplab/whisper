@@ -26,7 +26,8 @@ class Config:
     display_batch: int = 4               # monitörün bağlı olduğu kart kullanılırsa en fazla bu toplu boyut
     # "yardim": monitörlü kart (3080) ana kart (3090) yetişemeyince metin çevirir. Kartta YouTube / tarayıcı
     # sekmeleri için helper_reserve_gb boş bırakılır, kalan bellek ve güç bu işe verilir (toplu boyut ona göre).
-    # Başka programlar belleği kullanırsa beklenir / yardımcı kapanır. Konuşmacı ayırma oraya gitmez.
+    # Başka programlar belleği kullanırsa beklenir / yardımcı kapanır. 3090'daki konuşmacı ayırma yetişemeyince
+    # kart konuşmacı ayırmaya geçer (aynı anda tek iş: metin ya da ayırma).
     helper_reserve_gb: float = 2.0       # yardımcı kartta başka programlara (YouTube, sekmeler) bırakılan boş bellek
     helper_rest_s: float = 0.0           # yardımcı kart her parçadan sonra bu kadar dinlenir (0 = tam güç)
     low_priority: bool = True            # tanıma süreçleri düşük öncelikte (bilgisayar donmasın)
