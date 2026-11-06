@@ -69,8 +69,12 @@ kartında hiçbir şey denenmedi. İşaretler: ✅ doğru · ⚠️ kısmen / ab
 1. Ölçüm gerektirmeyen güvenli düzeltmeler: (a) `min_speakers` 2 yalnız basın modunda + `cfg.min_speakers`'ın kesin sayı
    olması hatası; (b) "Konuşmacılar" ekranında süre (`end`); (c) OpenAI anahtar kutusu + anahtar silme; (d)
    `requirements.txt` pyannote 4.0.7; (e) DiariZen seçiliyken pyannote'u gerekince yükle.
-2. Ölçümle A/B (K5 verisi gelince): `merge` eşikleri (K4-AÇIK), ayırmada agc açık/kapalı, SUPlime-L ↔ community-1,
-   kelime hizalama (torchaudio 2.9 notuna dikkat).
+   **✅ 1.9.4'te hepsi yapıldı** (+ ayrı `diar_agc` ayarı, eğitimde birleştirilmemiş satırlar, "Kontrol"de ayara göre
+   ayrı doğruluk). Ayrıntı: `docs/KONUSMACI_AYIRMA.md` "1.9.4'te yapılanlar".
+2. Ölçümle A/B (K5 verisi gelince): `merge` eşikleri (K4-AÇIK), ayırmada agc açık/kapalı (1.9.4: Ayarlar'dan seçilir,
+   "Kontrol" ayara göre ayrı gösterir), SUPlime ↔ community-1, kelime hizalama (torchaudio 2.9'da `forced_align`
+   kaldırıldı → `ctc-forced-aligner` gibi ayrı paket). SUPlime ağırlık lisansı için Gemini "CC BY-NC 4.0" diyor
+   (Claude huggingface.co'ya erişemedi, doğrulamadı); kişisel/ticari olmayan kullanım için uygun.
 3. Ses kütüphanesi: imzayı düzeltilmiş satırlardan yeniden çıkar (ayırma işçisinde, ekran kartında).
 
 ---

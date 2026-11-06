@@ -552,7 +552,7 @@ class Diarizer:
         """pyannote'u (ilk gerekince) yükle; kart seçiliyse karta taşı. Döner: pipeline."""
         if self.pipe is None:
             if not self.token:
-                raise RuntimeError("DiariZen başarısız oldu; yedek pyannote için HF token gerekli "
+                raise RuntimeError("DiariZen kullanılamadı; yedek pyannote için HF token gerekli "
                                    "(Ayarlar > HuggingFace token)")
             pipe = self._load()
             if self._cuda and str(self.device).startswith("cuda"):

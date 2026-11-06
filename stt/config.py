@@ -74,7 +74,7 @@ class Config:
     gemini_api_key: str | None = None
     anthropic_api_key: str | None = None
     openai_api_key: str | None = None    # yapay zekâ (openai) ve OpenAI yedek motoru; OPENAI_API_KEY de okunur
-    llm_budget_usd: float = 5.0         # aylık harcama sınırı (tahmini); aşılınca yapay zekâ adımları atlanır
+    llm_budget_usd: float = 5.0          # aylık harcama sınırı (tahmini); aşılınca yapay zekâ adımları atlanır
     llm_news: bool = False               # her metin için haber taslağı + alıntılar (haber.md)
     llm_qa: bool = True                  # konuşmacı ayrılamazsa soru-cevabı yapay zekâyla ayır
     # dış programlar (haber sitesi / haber radarı)
@@ -126,7 +126,7 @@ def diar_agc_on(cfg) -> bool:
     return bool(getattr(cfg, "agc", True)) if v is None else bool(v)
 
 
-SECRETS = ("hf_token","gemini_api_key", "anthropic_api_key", "openai_api_key", "api_token")  # arayüzden silinebilir
+SECRETS = ("hf_token", "gemini_api_key", "anthropic_api_key", "openai_api_key", "api_token")  # arayüzden silinebilir
 
 
 def env_secrets() -> dict[str, str]:

@@ -357,3 +357,35 @@ def test_run_tune_scores_with_unmerged_segments(tmp_path, monkeypatch):
     monkeypatch.setattr(stt.audio, "load_wav", lambda p: np.zeros(16000, dtype=np.float32))
     res = tune.run_tune(Config(out_dir=tmp_path / "out"), "cuda:0")
     assert res["before"] == 0.0  # eskiden aradaki sessizlik yüzünden ~%8 "hata" görünüyordu
+
+
+def test_token_hints_are_specific():
+    from stt.pipeline import diar_hint
+    assert "DiariZen bu videoda çalışmadı" in diar_hint(
+        "RuntimeError: DiariZen kullanılamadı; yedek pyannote için HF token gerekli (Ayarlar > HuggingFace token)")
+    assert diar_hint("Konuşmacı ayırma için HF token gerekli (--hf-token ya da HF_TOKEN)").startswith("HF token yok")
+    assert "geçersiz" in diar_hint("401 Client Error: Unauthorized")
+
+
+def test_measure_groups_by_diarization_setup(tmp_path):
+    """A/B: aynı tür videolar biri ses yükseltme açık biri kapalı işlenip düzeltilince Kontrol ayrı ayrı gösterir."""
+    from stt.tune import measure
+    from stt.voices import save_reference
+
+    def doc(key, agc, model="pyannote/speaker-diarization-community-1"):
+        return {"key": key, "source": "https://x/" + key, "speaker_mode": "basin",
+                "settings": {"diar_model": model, "diar_agc": agc},
+                "segments": [{"start": 0, "end": 10, "speaker": "Ali"}, {"start": 10, "end": 20, "speaker": "Veli"}]}
+    good = [[0, 10, "Ali"], [10, 20, "Veli"]]
+    bad = [[0, 15, "Ali"], [15, 20, "Veli"]]  # muhabirin ilk 5 sn'si hocaya yazılmış
+    save_reference(tmp_path, doc("a", True), hyp=bad)
+    save_reference(tmp_path, doc("b", False), hyp=good)
+    save_reference(tmp_path, {**doc("c", True), "settings": {}}, hyp=good)  # eski çıktı: ayar bilinmiyor
+    m = measure(tmp_path)
+    g = m["groups"]
+    assert g["speaker-diarization-community-1 · ses yükseltme açık"]["error"] > 0
+    assert g["speaker-diarization-community-1 · ses yükseltme kapalı"]["error"] == 0
+    assert "ayar bilinmiyor (1.9.4 öncesi)" in g and m["videos"] == 3
+    # ikinci düzeltme, ilk çıktının ayarını değiştirmez (hyp ile birlikte saklanır)
+    save_reference(tmp_path, doc("b", True), hyp=bad)
+    assert measure(tmp_path)["groups"]["speaker-diarization-community-1 · ses yükseltme kapalı"]["videos"] == 1

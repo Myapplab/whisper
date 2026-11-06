@@ -13,12 +13,12 @@ Ortak hafıza bu dosyadır. **Oturum sonunda güncelle** (Son durum + liste) ve 
 ## ŞU ANKİ İŞ: konuşmacı ayırma iyileştirme (adım adım; her adım ayrı push)
 Kullanıcı istedi: DiariZen + "acımasız eleştiri"nin 10 maddesinin hepsi. Kural: bir adım bitince push et, burada ✅ yap,
 sıradakine geç. Kullanım biterse diğer profil ilk ✅ olmayan adımdan devam eder.
-**SIRADAKİ (1.9.2 sonrası):** K6b kullanıcıda kurulum denemesi (Ayarlar > 'DiariZen'i kur'; K6c ✅ 1.9.2), K6d + K9 + K4-açık: kullanıcı 3-5 video düzeltince K5 ölçümüyle karar.
+**SIRADAKİ (1.9.4 sonrası):** Gemini raporu 0.4/3 = ses kütüphanesi imza yenileme (kullanıcının istediği 2. adım; 1.9.5). Sonra K6b kullanıcıda DiariZen kurulumu, K6d + K9 + K4-açık + agc A/B: kullanıcı 3-5 video düzeltince K5 ölçümüyle karar (1.9.4'ten beri "Kontrol" ayara göre ayrı doğruluk gösterir).
 - [x] K1 (#10) ✅ (doctor: sürüm 3.x uyarısı; yedek model uyarısı zaten vardı) Kontrol: pyannote < 4 ise "community-1 çalışmıyor, eski 3.1 kullanılıyor" uyarısı + düzeltme yolu.
 - [x] K2 (#4) ✅ ZATEN VARDI (pipeline `_diarize_task`: min_speakers en az 2) Basın modunda en az 2 konuşmacı otomatik (`min_speakers`), kullanıcı sayı girerse o geçerli.
-      **DİKKAT (2026-11 doğrulama):** kod 2'yi HER modda (podcast/film dahil) uyguluyor (`pipeline.py:564`); pyannote 4
-      VBx 2'ye zorla böldüğü için tek kişilik videoda kişi ikiye bölünür. Ayrıca `stt.toml` `min_speakers` kesin sayı
-      gibi davranıyor (`_speakers_wanted`, en çok da o sayı). Düzeltilecek (Gemini raporu 0.4/1a).
+      ✅ 1.9.4 DÜZELTİLDİ: kod 2'yi her modda uyguluyordu (tek kişilik videoda pyannote 4 VBx kişiyi ikiye bölüyordu)
+      ve `stt.toml` `min_speakers` kesin sayı gibi davranıyordu. Artık `Pipeline._speaker_bounds`: işe verilen sayı
+      kesin, genel min/max sınır, en az 2 yalnız basın modunda.
 - [x] K3 (#9) ✅ (gui.html: sarı "Bitti · konuşmacısız"; index'te diarized zaten vardı) Konuşmacısız biten iş görünür olsun: kartta sarı "Bitti · konuşmacısız" + index'te diarized=false.
 - [x] K4 (#3) ✅ ("?" ile biten cümlenin sonundaki kısa muhabir parçası ayrı; `merge.QUESTION_MIN_SEC`). AÇIK: noktalamasız ara soru ("what about Saka") hâlâ yutuluyor, K5 ölçümüyle eşik gevşetilsin Kısa soru yutulmasın: cümle içi değişimde "?" ile biten kısa muhabir parçası korunur (önce simülasyon).
 - [x] K5 (#1) ✅ `tune.measure` + "Kontrol"de "Konuşmacı doğruluğu" satırı. Düzeltmede programın ilk çıktısı `duzeltme/*.json` "hyp" olarak saklanıyor (eskiden üzerine yazılıp kayboluyordu). Yalnız 1.8.9 sonrası düzeltilen videolar ölçülür. KULLANICIDAN: 3-5 basın toplantısı düzeltsin, Kontrol ekranı görüntüsü.
@@ -37,6 +37,13 @@ sıradakine geç. Kullanım biterse diğer profil ilk ✅ olmayan adımdan devam
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
+- 1.9.4 (Gemini raporu 0.4/1, kullanıcı istedi; 195 test): en az 2 konuşmacı yalnız basın toplantısında, `stt.toml`
+  min/max yalnız sınır; "Konuşmacılar" ekranında gerçek süre; Ayarlar'da OpenAI anahtarı + kayıtlı anahtarları "Sil"
+  (ortam değişkenindeki silinemez, ekranda yazar); DiariZen seçiliyken pyannote yalnız yedek gerekince yüklenir, HF
+  token şart değil; `requirements.txt` pyannote 4.0.7; `diar_agc` ayarı (Ayarlar > "Konuşmacı ayırmada ses yükseltme");
+  çıktı `settings.diar_agc/diar_model`, düzeltme kaydı `diar` + birleştirilmemiş `segs`; eğitim `segs` ile ölçer;
+  "Kontrol" farklı ayarlı videoları ayrı gösterir. Arayüz burada jsdom ile denendi (Ayarlar, Konuşmacılar); Windows'ta,
+  ekran kartında ve gerçek DiariZen'le DENENMEDİ.
 - 2026-11-06 (kod değişmedi, sürüm aynı 1.9.3): kullanıcı istedi → CLAUDE.md "önce kalite, kullanım ikinci planda".
   Gemini raporu (`docs/GEMINI_4_ARGON_BULGULAR.md`) madde madde doğrulandı → raporun 0. bölümü. Raporda olmayan gerçek
   hata: `min_speakers=2` her modda (yukarıda K2 notu). Kullanıcı "sıradaki prompt"u verecek; büyük olasılıkla bu

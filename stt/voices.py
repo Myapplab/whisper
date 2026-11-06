@@ -274,8 +274,22 @@ def save_reference(state_dir: Path, doc: dict, hyp: list | None = None) -> Path:
             "segs": reference_turns(doc, merge_gap=0)}
     if old.get("hyp") or hyp:
         data["hyp"] = old.get("hyp") or hyp
+        # programın çıktısı hangi ayarla üretildi (Kontrol'de ayara göre ayrı doğruluk: A/B ölçümü)
+        setup = old.get("diar") if old.get("hyp") else _diar_setup(doc)
+        if setup:
+            data["diar"] = setup
     _write(p, data)
     return p
+
+
+def _diar_setup(doc: dict) -> dict:
+    st = doc.get("settings") or {}
+    out = {}
+    if st.get("diar_model"):
+        out["model"] = st["diar_model"]
+    if "diar_agc" in st:
+        out["agc"] = bool(st["diar_agc"])
+    return out
 
 
 def learn_from_doc(state_dir: Path, doc: dict, ignore=()) -> list[str]:

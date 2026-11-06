@@ -39,6 +39,19 @@ Bu dosya bir sonraki oturumun uygulayacağı plandır. Sırayla yap; her adımda
 - **Sortformer yapılmadı:** NVIDIA NeMo gerektirir (çok büyük, Windows'ta resmî destek zayıf, en çok 4 konuşmacı).
   DER ölçümü (adım 3) gelince community-1 ile karşılaştırılmaya değer olursa ayrı süreçte denenmeli.
 
+## 1.9.4'te yapılanlar (Gemini raporu doğrulamasından, `docs/GEMINI_4_ARGON_BULGULAR.md` 0.4)
+- Kişi sayısı: işe verilen sayı kesin; `stt.toml` `min_speakers`/`max_speakers` yalnız sınır (eskiden `min_speakers`
+  tek başına kesin sayı oluyordu); basın toplantısında en az 2 otomatik, podcast/film'de alt sınır yok (pyannote 4 VBx
+  küme az bulursa KMeans ile zorla bölüyordu: tek kişilik video ikiye bölünüyordu). `Pipeline._speaker_bounds`.
+- DiariZen seçiliyken pyannote yalnız yedek gerekince yüklenir, HF token zorunlu değil (`Diarizer._ensure_pipe`).
+- `diar_agc` (boş = `agc` ile aynı; Ayarlar'da seçilir): ayırmaya giden seste ses yükseltme ayrı açılıp kapanır.
+  Çıktıya `settings.diar_agc` ve `settings.diar_model` (DiariZen dahil) yazılır; düzeltme kaydı (`duzeltme/*.json`
+  `diar`) bunu saklar; "Kontrol" farklı ayarla işlenmiş videoları **ayara göre ayrı** gösterir (A/B: agc açık/kapalı,
+  DiariZen/community-1 = K6d).
+- Eğitim (`stt egit`) birleştirilmemiş satırlarla ölçer (`duzeltme/*.json` `segs`): birleşik turlarda <1 sn sessizlik
+  "konuşma" sayılıp hata çıkıyordu (`min_duration_off` yanlı seçiliyordu). Eski kayıtlarda yalnız `turns` var.
+- "Konuşmacılar" ekranında süre satırın gerçek bitişiyle (aradaki sessizlik sayılmıyor).
+
 ## Yapılacaklar (öncelik sırası)
 1. ✅ **(1.6.3 yapıldı)** **Cümle düzeyinde atama** (`stt/merge.py`, ucuz, en görünür kazanç):
    - Segmenti önce cümlelere böl (`. ? !` ve 0.6 sn'den uzun kelime arası).

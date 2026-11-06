@@ -106,6 +106,11 @@ def diar_hint(err: str) -> str:
         return ("HuggingFace model koşulları kabul edilmemiş: huggingface.co/pyannote/speaker-diarization-community-1, "
                 "huggingface.co/pyannote/speaker-diarization-3.1 ve huggingface.co/pyannote/segmentation-3.0 "
                 "sayfalarında 'Agree' deyin.")
+    if "yedek pyannote" in e:
+        return ("DiariZen bu videoda çalışmadı (ayrıntı günlükte) ve yedek pyannote için HF token yok: Ayarlar > "
+                "HuggingFace token girin ya da günlükteki 'DiariZen' satırlarını paylaşın.")
+    if "token gerekli" in e:
+        return "HF token yok: huggingface.co'dan token alıp uygulamada Ayarlar > HuggingFace token alanına yapıştırın."
     if "401" in e or "token" in e or "unauthorized" in e:
         return "HF token geçersiz ya da okunamadı: huggingface.co'dan yeni token alıp uygulamada Ayarlar > HuggingFace token alanına yapıştırın."
     if "no module named" in e:

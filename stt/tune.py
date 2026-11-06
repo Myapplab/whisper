@@ -69,6 +69,7 @@ def measure(state_dir: Path) -> dict:
     """Programın son çıktısı (ayırma + kelime eşleme) düzeltilmiş videolarda ne kadar doğru? Yeniden çalıştırmaz:
     düzeltmeden önce saklanan çıktı (``hyp``) ile düzeltilmiş hâl karşılaştırılır. Döner: {videos, minutes, error, per}."""
     per, bad, tot = [], 0.0, 0.0
+    groups: dict = {}
     for p in sorted((Path(state_dir) / "duzeltme").glob("*.json")):
         try:
             d = json.loads(p.read_text(encoding="utf-8"))
@@ -79,11 +80,27 @@ def measure(state_dir: Path) -> dict:
         b, t = speaker_error(d["turns"], d["hyp"])
         if t <= 0:
             continue
+        setup = setup_label(d.get("diar"))
         per.append({"title": (d.get("title") or d.get("key") or "")[:70], "error": round(100 * b / t, 1),
-                    "minutes": round(t / 60, 1)})
+                    "minutes": round(t / 60, 1), "setup": setup})
+        g = groups.setdefault(setup, [0.0, 0.0, 0])
+        g[0], g[1], g[2] = g[0] + b, g[1] + t, g[2] + 1
         bad, tot = bad + b, tot + t
     return {"videos": len(per), "minutes": round(tot / 60, 1), "error": round(100 * bad / tot, 1) if tot else None,
-            "per": per}
+            "per": per,
+            "groups": {k: {"videos": n, "minutes": round(t / 60, 1), "error": round(100 * b / t, 1)}
+                       for k, (b, t, n) in groups.items()}}
+
+
+def setup_label(diar: dict | None) -> str:
+    """Ayırma ayarının kısa adı (A/B karşılaştırması): 'speaker-diarization-community-1 · ses yükseltme kapalı'."""
+    diar = diar or {}
+    if not diar:
+        return "ayar bilinmiyor (1.9.4 öncesi)"
+    lab = str(diar.get("model") or "?").split("/")[-1]
+    if "agc" in diar:
+        lab += " · ses yükseltme " + ("açık" if diar["agc"] else "kapalı")
+    return lab
 
 
 # ---------------------------------------------------------------- ayar dosyası

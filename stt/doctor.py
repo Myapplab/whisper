@@ -213,6 +213,9 @@ def run_doctor(cfg, deep: bool = False) -> int:
             add(OK if m["error"] < 10 else WARN, "Konuşmacı doğruluğu",
                 f"düzeltilmiş {m['videos']} videoda ({m['minutes']} dk) hata %{m['error']}; en kötü: "
                 f"%{worst['error']} {worst['title']}")
+            if len(m.get("groups") or {}) > 1:  # farklı ayarla işlenmiş videolar: hangisi daha iyi (A/B)
+                add(OK, "Konuşmacı doğruluğu (ayara göre)", " · ".join(
+                    f"{k}: %{v['error']} ({v['videos']} video)" for k, v in sorted(m["groups"].items())))
         else:
             add(WARN, "Konuşmacı doğruluğu", "ölçülmedi: 'Metni göster' > 'Konuşmacılar' ekranında 3-5 basın "
                 "toplantısını düzeltip kaydedin (yeni sürümle işlenmiş videolar)")
