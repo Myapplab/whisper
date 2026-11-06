@@ -8,29 +8,54 @@ Güvenlik kuralları:
 - FPL fikstürü alınamazsa hiçbir şey yapılmaz (yoksa bütün GW'ler silinirdi).
 - FPL verisinin sezonu dışındaki (eski sezon) kayıtlara dokunulmaz: o sezonun fikstürü elde yok.
 - Podcast / film kayıtları taşınmaz (konuşmacı etiketleri farklı); artık basın toplantısına benzeyenler bildirilir.
-- Önce yeni dosyalar yazılır, sonra kayıtlar, en son eski dosyalar silinir: yarıda kalırsa bir sonraki çalıştırma
-  tamamlar. Klasörde başka kayıt, tanınmayan dosya ya da mac.json'da elle eklenmiş "ek_bilgiler" varsa klasör
+- Önce yeni dosyalar yazılır, sonra silinecek eski dosyalar `.stt/siniflandirma_bekleyen.json`'a yazılır, sonra
+  kayıtlar, en son eski dosyalar silinir. Silinemeyen (açık) ya da yarıda kalan silme bir sonraki çalıştırmada
+  tamamlanır. Klasörde başka kayıt, tanınmayan dosya ya da mac.json'da elle eklenmiş "ek_bilgiler" varsa klasör
   silinmez.
+- Elle düzeltilmiş .txt (gövdesi programın ürettiğinden farklı) yeniden üretilmez, olduğu gibi taşınır; .srt'de veri
+  seti bilgisi yok, her zaman olduğu gibi taşınır.
 - Yalnız harf büyüklüğü değişen ad ("Erik Ten Hag" -> "Erik ten Hag") taşınmaz: Windows'ta aynı dosyadır, yeni
   yazılan dosya "eski" diye silinirdi. Silmeden önce ayrıca aynı dosya mı diye bakılır.
-- 1.9.8 öncesi json'larda video açıklaması yok: eski sınıflandırmanın yarışması ve başlıkta geçmeyen rakibi
-  (açıklamadan bulunmuştu) yerine konur; yoksa açıklamadan doğru bulunmuş kupa maçı PL haftasına taşınırdı.
+- 1.9.8 öncesi json'larda video açıklaması yok: eski sınıflandırmanın yarışması ve başlıkta hiç geçmeyen rakibi
+  (açıklamadan bulunmuştu) yerine konur ("dataset_hint" olarak saklanır, sonraki çalıştırmalarda aynısı kullanılır);
+  yoksa açıklamadan doğru bulunmuş kupa maçı PL haftasına taşınırdı.
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import timedelta
 from pathlib import Path
 
 from .dataset import (_parse_dt, classify, fpl_data, index_row, out_paths, presser_time, rel_path, update_index,
                       write_match_json)
-from .match import _team_hits, is_team, looks_like_presser, parse_match
-from .outputs import write_all
+from .match import _ALIASES, _tnorm, is_team, looks_like_presser, parse_match
+from .outputs import to_txt, write_all
 from .util import atomic_write_text, log, read_jsonl, replace_retry, write_jsonl_csv
 
 DOC_SUFFIXES = (".txt", ".srt", ".json", " - ozet.md")
 NEWS_SUFFIXES = (" - haber.md", " - haber.json")
+PENDING = "siniflandirma_bekleyen.json"
+
+
+def _named_in_title(name: str, title: str) -> bool:
+    """Takımın herhangi bir adı (belirsiz "derby", "Sporting" dahil) başlıkta geçiyor mu? Eski kurallar onu
+    başlıktan (belki yanlışlıkla) bulmuş olabilir; açıklamadan geldiği varsayılmaz."""
+    t = _tnorm(title)
+    return any(re.search(rf"(?<![a-z0-9]){re.escape(a)}(?![a-z0-9])", t) for a, c in _ALIASES if c == name)
+
+
+def _old_hint(doc: dict, title: str) -> str | None:
+    """1.9.8 öncesi kayıt: açıklamanın yerine eski sınıflandırmanın yarışması + başlıkta geçmeyen eski rakip."""
+    old_ds = doc.get("dataset") if isinstance(doc.get("dataset"), dict) else {}
+    old_m = doc.get("match") if isinstance(doc.get("match"), dict) else {}
+    team = old_m.get("team") or old_m.get("home")
+    opp = old_m.get("away") if team in (None, old_m.get("home")) else old_m.get("home")
+    bits = [str(old_ds["competition"])] if old_ds.get("competition") else []
+    if is_team(opp) and opp != team and not _named_in_title(opp, title):
+        bits.append(opp)
+    return " | ".join(bits) or None
 
 
 def _info_of(doc: dict) -> dict:
@@ -44,12 +69,13 @@ def _info_of(doc: dict) -> dict:
     old_m = doc.get("match") if isinstance(doc.get("match"), dict) else {}
     if doc.get("description_head"):
         info["description"] = str(doc["description_head"])
-    elif "description_head" not in doc:
-        in_title = {c for *_, c in _team_hits(info["title"])[1]}
-        bits = [str(old_ds["competition"])] if old_ds.get("competition") else []
-        bits += [x for x in (old_m.get("home"), old_m.get("away")) if is_team(x) and x not in in_title]
-        if bits:
-            info["description"] = " | ".join(bits)
+    elif "dataset_hint" in doc:            # daha önce yeniden sınıflandırılmış eski kayıt: ilk çalıştırmanın ipucu
+        if doc["dataset_hint"]:
+            info["description"] = str(doc["dataset_hint"])
+    elif "description_head" not in doc:   # 1.9.8 öncesi, ilk kez
+        hint = _old_hint(doc, info["title"])
+        if hint:
+            info["description"] = hint
     if not any(info.get(k) for k in ("timestamp", "release_timestamp", "upload_date")):
         d = str(old_m.get("date") or old_ds.get("presser_date") or "")
         if len(d) == 10:
@@ -125,8 +151,9 @@ def _cleanup_folder(folder: Path, new_dir: Path, root: Path, key: str) -> None:
             while dst.exists():
                 dst, n = new_dir / f"fpl_presser-{n}.log", n + 1
             replace_retry(log_src, dst)
-        for e in folder.iterdir():
-            e.unlink()
+        for e in entries:  # yalnız denetlenenler: arada yazılan dosya silinmez, klasör de silinemez (boş değil)
+            if e.exists():
+                e.unlink()
         folder.rmdir()
         parent = folder.parent  # boş kalan takım klasörü (lig klasörleri ve kök kalır)
         while not _same(parent, root) and not _same(parent.parent, root) and parent.is_dir() \
@@ -181,6 +208,71 @@ def _fix_collections(root: Path) -> None:
             log.warning("Koleksiyon listesi güncellenemedi (%s): %s", jl.parent.name, e)
 
 
+def _load_pending(root: Path) -> list[dict]:
+    try:
+        d = json.loads((root / ".stt" / PENDING).read_text(encoding="utf-8"))
+        return [x for x in d if isinstance(x, dict) and x.get("key") and x.get("dir") and x.get("base")]
+    except (OSError, ValueError, TypeError):
+        return []
+
+
+def _save_pending(root: Path, items: list[dict]) -> None:
+    p = root / ".stt" / PENDING
+    if items:
+        atomic_write_text(p, json.dumps(items, ensure_ascii=False, indent=1))
+    else:
+        p.unlink(missing_ok=True)
+
+
+def _finish_move(root: Path, item: dict) -> list[str]:
+    """Taşınmış kaydın eski dosyalarını sil (yeni dosyayla aynı dosya olanlar hariç). Döner: silinemeyenler."""
+    key = item["key"]
+    old_dir, old_base = Path(item["dir"]), item["base"]
+    new_dir, new_base = Path(item["new_dir"]), item["new_base"]
+    written = [new_dir / f"{new_base}{suf}" for suf in DOC_SUFFIXES]
+    failed = []
+    for suf in DOC_SUFFIXES:
+        old = old_dir / f"{old_base}{suf}"
+        if not old.exists() or any(_same_file(old, w) for w in written):
+            continue  # yok ya da aynı dosya (büyük/küçük harf, kısa ad...): silinmez
+        try:
+            old.unlink()
+        except OSError as e:
+            log.warning("Eski dosya silinemedi (açık olabilir), sonraki çalıştırmada denenecek: %s (%s)", old, e)
+            failed.append(str(old))
+    if failed:
+        return failed
+    marker = old_dir / f".{old_base}.key"
+    try:
+        if marker.exists() and not _same_file(marker, new_dir / f".{new_base}.key") \
+                and marker.read_text(encoding="utf-8", errors="replace").strip() == key:
+            marker.unlink()
+    except OSError:
+        pass
+    _cleanup_folder(old_dir, new_dir, root, key)
+    return []
+
+
+def _retry_pending(root: Path, res: dict) -> None:
+    """Önceki çalıştırmada silinemeyen / yarıda kalan eski dosyalar: index kayıt artık yeni yerdeyse silinir."""
+    items = _load_pending(root)
+    if not items:
+        return
+    where = {r["key"]: r.get("json") for r in read_jsonl(root / "index.jsonl") if r.get("key")}
+    keep = []
+    for it in items:
+        cur = where.get(it["key"])
+        old_json = Path(it["dir"]) / f"{it['base']}.json"
+        if not cur or _same_file(root / cur, old_json) or str(root / cur).casefold() == str(old_json).casefold():
+            continue  # index hâlâ eski yeri gösteriyor ya da kayıt yok: silinecek bir şey yok
+        failed = _finish_move(root, it)
+        if failed:
+            keep.append(it)
+            res["errors"].append({"key": it["key"], "title": Path(failed[0]).name,
+                                  "error": "eski dosya silinemedi (açık olabilir)"})
+    _save_pending(root, keep)
+
+
 def reclassify(out_root: Path, apply: bool = True, data: dict | None = None, progress=None, state=None) -> dict:
     """``apply=False``: yalnız ne değişeceğini say (deneme turu, hiçbir dosya yazılmaz)."""
     root = Path(out_root).resolve()
@@ -193,10 +285,13 @@ def reclassify(out_root: Path, apply: bool = True, data: dict | None = None, pro
                 "error": "FPL fikstür verisi alınamadı (internet / fantasy.premierleague.com). Bağlantıyı kontrol "
                          "edip tekrar deneyin; veri olmadan yeniden sınıflandırma GW'leri silerdi."}
     season = _season(data)
+    if apply:
+        _retry_pending(root, res)
     rows = [r for r in read_jsonl(root / "index.jsonl") if r.get("key")]
     if state is None and apply:
         from .state import State
         state = State(root / ".stt")
+    res["moved_files"] = {}
     for i, row in enumerate(rows):
         if progress:
             progress(i, len(rows))
@@ -271,12 +366,27 @@ def _one(root: Path, row: dict, data: dict, season, apply: bool, state, res: dic
         new_dir, new_base = out_paths(root, meta, info["title"] or "kayit", key, create=True)
         if _same_dir(new_dir, old_dir) and _same_name(new_base, old_base):   # işaret dosyası arada değişmiş
             same_place, new_dir, new_base = True, old_dir, old_base
+    keep_txt = _edited_txt(old_dir / f"{old_base}.txt", doc)
+    old_srt = old_dir / f"{old_base}.srt"
+    keep_srt = old_srt.read_bytes() if not same_place and old_srt.exists() else None
+    if "description_head" not in doc:   # 1.9.8 öncesi kayıt: ilk çalıştırmanın ipucu saklanır (sonrakiler aynısını kullanır)
+        doc["description_head"] = None
+        doc["dataset_hint"] = info.get("description")
     doc["match"], doc["dataset"] = match, new_ds
     paths = write_all(new_dir, new_base, doc, f"{new_base} - ozet.md")
+    if keep_txt is not None:
+        _write_bytes(paths["txt"], keep_txt)
+        log.info("Elle düzeltilmiş metin korundu (başlık satırları eski kalabilir): %s", paths["txt"].name)
+    if keep_srt is not None:
+        _write_bytes(paths["srt"], keep_srt)
     if not same_place:
         _move_news(old_dir, old_base, new_dir, new_base, paths)
     if meta.get("team"):
         write_match_json(new_dir, meta)
+    item = {"key": key, "dir": str(old_dir), "base": old_base, "new_dir": str(new_dir), "new_base": new_base}
+    if not same_place:  # önce niyet yazılır: index güncellendikten sonra çökse de sonraki çalıştırma eski dosyaları siler
+        pending = [x for x in _load_pending(root) if x.get("key") != key] + [item]
+        _save_pending(root, pending)
     update_index(root, index_row(root, key, meta, doc, paths))
     prev = state.get(key) if state is not None else None
     if prev:
@@ -286,22 +396,37 @@ def _one(root: Path, row: dict, data: dict, season, apply: bool, state, res: dic
                   title=prev["title"] or title, out_dir=str(new_dir), error=prev.get("error") or "",
                   info=pinfo)
     if not same_place:
-        written = [paths[k] for k in ("txt", "srt", "json", "md")]
-        for suf in DOC_SUFFIXES:
-            old = old_dir / f"{old_base}{suf}"
-            if any(_same_file(old, w) for w in written):
-                continue  # aynı dosya (büyük/küçük harf, kısa ad...): silinmez
-            try:
-                old.unlink(missing_ok=True)
-            except OSError as e:
-                log.warning("Eski dosya silinemedi (açık olabilir): %s (%s)", old, e)
-        marker = old_dir / f".{old_base}.key"
-        new_marker = new_dir / f".{new_base}.key"
-        if marker.exists() and not _same_file(marker, new_marker) \
-                and marker.read_text(encoding="utf-8", errors="replace").strip() == key:
-            marker.unlink()
-        _cleanup_folder(old_dir, new_dir, root, key)
+        res.setdefault("moved_files", {})[str(old_dir / f"{old_base}.txt")] = str(paths["txt"])
+        failed = _finish_move(root, item)
+        if failed:
+            res["errors"].append({"key": key, "title": title,
+                                  "error": "eski dosya silinemedi (açık olabilir); sonraki çalıştırmada silinecek"})
+        else:
+            _save_pending(root, [x for x in _load_pending(root) if x.get("key") != key])
     log.info("Yeniden sınıflandırıldı: %s -> %s", title[:70], rel_path(paths["txt"], root))
+
+
+def _edited_txt(p: Path, doc: dict) -> bytes | None:
+    """.txt elle düzeltilmiş mi? Gövde (başlık satırlarından sonrası) programın bu json'dan ürettiğinden farklıysa
+    dosyanın kendisi (bayt olarak) döner, değilse None (yeniden üretilebilir)."""
+    try:
+        raw = p.read_bytes()
+    except OSError:
+        return None
+    try:
+        text = raw.decode("utf-8").replace("\r\n", "\n")
+    except UnicodeDecodeError:
+        return raw  # başka kodlamayla kaydedilmiş: elle açılıp kaydedilmiş, dokunma
+    gen = to_txt(doc)
+    body = text.split("\n\n", 1)[1] if "\n\n" in text else text
+    gen_body = gen.split("\n\n", 1)[1] if "\n\n" in gen else gen
+    return None if body.strip() == gen_body.strip() else raw
+
+
+def _write_bytes(p: Path, data: bytes) -> None:
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_bytes(data)
+    replace_retry(tmp, p)
 
 
 def summary_text(res: dict, limit: int = 12) -> str:

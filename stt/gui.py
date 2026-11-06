@@ -505,9 +505,17 @@ class App:
                     "live": bool(it.extra.get("live")), "retry": retry})
         self._inbox.put(it)
 
+    def _busy_msg(self) -> str | None:
+        """Başlat'ı engelleyen iş: eğitim (ekran kartı tek işe) ya da yeniden sınıflandırma (klasörler taşınıyor)."""
+        if getattr(self, "_training", False):
+            return "Konuşmacı eğitimi sürüyor; birkaç dakika sonra tekrar Başlat'a basın."
+        if getattr(self, "_reclassifying", False):
+            return "Veri seti yeniden sınıflandırılıyor; birkaç saniye sonra tekrar Başlat'a basın."
+        return None
+
     def start(self, text: str, paths: list[str], opts: dict) -> dict:
-        if getattr(self, "_training", False):  # eğitim ekran kartını kullanıyor: iki iş aynı kartta çakışmasın
-            msg = "Konuşmacı eğitimi sürüyor; birkaç dakika sonra tekrar Başlat'a basın."
+        msg = self._busy_msg()
+        if msg:
             return {"ok": False, "count": 0, "error": msg, "warning": msg}
         from .channel import is_collection_url
         urls = [u.rstrip(").,;") for u in URL_RE.findall(text or "")]
@@ -545,6 +553,8 @@ class App:
 
     # ---------------------------------------------------------- tekrar dene / yarım kalanlar
     def retry(self, uid: str) -> dict:
+        if getattr(self, "_reclassifying", False):
+            return {"ok": False, "error": self._busy_msg()}
         it = self._items.get(uid)
         if it is None:
             return {"ok": False, "error": "İş bulunamadı (uygulama yeniden açıldıysa linki tekrar ekleyin)."}
@@ -611,8 +621,8 @@ class App:
                 "matched": sum(1 for e in items if e.get("match")), "collection": coll, "ai": use_ai}
 
     def start_selected(self, urls: list[str], opts: dict) -> dict:
-        if getattr(self, "_training", False):  # eğitim ekran kartını kullanıyor: iki iş aynı kartta çakışmasın
-            msg = "Konuşmacı eğitimi sürüyor; birkaç dakika sonra tekrar Başlat'a basın."
+        msg = self._busy_msg()
+        if msg:
             return {"ok": False, "count": 0, "error": msg, "warning": msg}
         from .sources import Item
         n = 0
@@ -696,15 +706,23 @@ class App:
         Path(self._cfg.out_dir).mkdir(parents=True, exist_ok=True)
         open_path(str(Path(self._cfg.out_dir).resolve()))
 
+    def _moved_path(self, p: str) -> str:
+        """Yeniden sınıflandırmayla taşınmış metin: açık okuyucu / Konuşmacılar ekranı eski yolu tutuyor olabilir."""
+        moved = getattr(self, "_moved", {})
+        seen = 0
+        while p and not Path(p).exists() and p in moved and seen < 20:
+            p, seen = moved[p], seen + 1
+        return p
+
     def read_text(self, p: str) -> str:
         try:
-            return Path(p).read_text(encoding="utf-8")[:200_000]
+            return Path(self._moved_path(p)).read_text(encoding="utf-8")[:200_000]
         except Exception as e:  # noqa: BLE001
             return f"(okunamadı: {e})"
 
     # ---------------------------------------------------------- konuşmacı düzeltme / ses kütüphanesi
     def _doc_path(self, p: str) -> Path:
-        jp = Path(p).with_suffix(".json")
+        jp = Path(self._moved_path(p)).with_suffix(".json")
         if not jp.is_file():
             raise FileNotFoundError("Bu metnin .json dosyası yok")
         return jp
@@ -898,12 +916,16 @@ class App:
         if self._pipe is not None and self._pipe.active() or not self._inbox.empty():
             return {"ok": False, "error": "Kuyrukta iş varken yapılmaz: işler bitince (ya da Durdur'dan sonra) tekrar "
                                           "deneyin."}
-        if getattr(self, "_reclassifying", False):
-            return {"ok": False, "error": "Yeniden sınıflandırma zaten sürüyor."}
-        self._reclassifying = True
+        with self._lock:  # iki çağrı aynı anda başlamasın (çift tıklama)
+            if getattr(self, "_reclassifying", False):
+                return {"ok": False, "error": "Yeniden sınıflandırma zaten sürüyor."}
+            self._reclassifying = True
         try:
             from .reclassify import reclassify
             res = reclassify(Path(self._cfg.out_dir).resolve(), apply=bool(apply), state=self._state())
+            if not hasattr(self, "_moved"):
+                self._moved = {}
+            self._moved.update(res.get("moved_files") or {})
             if apply and res.get("ok"):
                 log.info("Veri seti yeniden sınıflandırıldı: %s", res.get("text", "").splitlines()[0] if res.get("text") else "")
             return res

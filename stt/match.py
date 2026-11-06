@@ -75,8 +75,8 @@ TEAMS: dict[str, list[str]] = {
     "Club Brugge": ["Brugge"], "Union Saint-Gilloise": ["Union SG", "Union St-Gilloise"],
     "Celtic": [], "Rangers": [],
     "Galatasaray": [], "Fenerbahçe": ["Fenerbahce"], "Beşiktaş": ["Besiktas"], "Trabzonspor": [],
-    "Başakşehir": ["Basaksehir", "İstanbul Başakşehir"], "Göztepe": ["Goztepe"], "Samsunspor": [],
-    "Qarabağ": ["Qarabag", "Karabağ", "Karabag"], "Neftçi": ["Neftchi"], "Sabah": ["Sabah FK", "Sabah FC"], "Zira": ["Zira FK"],
+    "Başakşehir": ["Basaksehir", "İstanbul Başakşehir", "Rams Başakşehir"], "Göztepe": ["Goztepe"], "Samsunspor": [],
+    "Qarabağ": ["Qarabag", "Karabağ", "Karabag"], "Neftçi": ["Neftchi"], "Sabah": ["Sabah FK", "Sabah FC"], "Zira": ["Zira FK", "Zirə"],
     "Slavia Prague": ["Slavia Praha", "Slavia"], "Sparta Prague": ["Sparta Praha"], "Viktoria Plzen": ["Plzen", "Plzeň"],
     "Olympiacos": ["Olympiakos"], "Panathinaikos": [], "PAOK": [],
     "Copenhagen": ["FC Copenhagen", "FC København"], "Midtjylland": ["FC Midtjylland"],
@@ -201,19 +201,28 @@ _EXACT_CASE = {"om": "OM"}
 _NBA = re.compile(r"\b(?:nba|wnba|san antonio|wembanyama|grizzlies|lakers|warriors|celtics|knicks|mavericks|nuggets|"
                   r"clippers|timberwolves|pelicans|basketball|basketbol)\b")
 _CONNECT_BEFORE = re.compile(r"(?:^|[\s|:])(?:vs|v|versus|against)$")
-_SCORE = r"\d+\s*[-:]?\s*\d+"
+_SCORE = r"(?:\d+\s*[-:]\s*\d+|\d+\s+\d+)"
 _LINK = rf"(?:vs|v|versus|-|{_SCORE})"
 # Belirsiz addan sonra gelince "takım - takım" kalıbını doğrulayan sözcükler ("Qarabağ - Sabah oyunundan sonra")
 _AMB_AFTER = re.compile(r"(?:$|[|:\-]|\d|(?:mac|matc|oyun|karsilasma|match|game|clash|fixture|tie|press|presser|"
                         r"metbuat|konfrans|basin|toplanti|aciklama|conference|preview|highlight|derbi|derby)\w*)")
-# "Sporting will be tough", "Nice are dangerous": belirsiz ad özne (önünde tanımlık yoksa)
-_AMB_VERB = re.compile(r"(?:are|have|has|will|were|is|was|can|could|would|play|plays|face|faces|host|hosts|visit|"
-                       r"visits|come|arrive)\b")
+# "Sporting will be tough", "Nice are dangerous": belirsiz ad büyük harfle yazılmış özne (önünde tanımlık yoksa).
+# Asıl metinde bakılır: "nice play", "Nice, has..." ya da Türkçe "Sabah iş" ("iş" -> "is") özne değil.
+_AMB_VERBS = r"(?:are|have|has|will|were|is|was|can|could|would|face|faces|host|hosts|visit|visits)"
 _DETERMINERS = {"the", "a", "an", "this", "that", "our", "their", "his", "its", "next", "big", "local", "every", "any",
-                "no", "what"}
+                "no", "what", "very", "so"}
 
 
-def _ambiguous_ok(t: str, a: int, b: int, alias: str, hits: list, cands: list) -> bool:
+def _subject_in(text: str, alias: str) -> bool:
+    pat = rf"(?<![\w'’])({re.escape(alias[0].upper())}(?i:{re.escape(alias[1:])}))\s+{_AMB_VERBS}\b"
+    for m in re.finditer(pat, text or ""):
+        prev = re.findall(r"[\w']+", text[:m.start()])
+        if not prev or prev[-1].lower() not in _DETERMINERS:
+            return True
+    return False
+
+
+def _ambiguous_ok(t: str, a: int, b: int, alias: str, hits: list, cands: list, text: str = "") -> bool:
     """Belirsiz ad (t[a:b]) burada takım mı? ``hits``: kesin takımlar, ``cands``: öbür belirsiz adaylar
     ("Derby - Nice": ikisi de belirsiz, birbirine bağlı)."""
     before, after = t[:a].rstrip(), t[b:].lstrip()
@@ -232,10 +241,8 @@ def _ambiguous_ok(t: str, a: int, b: int, alias: str, hits: list, cands: list) -
         if m and b + (len(t[b:]) - len(after)) + m.end() in starts:
             return True
     # "Sporting will be a tough test" (derby hariç: "derby will be..." çoğunlukla yerel maç)
-    if alias != "derby" and _AMB_VERB.match(after):
-        prev = before.split()[-1] if before.split() else ""
-        if prev.strip("|:") not in _DETERMINERS:
-            return True
+    if alias != "derby" and _subject_in(text, alias):
+        return True
     return False
 
 
@@ -264,7 +271,7 @@ def _team_hits(text: str) -> tuple[str, list[tuple[int, int, str]]]:
     fixed = list(hits)
     for a, b, alias, canon in amb:  # ortak sözcükler: öbür takımlar bulunduktan sonra, bağlama göre
         others = [c for c in amb if c[0] != a]
-        if _ambiguous_ok(t, a, b, alias, fixed, others):
+        if _ambiguous_ok(t, a, b, alias, fixed, others, text):
             hits.append((a, b, canon))
     return t, sorted(hits)
 
@@ -300,7 +307,8 @@ def _titlecase_caps(s: str) -> str:
         w = m.group(0)
         if len(w) <= 3 and w in _ACRONYMS:
             return w
-        if w.lower() in _PARTICLES and m.start() > 0:
+        prev = s[:m.start()].rstrip()
+        if w.lower() in _PARTICLES and prev and prev[-1].isalpha():  # ad içinde; bölüm başında değil ("| DE BRUYNE")
             return w.lower()
         return w.capitalize()
     return re.sub(rf"\b[{_UP}]{{2,}}\b", fix, s)
@@ -361,13 +369,19 @@ def _known_manager(words: list[str], teams: list[str] | None = None) -> str | No
     return full if ws == fw[-len(ws):] or ws[0] == fw[0] else None
 
 
-def _known_in_run(run: list[str]) -> str | None:
-    """Çok kelimeli dizide bilinen hoca: en az iki kelimelik pencere ("Mikel Arteta", "De Zerbi"). Tek soyadı
-    başka bir adın ardındaysa ("Andreas Pereira", "Nuno Mendes") başka kişidir."""
+def _known_in_run(run: list[str], teams: list[str] | None = None) -> str | None:
+    """Çok kelimeli dizide bilinen hoca: iki-üç kelimelik pencere ("Mikel Arteta", "De Zerbi") ya da dizinin başındaki
+    soyadı ("Maresca Unhappy With Referee"). Soyadı başka bir adın ardındaysa ("Andreas Pereira") ya da adla anılan
+    hocanın adı başka bir soyadıyla geçiyorsa ("Nuno Mendes") başka kişidir."""
     for p, w in enumerate(run):
-        if _norm(w) in MANAGER_HINTS:
+        key = _norm(w)
+        if key in MANAGER_HINTS:
             for s in range(max(0, p - 2), p):
                 k = _known_manager(run[s:p + 1])
+                if k:
+                    return k
+            if p == 0 and _norm(MANAGER_HINTS[key].split()[-1]) == key:
+                k = _known_manager([w], teams)
                 if k:
                     return k
     return None
@@ -377,7 +391,7 @@ def find_manager(title: str, teams: list[str]) -> str | None:
     runs = _name_runs(title, teams)
     multi = [r for r in runs if len(r) >= 2]
     for r in multi:  # bilinen hoca önce (yazılışı düzeltilmiş tam adıyla: "FABIAN HURZELER" -> "Fabian Hürzeler")
-        k = _known_in_run(r)
+        k = _known_in_run(r, teams)
         if k:
             return k
     for r in runs:  # tek başına soyadı: "Arteta on Saka", "Carrick on Mainoo's fitness"
@@ -402,6 +416,23 @@ def manager_team(name: str | None, date: str | None = None) -> str | None:
     return team
 
 
+# Rakip adı yerine geçen genel sözcükler: "Boxing Day clash", "North London Derby", "Emirates Stadium",
+# "Gameweek 11", "St James' Park". Rakip yalnız bunlardan oluşuyorsa rakip yok sayılır (normal maç araması);
+# sözlükte olmayan adla PL maçı eşleştirilirken de sayılmaz ("Exeter City" Manchester City değil).
+GENERIC_OPP = set("""
+boxing day gameweek matchweek gw round stadium park arena ground road lane emirates anfield etihad trafford old bridge
+stamford selhurst goodison craven cottage molineux turf moor st james mary marys north south east west london
+merseyside manchester tyne wear midlands black country local city united town county athletic albion wanderers
+rovers fc afc the derby clash showdown trip visit test tie fixture game match week weekend home away cup final semi
+league big new year christmas festive opener
+""".split())
+
+
+def opp_words(name: str) -> set[str]:
+    """Rakip metninin ayırt edici sözcükleri (genel sözcükler ve kısa sözcükler hariç)."""
+    return {w for w in _alias_norm(name or "").split() if len(w) > 2 and w not in GENERIC_OPP}
+
+
 _OPP_RE = re.compile(rf"(?:(?i:\b(?:previews?|ahead\s+of|against|versus|vs)\b\.?)|\bv\b\.?)\s+((?:{_NAME_WORD}\s?){{1,3}})")
 
 
@@ -420,6 +451,8 @@ def _opponent_by_pattern(title: str, home: str | None) -> str | None:
             return None if canon == home else canon
         if home and _alias_norm(cand) == _alias_norm(home):
             return None
+        if not opp_words(cand):
+            continue  # "Boxing Day", "North London Derby": rakip adı değil
         return cand
     return None
 
@@ -439,7 +472,7 @@ def _is_opponent_mention(title: str, team: str) -> bool:
 
 
 _PRESSER_RE = re.compile(
-    r"press[ -]?conf|presser|pre[ -]?match|post[ -]?match|basin toplanti|mac (?:oncesi|sonrasi)|"
+    r"press[ -]?conf|presser|pre[ -]?match|post[ -]?match|basin toplanti|maci? (?:oncesi|sonrasi|sonu)|"
     r"metbuat konfrans|oyun(?:dan|undan)? (?:evvel|sonra)|news conference|media conference|rueda de prensa|"
     r"conferencia de prensa|pressekonferenz|conferenza stampa|conference de presse|persconferentie|coletiva")
 # Kulüp kanalında rakip adı geçse de basın toplantısı / röportaj olmayan videolar
@@ -543,7 +576,14 @@ def parse_match(info: dict) -> dict:
             if home is None:
                 home, away = mt, next((x for x in title_teams if x != mt), away)
         elif len(title_teams) <= 1:
-            team, home, away = mt, mt, (title_teams[0] if title_teams else away)
+            # rakip: başlıktaki tek takım, yoksa açıklamadaki ilk başka takım (açıklama çoğu zaman hocanın kendi
+            # kulübünü de anar: "Manchester City manager Enzo Maresca..."), yoksa kalıpla bulunan
+            other = title_teams[0] if title_teams else next((x for x in find_teams(desc) if x != mt), None)
+            if other is None and away not in (None, mt) and not is_team(away):
+                other = away
+            team, home, away = mt, mt, other
+    if away is not None and away == home:
+        away = None  # takım kendisiyle oynamaz ("Manchester City vs Manchester City")
     return {"home": home, "away": away, "team": team, "manager": manager, "date": date}
 
 

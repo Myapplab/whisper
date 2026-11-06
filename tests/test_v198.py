@@ -855,3 +855,190 @@ def test_reclassify_collections_heal_on_rerun(tmp_path, monkeypatch):
     rc.reclassify(tmp_path, apply=True, data=FPL)
     r = json.loads((col / "liste.jsonl").read_text("utf-8"))
     assert "GW11" in r["txt"] and Path(r["txt"]).exists()
+
+
+# ---------------------------------------------------------------- ikinci bağımsız inceleme
+def test_neutral_channel_manager_club_not_its_own_opponent():
+    m = parse_match({"title": "Enzo Maresca press conference", "channel": "Sky Sports News",
+                     "timestamp": _ts("2026-11-06 12:00"),
+                     "description": "Manchester City manager Enzo Maresca speaks to the media."})
+    assert m["team"] == "Manchester City" and m["away"] != "Manchester City"
+    meta = classify(m, {"title": "Enzo Maresca press conference", "timestamp": _ts("2026-11-06 12:00")}, FPL)
+    assert (meta["gw"], meta["home"], meta["away"]) == (11, "Manchester City", "Manchester United")
+    m = parse_match({"title": "Mikel Arteta press conference", "channel": "Sky Sports News",
+                     "timestamp": _ts("2026-11-06 12:00"),
+                     "description": "Arsenal boss Mikel Arteta previews Sunday's game against Chelsea."})
+    assert (m["team"], m["home"], m["away"]) == ("Arsenal", "Arsenal", "Chelsea")
+
+
+@pytest.mark.parametrize("title,want", [
+    ("Maresca Unhappy With Referee", "Enzo Maresca"),
+    ("Arteta Hails Saka After Chelsea Win", "Mikel Arteta"),
+    ("Arteta Frustrated | Press Conference", "Mikel Arteta"),
+    ("Moyes Confident Ahead Of Coventry Clash", "David Moyes"),
+    ("Iraola Frustrated After Spurs Defeat", "Andoni Iraola"),
+    ("LIVERPOOL: VAN DIJK PRESS CONFERENCE", "Van Dijk"),
+    ("PRESS CONFERENCE | DE BRUYNE ON NAPOLI", "De Bruyne"),
+    ("TOTTENHAM: DE ZERBI PRESS CONFERENCE", "Roberto De Zerbi"),
+])
+def test_manager_second_review_cases(title, want):
+    assert find_manager(title, find_teams(title)) == want
+
+
+@pytest.mark.parametrize("title,channel,ts,gw", [
+    ("Mikel Arteta previews Boxing Day clash", "Arsenal", "2026-11-06 12:00", 11),
+    ("Mikel Arteta Previews North London Derby", "Arsenal", "2026-11-06 12:00", 11),
+    ("Mikel Arteta press conference ahead of Gameweek 11", "Arsenal", "2026-11-06 12:00", 11),
+    ("Mikel Arteta previews Emirates Stadium clash", "Arsenal", "2026-11-06 12:00", 11),
+    ("Andoni Iraola previews Merseyside Derby", "Liverpool FC", "2026-11-08 12:00", 11),
+])
+def test_generic_words_are_not_an_unknown_opponent(title, channel, ts, gw):
+    meta = _meta(title, channel, timestamp=_ts(ts))
+    assert meta["gw"] == gw, (meta["opponent"], meta["gw"])
+
+
+def test_unknown_club_with_generic_word_not_matched_to_namesake():
+    """'Exeter City' (kupa rakibi) Manchester City maçı sanılmasın ('city' ortak sözcük)."""
+    meta = _meta("Mikel Arteta previews Exeter City", "Arsenal", timestamp=_ts("2026-11-09 13:00"))
+    assert meta["gw"] is None and meta["opponent"] == "Exeter City"
+
+
+@pytest.mark.parametrize("title,want", [
+    ("Mikel Arteta reacts to dramatic late win", "mac-sonrasi"),
+    ("Mikel Arteta reacts to North London derby win", "mac-sonrasi"),
+    ("Mikel Arteta reacts to Arsenal's win over Chelsea", "mac-sonrasi"),
+    ("Arteta reacts to FA Cup draw", None),
+    ("Mikel Arteta: confidence high after derby win", None),
+    ("Mikel Arteta: We must kick on after Chelsea win", None),
+    ("Chelsea 25-26 Season Review | Enzo Maresca", None),
+    ("Arsenal 2–1 Chelsea | Mikel Arteta", "mac-sonrasi"),
+    ("Qarabağ 2:1 Sabah | Qurban Qurbanov", "mac-sonrasi"),
+    ("Okan Buruk'un maç sonu açıklamaları", "mac-sonrasi"),
+    ("Kasımpaşa deplasmanı sonrası Okan Buruk", "mac-sonrasi"),
+    ("Qarabağ - Sabah matçından sonra Qurban Qurbanov", "mac-sonrasi"),
+    ("Kickoff 16:30 | Arsenal vs Chelsea preview", "mac-oncesi"),
+])
+def test_phase_hint_second_review(title, want):
+    assert phase_hint(title) == want
+
+
+@pytest.mark.parametrize("title,teams", [
+    ("Nice play! Arteta reacts to Chelsea win", ["Chelsea"]),
+    ("Very nice, has to continue | Mikel Arteta press conference", []),
+    ("Okan Buruk: Sabah iş gününe başlıyoruz", []),
+    ("Qurban Qurbanov: Zira will be a tough test", ["Zira"]),
+    ("Zirə - Qarabağ oyunundan sonra mətbuat konfransı", ["Zira", "Qarabağ"]),
+    ("Başakşehir - Göztepe maçı öncesi açıklamalar", ["Başakşehir", "Göztepe"]),
+])
+def test_ambiguous_second_review(title, teams):
+    assert find_teams(title) == teams
+
+
+def test_turkish_presser_and_rams_channel():
+    from stt.match import club_of_channel
+    assert club_of_channel("Rams Başakşehir FK") == "Başakşehir"
+    assert looks_like_presser({"title": "Başakşehir - Göztepe maçı öncesi açıklamalar"})
+
+
+def test_reclassify_second_run_keeps_neutral_channel_result(tmp_path):
+    """1.9.7 kaydı (tarafsız kanal, takımsız): 1. çalıştırma doğru GW; 2. çalıştırma 'Arsenal vs Arsenal' yapıyordu."""
+    from stt.reclassify import reclassify
+    ds = {"team": None, "presser_date": "2026-11-06", "match_date": "2026-11-06"}
+    p = _old_output(tmp_path, "y_n1", "Mikel Arteta press conference", "Sky Sports News", _ts("2026-11-06 12:00"),
+                    "Diger Takimlar/Bilinmeyen/Mikel Arteta press conference", "2026-11-06 - Mikel Arteta", ds,
+                    match={"home": None, "away": None, "team": None, "manager": "Mikel Arteta"})
+    r1 = reclassify(tmp_path, apply=True, data=FPL)
+    r2 = reclassify(tmp_path, apply=True, data=FPL)
+    r3 = reclassify(tmp_path, apply=True, data=FPL)
+    assert r1["moved"] == 1 and r2["moved"] == 0 and r3["moved"] == 0, (r1, r2)
+    row = json.loads((tmp_path / "index.jsonl").read_text("utf-8"))
+    assert row["gw"] == 11 and row["txt"].startswith("Premier League/Arsenal/2026-11-08 GW11 Arsenal vs Chelsea/")
+    assert not p["txt"].exists()
+
+
+@pytest.mark.parametrize("title,channel,old_away", [
+    ("Pep Guardiola previews the Manchester derby", "Man City", "Derby County"),
+    ("Sporting director Andrea Berta | Mikel Arteta press conference", "Arsenal", "Sporting CP"),
+])
+def test_reclassify_does_not_resurrect_old_title_false_positive(tmp_path, title, channel, old_away):
+    from stt.reclassify import reclassify
+    team = "Manchester City" if channel == "Man City" else "Arsenal"
+    ds = {"team": team, "opponent": old_away, "is_pl": True, "presser_date": "2026-11-06",
+          "match_date": "2026-11-06", "home": team, "away": old_away}
+    _old_output(tmp_path, "y_fp", title, channel, _ts("2026-11-06 12:00"),
+                f"Premier League/{team}/2026-11-06 {team} vs {old_away}", "2026-11-06 - x", ds,
+                match={"home": team, "away": old_away, "team": team})
+    res = reclassify(tmp_path, apply=True, data=FPL)
+    assert res["moved"] == 1 and res["gw_found"] == 1, res
+
+
+def test_reclassify_locked_old_file_is_retried_next_run(tmp_path, monkeypatch):
+    """Eski dosya silinemedi (açık): sonraki çalıştırma siler; hata özetinde görünür."""
+    import stt.reclassify as rc
+    old = {"team": "Arsenal", "opponent": "Bukayo Saka's", "is_pl": True, "presser_date": "2026-11-06",
+           "home": "Arsenal", "away": "Bukayo Saka's"}
+    p = _old_output(tmp_path, "y_lock", "Mikel Arteta on Bukayo Saka's fitness | Press conference", "Arsenal",
+                    _ts("2026-11-06 12:00"), "Premier League/Arsenal/2026-11-06 Arsenal vs Bukayo Saka's",
+                    "2026-11-06 - Mikel Arteta", old)
+    real_unlink = Path.unlink
+
+    def locked(self, missing_ok=False):
+        if self == p["txt"]:
+            raise PermissionError(13, "The process cannot access the file")
+        return real_unlink(self, missing_ok=missing_ok)
+    monkeypatch.setattr(Path, "unlink", locked)
+    r1 = rc.reclassify(tmp_path, apply=True, data=FPL)
+    assert r1["moved"] == 1 and r1["errors"] and p["txt"].exists()
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    rc.reclassify(tmp_path, apply=True, data=FPL)
+    assert not p["txt"].exists() and not p["txt"].parent.exists()
+
+
+def test_reclassify_keeps_hand_edited_txt(tmp_path):
+    """Not Defteri'nde elle düzeltilmiş .txt yeniden üretilip ezilmesin (taşınır)."""
+    from stt.reclassify import reclassify
+    old = {"team": "Arsenal", "opponent": "Bukayo Saka's", "is_pl": True, "presser_date": "2026-11-06",
+           "home": "Arsenal", "away": "Bukayo Saka's"}
+    p = _old_output(tmp_path, "y_edit", "Mikel Arteta on Bukayo Saka's fitness | Press conference", "Arsenal",
+                    _ts("2026-11-06 12:00"), "Premier League/Arsenal/2026-11-06 Arsenal vs Bukayo Saka's",
+                    "2026-11-06 - Mikel Arteta", old)
+    edited = p["txt"].read_text("utf-8").replace("he trained today", "he trained TODAY (elle)")
+    p["txt"].write_bytes(edited.replace("\n", "\r\n").encode("utf-8"))      # Not Defteri: CRLF
+    res = reclassify(tmp_path, apply=True, data=FPL)
+    new = tmp_path / "Premier League/Arsenal/2026-11-08 GW11 Arsenal vs Chelsea/2026-11-06 mac-oncesi - Mikel Arteta.txt"
+    assert res["moved"] == 1 and "TODAY (elle)" in new.read_text("utf-8")
+
+
+def test_reclassify_regenerates_unedited_txt_with_windows_newlines(tmp_path):
+    """Windows'ta program .txt'yi CRLF yazar: bu 'elle düzeltilmiş' sayılıp başlık eski kalmasın."""
+    from stt.reclassify import reclassify
+    old = {"team": "Arsenal", "opponent": "Bukayo Saka's", "is_pl": True, "presser_date": "2026-11-06",
+           "home": "Arsenal", "away": "Bukayo Saka's"}
+    p = _old_output(tmp_path, "y_crlf", "Mikel Arteta on Bukayo Saka's fitness | Press conference", "Arsenal",
+                    _ts("2026-11-06 12:00"), "Premier League/Arsenal/2026-11-06 Arsenal vs Bukayo Saka's",
+                    "2026-11-06 - Mikel Arteta", old)
+    p["txt"].write_bytes(p["txt"].read_text("utf-8").replace("\n", "\r\n").encode("utf-8"))
+    reclassify(tmp_path, apply=True, data=FPL)
+    new = tmp_path / "Premier League/Arsenal/2026-11-08 GW11 Arsenal vs Chelsea/2026-11-06 mac-oncesi - Mikel Arteta.txt"
+    assert "GW11" in new.read_text("utf-8")
+
+
+def test_gui_reader_follows_moved_file_and_start_waits(tmp_path, monkeypatch):
+    import stt.gui as g
+    import stt.reclassify as rc
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(rc, "fpl_data", lambda d, **k: FPL)
+    app = g.App()
+    app._cfg.out_dir = tmp_path
+    old = {"team": "Arsenal", "opponent": "Bukayo Saka's", "is_pl": True, "presser_date": "2026-11-06",
+           "home": "Arsenal", "away": "Bukayo Saka's"}
+    p = _old_output(tmp_path, "y_rd", "Mikel Arteta on Bukayo Saka's fitness | Press conference", "Arsenal",
+                    _ts("2026-11-06 12:00"), "Premier League/Arsenal/2026-11-06 Arsenal vs Bukayo Saka's",
+                    "2026-11-06 - Mikel Arteta", old)
+    assert app.dataset_reclassify(True)["moved"] == 1
+    assert "He is fine" in app.read_text(str(p["txt"]))          # açık okuyucu eski yolu tutuyor
+    assert app.speakers_load(str(p["txt"]))["ok"]
+    app._reclassifying = True
+    r = app.start("https://youtu.be/abc", [], {})
+    assert r["count"] == 0 and r.get("error")
+    app._reclassifying = False
