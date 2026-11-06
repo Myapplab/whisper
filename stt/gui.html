@@ -764,8 +764,12 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     const lab = id => { const s = st.spk.find(x => x.id === id); return st.labels[id] ?? (s ? s.label : "?"); };
     const sidOf = sg => st.moves[sg.id] ?? sg.sid;
     const col = id => "s" + (Math.max(0, st.spk.findIndex(x => x.id === id)) % 6);
-    const tot = {}; const recount = () => { for (const k in tot) delete tot[k];
-      d.segments.forEach((sg, i) => { const nx = d.segments[i + 1]; const e = nx ? Math.min(nx.start, sg.start + 30) : sg.start + 5;
+    // konuşma süresi: satırın gerçek bitişi (eskiden sonraki satırın başına kadar sayılıyordu: aradaki sessizlik de
+    // konuşma görünüyordu). Bitişi olmayan eski satırda eski tahmin, süre "~" ile gösterilir.
+    const tot = {}; let approx = false;
+    const recount = () => { for (const k in tot) delete tot[k]; approx = false;
+      d.segments.forEach((sg, i) => { let e = sg.end;
+        if (typeof e !== "number" || !(e >= sg.start)) { approx = true; const nx = d.segments[i + 1]; e = nx ? Math.min(nx.start, sg.start + 30) : sg.start + 5; }
         tot[sidOf(sg)] = (tot[sidOf(sg)] || 0) + Math.max(0, e - sg.start); }); };
     const newSpk = () => { const id = "ELLE_" + (++nNew); st.spk.push({ id, label: "Konuşmacı " + (st.spk.length + 1), seconds: 0, sig: false }); st.labels[id] = "Konuşmacı " + st.spk.length; return id; };
     const pick = (cur, onPick) => el("select", { onchange: e => { const v = e.target.value === "__new" ? newSpk() : e.target.value; onPick(v); render(); } },
@@ -781,7 +785,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
         rows.append(el("div", { class: "spkrow" }, el("span", { class: "dot " + col(s.id) }),
           el("input", { type: "text", list: "voiceNames", value: lab(s.id), placeholder: "Ad Soyad",
             oninput: e => { st.labels[s.id] = e.target.value; }, onchange: () => render() }),
-          el("span", { class: "hint" }, "~" + fmtDur(tot[s.id] || 0) + (s.voice ? " · sesinden tanındı (%" + Math.round(s.voice * 100) + ")" : "") + (s.sig ? "" : " · ses imzası yok")),
+          el("span", { class: "hint" }, (approx ? "~" : "") + fmtDur(tot[s.id] || 0) + (s.voice ? " · sesinden tanındı (%" + Math.round(s.voice * 100) + ")" : "") + (s.sig ? "" : " · ses imzası yok")),
           d.mode === "basin" ? el("label", { class: "hint" }, el("input", { type: "radio", name: "tdpick", checked: st.td === s.id, onchange: () => { st.td = s.id; } }), " teknik direktör") : null));
       }
       r.append(rows);

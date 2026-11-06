@@ -712,8 +712,9 @@ class App:
                     "speakers": [{"id": k, "label": v.get("label"), "seconds": v.get("seconds", 0),
                                   "voice": v.get("voice"), "sig": k in emb}
                                  for k, v in (doc.get("speakers") or {}).items()],
-                    "segments": [{"id": sg.get("id"), "start": sg.get("start"), "sid": sg.get("speaker_id"),
-                                  "text": sg.get("text", "")} for sg in doc.get("segments") or []],
+                    "segments": [{"id": sg.get("id"), "start": sg.get("start"), "end": sg.get("end"),
+                                  "sid": sg.get("speaker_id"), "text": sg.get("text", "")}
+                                 for sg in doc.get("segments") or []],
                     "voices": VoiceLibrary(self._state_dir()).names()}
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "error": str(e)}
