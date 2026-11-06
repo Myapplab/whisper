@@ -8,7 +8,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from .util import MEDIA_EXTS, PARTIAL_EXTS, file_hash, log, text_hash
 
-URL_RE = re.compile(r"^(https?://|www\.)", re.I)
+URL_RE = re.compile(r"^(https?://|www\.|(m\.|music\.)?(youtube\.com|youtu\.be|x\.com|twitter\.com)/)", re.I)
 
 _DROP_PARAMS = {
     "si", "feature", "fbclid", "gclid", "igsh", "igshid", "mibextid", "ref", "ref_src", "ref_url",
@@ -22,9 +22,13 @@ def is_url(s: str) -> bool:
 
 def normalize_url(url: str) -> str:
     url = url.strip()
-    if url.lower().startswith("www."):
+    if not re.match(r"^https?://", url, re.I) and URL_RE.match(url):  # "www..." / "youtube.com/..." (şemasız)
         url = "https://" + url
-    p = urlsplit(url)
+    try:
+        p = urlsplit(url)
+        p.port  # noqa: B018 - geçersiz port / IPv6 burada hata verir
+    except ValueError:
+        return url
     host = (p.hostname or "").lower()
     if host.startswith("www.") or host.startswith("m."):
         host = host.split(".", 1)[1]
@@ -33,9 +37,9 @@ def normalize_url(url: str) -> str:
          if k.lower() not in _DROP_PARAMS and not k.lower().startswith("utm_")]
     if host == "youtu.be":
         host, q, path = "youtube.com", [("v", path.strip("/"))], "/watch"
-    if host.endswith("youtube.com"):
+    if host.endswith("youtube.com") or host.endswith("youtube-nocookie.com"):
         host = "youtube.com"
-        m = re.match(r"^/(shorts|live|embed)/([\w-]+)", path)
+        m = re.match(r"^/(shorts|live|embed|v|e)/([\w-]+)", path)
         if m:
             path, q = "/watch", [("v", m.group(2))]
         if path == "/watch":
@@ -105,6 +109,8 @@ def expand_inputs(inputs: list[str], _depth: int = 0) -> list[Item]:
         if not s:
             continue
         if is_url(s):
+            if not re.match(r"^https?://", s, re.I):
+                s = "https://" + s
             items.append(Item("url", s, title=s))
             continue
         p = Path(s).expanduser()

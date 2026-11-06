@@ -491,6 +491,10 @@ class App:
             return {"ok": False, "count": 0, "error": msg, "warning": msg}
         from .channel import is_collection_url
         urls = [u.rstrip(").,;") for u in URL_RE.findall(text or "")]
+        for line in (text or "").splitlines():  # "www.youtube.com/..." / "youtu.be/..." (https:// olmadan yapıştırılmış)
+            line = line.strip().strip('"')
+            if line and is_url(line) and not URL_RE.search(line):
+                urls.append("https://" + line.split()[0].rstrip(").,;"))
         collections = [u for u in urls if is_collection_url(u)] if not opts.get("live") else []
         inputs = [u for u in urls if u not in collections]
         for line in (text or "").splitlines():
