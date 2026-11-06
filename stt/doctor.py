@@ -179,8 +179,12 @@ def run_doctor(cfg, deep: bool = False) -> int:
     try:
         import pyannote.audio
         tok = cfg.hf_token
+        from .diarizen import token_free
+        no_tok = ("YOK -> DiariZen çalışır ama DiariZen hata verirse yedek pyannote çalışmaz (Ayarlar > HuggingFace token)"
+                  if token_free(cfg) else
+                  "YOK -> soru-cevap ayrımı çalışmaz (uygulamada Ayarlar > HuggingFace token)")
         add(OK if tok else WARN, "pyannote.audio", f"{pyannote.audio.__version__}; HF token: "
-            + (f"var ({tok[:5]}…)" if tok else "YOK -> soru-cevap ayrımı çalışmaz (uygulamada Ayarlar > HuggingFace token)"))
+            + (f"var ({tok[:5]}…)" if tok else no_tok))
         if str(pyannote.audio.__version__).split(".")[0] in ("2", "3"):
             add(WARN, "Konuşmacı modeli sürümü", f"pyannote.audio {pyannote.audio.__version__}: yeni model (community-1) "
                 "çalışmaz, eski 3.1 kullanılıyor. Uygulamada Güncelle'ye basın; olmazsa STT-Kurulum.exe'yi tekrar çalıştırın.")

@@ -360,6 +360,7 @@ class App:
                 "llm": llm.status(), "api_port": c.api_port or 0, "api_token_set": bool(c.api_token),
                 "webhook_url": c.webhook_url or "", "follow_interval_h": c.follow_interval_h,
                 "diar_engine": c.diar_engine or "pyannote", "diarizen_installed": _diarizen_installed(),
+                "diar_agc": "auto" if c.diar_agc is None else ("on" if c.diar_agc else "off"),
                 "secret_env": env_secrets()}  # {ayar: ortam değişkeni}: bunlar arayüzden silinemez
 
     def save_settings(self, s: dict) -> dict:
@@ -398,10 +399,12 @@ class App:
                     pass
         if s.get("diar_engine") in ("pyannote", "diarizen"):
             upd["diar_engine"] = s["diar_engine"]
+        if s.get("diar_agc") in ("auto", "on", "off"):  # auto = stt.toml'dan çıkar (metin tanımadaki agc izlenir)
+            upd["diar_agc"] = {"on": True, "off": False}.get(s["diar_agc"], "")
         if "webhook_url" in s:
             upd["webhook_url"] = (s.get("webhook_url") or "").strip()
         save_settings(upd)
-        old = (str(self._cfg.out_dir), self._cfg.hf_token, self._cfg.gpus, self._cfg.diar_engine)
+        old = (str(self._cfg.out_dir), self._cfg.hf_token, self._cfg.gpus, self._cfg.diar_engine, self._cfg.diar_agc)
         old_port = self._cfg.api_port
         self._cfg = load_config()
         self._llm = None
@@ -409,7 +412,8 @@ class App:
             # motorun açılışta kopyaladığı değerler (kart, model...) etkilenmez; onlar için aşağıda yeniden başlatılır
             self._pipe.cfg = self._cfg
             self._pipe._llm = None
-        if (str(self._cfg.out_dir), self._cfg.hf_token, self._cfg.gpus, self._cfg.diar_engine) != old:
+        if (str(self._cfg.out_dir), self._cfg.hf_token, self._cfg.gpus, self._cfg.diar_engine,
+                self._cfg.diar_agc) != old:
             self._restart.set()  # işler bitince motor yeni ayarlarla açılır
         if self._cfg.api_port != old_port:
             self._start_api()

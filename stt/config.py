@@ -29,6 +29,7 @@ class Config:
     prompt: str | None = None
     condition_on_previous_text: bool = True
     agc: bool = True                     # otomatik kazanç: uzaktaki muhabir sesini yükselt (tanıma + ayırma)
+    diar_agc: bool | None = None         # konuşmacı ayırmada otomatik kazanç; boş = agc ile aynı (A/B ölçümü için)
     vad_threshold: float = 0.4           # Whisper VAD eşiği (düşük = sessiz konuşmayı da yakalar)
     # bellek sınırları (yüzde). Ekran kartı: konuşmacı ayırma (torch) bu oranı aşmaz.
     gpu_limit_pct: int = 90              # monitörsüz kart (ör. RTX 3090)
@@ -119,7 +120,13 @@ ENV_MAP = {
 }
 
 
-SECRETS = ("hf_token", "gemini_api_key", "anthropic_api_key", "openai_api_key", "api_token")  # arayüzden silinebilir
+def diar_agc_on(cfg) -> bool:
+    """Konuşmacı ayırmaya giden seste otomatik kazanç açık mı (``diar_agc`` boşsa metin tanımadaki ``agc``)."""
+    v = getattr(cfg, "diar_agc", None)
+    return bool(getattr(cfg, "agc", True)) if v is None else bool(v)
+
+
+SECRETS = ("hf_token","gemini_api_key", "anthropic_api_key", "openai_api_key", "api_token")  # arayüzden silinebilir
 
 
 def env_secrets() -> dict[str, str]:

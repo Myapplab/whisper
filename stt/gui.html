@@ -380,6 +380,9 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
           <button class="btn small" id="sDzInstall" type="button">DiariZen'i kur</button></div>
         <span class="hint" id="sDzState"></span>
         <span class="hint">DiariZen ayrı bir ortama kurulur (~4 GB, 10–30 dk), yalnız ticari olmayan kullanım içindir; hata verirse pyannote kullanılır.</span></div>
+      <div class="field"><label for="sDiarAgc">Konuşmacı ayırmada ses yükseltme (uzaktaki muhabir)</label>
+        <select id="sDiarAgc"><option value="auto">Metin tanımayla aynı (varsayılan: açık)</option><option value="on">Açık</option><option value="off">Kapalı</option></select>
+        <span class="hint">Deneme içindir: aynı tür videoları bir açık bir kapalı işleyip "Konuşmacılar"da düzeltin; "Kontrol"deki konuşmacı doğruluğu hangisinin iyi olduğunu gösterir. Değişiklik sıradaki işler bitince uygulanır.</span></div>
       <div class="field"><label for="sFpl">FPL repo klasörü (presser.py'nin olduğu yer)</label>
         <div class="inline"><input type="text" id="sFpl" placeholder="boş = FPL yok"><button class="btn small" id="sFplPick" type="button">Seç</button></div>
         <span class="hint" id="sFplState"></span></div>
@@ -847,7 +850,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     g.value = s.gpus || "auto";
     $("#sOut").value = s.out_dir || ""; $("#sFpl").value = s.fpl_repo || ""; $("#sCookie").value = s.cookies_browser || "auto";
     $("#sCookieFile").value = s.cookies_file || ""; $("#sBrowser").checked = !!s.browser_capture; $("#sUiGpu").checked = !!s.ui_gpu;
-    $("#sDiarEng").value = s.diar_engine || "pyannote";
+    $("#sDiarEng").value = s.diar_engine || "pyannote"; $("#sDiarAgc").value = s.diar_agc || "auto";
     $("#sDzState").textContent = s.diarizen_installed ? "DiariZen kurulu ✓" : "DiariZen kurulu değil";
     $("#sLlm").value = s.llm_provider || "none"; $("#sLlmModel").value = s.llm_model || ""; $("#sBudget").value = s.llm_budget_usd ?? 5;
     $("#sGemKey").value = ""; $("#sClaKey").value = ""; $("#sOaiKey").value = ""; $("#sApiTok").value = "";
@@ -903,7 +906,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
       llm_provider: $("#sLlm").value, llm_model: $("#sLlmModel").value, llm_budget_usd: $("#sBudget").value, gemini_api_key: $("#sGemKey").value,
       anthropic_api_key: $("#sClaKey").value, openai_api_key: $("#sOaiKey").value, llm_news: $("#sLlmNews").checked, llm_qa: $("#sLlmQa").checked,
       api_port: $("#sApiPort").value, api_token: $("#sApiTok").value, webhook_url: $("#sHook").value, follow_interval_h: $("#sFollowH").value, diar_engine: $("#sDiarEng").value,
-      clear: clear || [] });
+      diar_agc: $("#sDiarAgc").value, clear: clear || [] });
     if (keepOpen === true) { if (s) fillSettings(s); return s; }
     if (s) { fillSettings(s); toast("Ayarlar kaydedildi."); $("#mSettings").classList.remove("show"); refreshDataset(); }
     return s;

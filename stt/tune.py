@@ -201,7 +201,8 @@ def run_tune(cfg, device: str = "cuda:0", progress=lambda text: None) -> dict:
                            "konuşmacıları düzeltin ve kaydedin.")
     t0 = time.time()
     progress(f"Konuşmacı modeli yükleniyor ({len(refs)} düzeltilmiş video)")
-    d = Diarizer(cfg.diar_model, cfg.hf_token, device, agc=cfg.agc, batch=cfg.diar_batch,
+    from .config import diar_agc_on
+    d = Diarizer(cfg.diar_model, cfg.hf_token, device, agc=diar_agc_on(cfg), batch=cfg.diar_batch,
                  params=load_tuned(state_dir), cpu_ok=False)
     files = []
     for i, ref in enumerate(refs, 1):
@@ -223,7 +224,8 @@ def run_tune(cfg, device: str = "cuda:0", progress=lambda text: None) -> dict:
         apply_params(pipe, params)
         bad = tot = 0.0
         for f, ref in files:
-            b, t = speaker_error(ref["turns"], _hyp(pipe(f)))
+            # birleştirilmemiş satırlar (1.9.4+ düzeltmeleri); eski kayıtta yalnız birleşik turlar var
+            b, t = speaker_error(ref.get("segs") or ref["turns"], _hyp(pipe(f)))
             bad, tot = bad + b, tot + t
         return bad, max(tot, 1e-9)
 

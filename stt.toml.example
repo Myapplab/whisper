@@ -14,6 +14,8 @@ gpus = "auto"                      # "auto" = monitörün bağlı OLMADIĞI kart
 # Konuşmacı ayırma (pyannote). Token yerine HF_TOKEN ortam değişkeni de olur.
 diarize = false
 # hf_token = "hf_xxx"
+# diar_engine = "diarizen"         # pyannote (varsayılan) | diarizen (python -m stt diarizen-kur; token istemez)
+# min_speakers = 2 / max_speakers = 8  # sınır; basın toplantısında en az 2 zaten otomatik
 td_label = "Teknik direktör"
 reporter_label = "Muhabir"
 
@@ -38,6 +40,7 @@ chunk_min = 5                      # hedef parça uzunluğu (dakika)
 # Ekran kartı / ses
 # ui_gpu = false                    # arayüzde ekran kartı hızlandırması (kapalı = ekran kararmaz)
 # agc = true                        # sessiz muhabir sorularını yükselt
+# diar_agc = false                  # konuşmacı ayırmada ses yükseltme (yazılmazsa agc ile aynı; deneme için)
 # vad_threshold = 0.4
 
 # Canlı yayın

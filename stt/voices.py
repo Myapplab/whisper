@@ -243,15 +243,17 @@ def apply_corrections(doc: dict, labels: dict | None = None, moves: dict | None 
     return doc
 
 
-def reference_turns(doc: dict) -> list[list]:
-    """Düzeltilmiş çıktıdan [başla, bitir, etiket] turları (art arda aynı konuşmacı birleşir)."""
+def reference_turns(doc: dict, merge_gap: float = 1.0) -> list[list]:
+    """Düzeltilmiş çıktıdan [başla, bitir, etiket] turları. Art arda aynı konuşmacının satırları arada ``merge_gap``
+    sn'den az boşluk varsa birleşir; ``merge_gap=0``: hiç birleştirilmez (satırlar olduğu gibi, aradaki sessizlik
+    konuşma sayılmaz)."""
     out: list[list] = []
     for s in doc.get("segments") or []:
         lab = s.get("speaker")
         if not lab:
             continue
         a, b = round(float(s["start"]), 3), round(float(s["end"]), 3)
-        if out and out[-1][2] == lab and a - out[-1][1] < 1.0:
+        if merge_gap > 0 and out and out[-1][2] == lab and a - out[-1][1] < merge_gap:
             out[-1][1] = max(out[-1][1], b)
         else:
             out.append([a, b, lab])
@@ -265,7 +267,11 @@ def save_reference(state_dir: Path, doc: dict, hyp: list | None = None) -> Path:
     old = _read(p, {})
     data = {"key": doc.get("key"), "title": doc.get("title"), "source": doc.get("source"),
             "duration_s": doc.get("duration_s"), "speaker_mode": doc.get("speaker_mode"),
-            "turns": reference_turns(doc)}
+            "td_label": doc.get("td_label"),
+            "turns": reference_turns(doc),
+            # eğitim (stt egit) için birleştirilmemiş satırlar: birleşik turlarda <1 sn sessizlik "konuşma" sayılıp
+            # pyannote'un orada sessizlik demesi hata çıkıyor, ayar (min_duration_off) yanlı seçiliyordu
+            "segs": reference_turns(doc, merge_gap=0)}
     if old.get("hyp") or hyp:
         data["hyp"] = old.get("hyp") or hyp
     _write(p, data)

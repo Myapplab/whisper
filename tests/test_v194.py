@@ -206,3 +206,154 @@ def test_no_token_warning_when_diarizen_is_ready(tmp_path, monkeypatch):
     assert diarizen.token_free(app._cfg)
     r = app.start("https://www.youtube.com/watch?v=bcdefghijkl", [], {"diarize": True})
     assert "HuggingFace token" not in (r["warning"] or "")
+
+
+def test_diar_agc_follows_agc_unless_set():
+    from stt.config import diar_agc_on
+    assert diar_agc_on(Config()) is True  # eski davranış: ayırma da agc'li
+    assert diar_agc_on(Config(agc=False)) is False
+    assert diar_agc_on(Config(diar_agc=False)) is False
+    assert diar_agc_on(Config(agc=False, diar_agc=True)) is True
+
+
+def test_diar_agc_and_openai_key_reach_workers(tmp_path, monkeypatch):
+    import stt.pipeline as pl
+    seen = {}
+
+    class FakePool:
+        def __init__(self, devices, ecfg, threads=False, names=None):
+            seen.update(ecfg)
+
+        def start(self):
+            pass
+
+        def close(self):
+            pass
+    monkeypatch.setattr(pl, "WorkerPool", FakePool)
+    pipe = Pipeline(Config(out_dir=tmp_path / "o", engine="openai", diar_agc=False, openai_api_key="sk-x"))
+    try:
+        pipe.start()
+    finally:
+        pipe.close()
+    assert seen["diar_agc"] is False and seen["agc"] is True and seen["openai_api_key"] == "sk-x"
+
+
+def test_diar_worker_uses_diar_agc_and_reports_it(tmp_path, monkeypatch):
+    import stt.engines as e
+    from stt.workers import _handle
+    made = {}
+
+    class FakeDiarizer:
+        device, last_emb, model_used = "cuda:0", None, "m"
+
+        def __init__(self, model, token, dev, agc=True, **kw):
+            made["agc"], self.agc = agc, agc
+
+        def run(self, wav, lo, hi, vocals=False, beat=None):
+            return [[0.0, 1.0, "SPEAKER_00"]]
+    monkeypatch.setattr(e, "Diarizer", FakeDiarizer)
+    res = _handle({"kind": "diarize", "wav": "x.wav"}, "diar", "cuda:0",
+                  {"diar_model": "m", "hf_token": "t", "agc": True, "diar_agc": False}, {})
+    assert made["agc"] is False and res["agc"] is False
+
+
+def test_gui_diar_agc_setting(tmp_path, monkeypatch):
+    app, toml = _settings_app(tmp_path, monkeypatch)
+    assert app.get_settings()["diar_agc"] == "auto"
+    s = app.save_settings({"diar_agc": "off"})
+    assert s["diar_agc"] == "off" and app._cfg.diar_agc is False and app._restart.is_set()
+    s = app.save_settings({"diar_agc": "auto"})
+    assert s["diar_agc"] == "auto" and app._cfg.diar_agc is None and "diar_agc" not in toml.read_text(encoding="utf-8")
+
+
+def test_output_records_diar_agc_and_engine(tmp_path):
+    """K5 ölçümünde hangi ayarla / hangi motorla ayrıldığı bilinsin: çıktıda diar_agc ve diar_model."""
+    import json
+
+    from stt.pipeline import Job
+    out = tmp_path / "out"
+    pipe = Pipeline(Config(out_dir=out))
+    pipe.fpl = lambda: None
+    try:
+        item = Item("url", "https://www.youtube.com/watch?v=abc", title="Sohbet podcast #3", key="y_abc" + "0" * 20)
+        item.extra.update({"diarize": True, "speaker_mode": "herkes"})
+        work = tmp_path / "is"
+        (work / "parcalar").mkdir(parents=True)
+        segs = [{"start": 0.0, "end": 4.0, "text": "Merhaba.", "words": [{"start": 0.0, "end": 4.0, "word": "Merhaba."}]}]
+        (work / "parcalar" / "0000.json").write_text(json.dumps({"segments": segs, "language": "tr"}), encoding="utf-8")
+        (work / "konusmaci.json").write_text(json.dumps({
+            "turns": [[0.0, 4.5, "SPEAKER_00"]], "model": "BUT-FIT/diarizen-wavlm-large-s80-md", "agc": False}),
+            encoding="utf-8")
+        job = Job(item, work, chunks=[{}], info={"title": item.title, "duration_s": 5.0})
+        pipe._finalize(job)
+        assert job.status == "done", job.error
+    finally:
+        pipe.close()
+    doc = next(json.loads(p.read_text(encoding="utf-8")) for p in out.rglob("*.json")
+               if ".stt" not in p.parts and "segments" in p.read_text(encoding="utf-8"))
+    assert doc["settings"]["diar_agc"] is False
+    assert doc["settings"]["diar_model"] == "BUT-FIT/diarizen-wavlm-large-s80-md"
+
+
+def test_reference_keeps_unmerged_segments_for_training(tmp_path):
+    import json
+
+    from stt.tune import speaker_error
+    from stt.voices import reference_turns, save_reference
+    doc = {"key": "u_1", "source": "https://x/1", "speaker_mode": "basin", "td_label": "Ali",
+           "segments": [{"start": 0, "end": 3, "speaker": "Ali"}, {"start": 3.8, "end": 7, "speaker": "Ali"},
+                        {"start": 8, "end": 12, "speaker": "Veli"}]}
+    assert reference_turns(doc) == [[0, 7, "Ali"], [8, 12, "Veli"]]  # ekran / ölçüm: eskisi gibi birleşik
+    assert reference_turns(doc, merge_gap=0) == [[0, 3, "Ali"], [3.8, 7, "Ali"], [8, 12, "Veli"]]
+    p = save_reference(tmp_path, doc)
+    saved = json.loads(p.read_text(encoding="utf-8"))
+    assert saved["segs"] == reference_turns(doc, 0) and saved["td_label"] == "Ali"
+    # pyannote aradaki 0.8 sn'de sessizlik diyor: bu konuşmacı hatası değil
+    hyp = [[0, 3, "A"], [3.8, 7, "A"], [8, 12, "B"]]
+    assert speaker_error(saved["turns"], hyp)[0] > 0.5     # birleşik turla: sessizlik "hata" sayılıyordu
+    assert speaker_error(saved["segs"], hyp)[0] == 0.0
+
+
+def test_run_tune_scores_with_unmerged_segments(tmp_path, monkeypatch):
+    import types
+
+    import numpy as np
+
+    from stt import engines, tune
+    from stt.voices import save_reference
+    st = tmp_path / "out" / ".stt"
+    save_reference(st, {"key": "u_1", "title": "P", "source": "https://x/1", "speaker_mode": "basin",
+                        "segments": [{"start": 0, "end": 3, "speaker": "Ali"}, {"start": 3.8, "end": 7, "speaker": "Ali"},
+                                     {"start": 8, "end": 12, "speaker": "Veli"}]})
+
+    class Ann:
+        def __init__(self, turns):
+            self.t = turns
+
+        def itertracks(self, yield_label=True):
+            for a, b, s in self.t:
+                yield types.SimpleNamespace(start=a, end=b), None, s
+
+    class Pipe:
+        training = False
+
+        def parameters(self, instantiated=True):
+            return {"clustering": {"threshold": 0.6}}
+
+        def instantiate(self, p):
+            pass
+
+        def __call__(self, f):
+            return types.SimpleNamespace(exclusive_speaker_diarization=Ann([[0, 3, "A"], [3.8, 7, "A"], [8, 12, "B"]]))
+
+    class FakeD:
+        def __init__(self, *a, **k):
+            self.pipe, self.model_used, self.agc = Pipe(), "m", False
+            self.torch = types.SimpleNamespace(from_numpy=lambda a: np.asarray(a))
+
+    monkeypatch.setattr(engines, "Diarizer", FakeD)
+    monkeypatch.setattr(tune, "_audio_for", lambda ref, sd, cfg: "x.wav")
+    import stt.audio
+    monkeypatch.setattr(stt.audio, "load_wav", lambda p: np.zeros(16000, dtype=np.float32))
+    res = tune.run_tune(Config(out_dir=tmp_path / "out"), "cuda:0")
+    assert res["before"] == 0.0  # eskiden aradaki sessizlik yüzünden ~%8 "hata" görünüyordu

@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .audio import plan_chunks
-from .config import Config
+from .config import Config, diar_agc_on
 from .fetch import Cancelled, DRMProtected, FetchError, LiveStream, SkipItem, is_transient, prepare_audio  # noqa: F401
 from .merge import apply_labels, assign_speakers, label_speakers, label_speakers_all, merge_chunks
 from .outputs import to_txt, write_all
@@ -218,7 +218,8 @@ class Pipeline:
                 "condition_on_previous_text": cfg.condition_on_previous_text, "openai_model": cfg.openai_model,
                 "openai_api_key": cfg.openai_api_key,
                 "diar_model": cfg.diar_model, "diar_engine": cfg.diar_engine, "hf_token": cfg.hf_token, "languages": cfg.languages,
-                "agc": cfg.agc, "vad_threshold": cfg.vad_threshold, "isolate_gpu": cfg.isolate_gpu,
+                "agc": cfg.agc, "diar_agc": diar_agc_on(cfg), "vad_threshold": cfg.vad_threshold,
+                "isolate_gpu": cfg.isolate_gpu,
                 "gpu_limit_pct": cfg.gpu_limit_pct, "display_gpu_limit_pct": cfg.display_gpu_limit_pct,
                 "ram_limit_pct": cfg.ram_limit_pct, "diar_batch": cfg.diar_batch, "diar_cpu": cfg.diar_cpu, "fill_gaps": cfg.fill_gaps}
         if cfg.engine == "openai":
@@ -1254,7 +1255,7 @@ class Pipeline:
         if self._opt(job.item, "diarize") and diar_path.exists():
             dj = json.loads(diar_path.read_text(encoding="utf-8"))
             turns = dj.get("turns", [])
-            diar_meta = {k: dj[k] for k in ("model", "vocals") if dj.get(k) is not None}
+            diar_meta = {k: dj[k] for k in ("model", "vocals", "agc") if dj.get(k) is not None}
             if dj.get("error") and not job.diar_error:
                 job.diar_error = diar_hint(dj["error"])
             if turns:
@@ -1303,7 +1304,8 @@ class Pipeline:
                          else ("int8" if self.devices else None),
                          "word_timestamps": True, "chunks": len(job.chunks),
                          **({"diar_model": diar_meta["model"]} if diar_meta.get("model") else {}),
-                         **({"diar_music_removed": True} if diar_meta.get("vocals") else {})},
+                         **({"diar_music_removed": True} if diar_meta.get("vocals") else {}),
+                         **({"diar_agc": bool(diar_meta["agc"])} if "agc" in diar_meta else {})},
             "match": job.match, "td_label": td_label if speakers and mode == "basin" else None,
             "speaker_mode": mode if speakers else None,
             "diarization_error": job.diar_error or None, "speaker_source": speaker_source,

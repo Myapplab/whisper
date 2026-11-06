@@ -11,6 +11,6 @@ openai>=1.60
 pywebview>=5
 playwright>=1.45
 anthropic>=0.70
-pyannote.audio==3.4.0
+pyannote.audio==4.0.7
 huggingface_hub<1.0
 pytest
