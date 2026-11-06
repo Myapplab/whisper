@@ -251,6 +251,12 @@ class App:
                         used.add(int(d.split(":")[1]))
                     wid = d if ds.count(d) == 1 else f"{d}#{i}"
                     devs.append({"wid": wid, "name": g["name"], "gb": round(g["gb"]), "display": bool(g.get("display"))})
+                for d in self._pipe.helper_devices:  # "yardim": monitörlü kart yalnız ana kart yetişemeyince
+                    i = int(d.split(":")[1])
+                    used.add(i)
+                    g = gi.get(i, {"name": d, "gb": 0})
+                    devs.append({"wid": d, "name": g["name"], "gb": round(g["gb"]), "display": bool(g.get("display")),
+                                 "helper": True})
                 spare = [{"name": g["name"], "gb": round(g["gb"]), "display": bool(g.get("display"))}
                          for i, g in sorted(gi.items()) if i not in used and self._pipe.devices
                          and self._pipe.devices[0] != "api"]
@@ -351,7 +357,7 @@ class App:
                 "fpl_repo": str(c.fpl_repo or ""), "fpl_ok": bool(c.fpl_repo and (Path(c.fpl_repo) / "presser.py").is_file()),
                 "cookies_browser": c.cookies_browser or "none", "cookies_file": c.cookies_file or "",
                 "lang": c.lang or "auto", "diarize": bool(c.diarize), "fpl_auto": bool(c.fpl_auto),
-                "gpus": g if g in ("auto", "all") else str(c.gpus), "gpu_cards": cards,
+                "gpus": g if g in ("auto", "all", "yardim") else str(c.gpus), "gpu_cards": cards,
                 "browser_capture": bool(c.browser_capture), "ui_gpu": bool(c.ui_gpu),
                 "llm_provider": c.llm_provider or "none", "llm_model": c.llm_model or "",
                 "gemini_key_set": bool(llm.key("gemini")), "anthropic_key_set": bool(llm.key("claude")),
@@ -385,7 +391,7 @@ class App:
         if s.get("lang"):
             upd["lang"] = s["lang"]
         g = str(s.get("gpus") or "").strip()
-        if g in ("auto", "all") or re.fullmatch(r"\d+(,\d+)*", g):
+        if g in ("auto", "all", "yardim") or re.fullmatch(r"\d+(,\d+)*", g):
             upd["gpus"] = g
         if "llm_provider" in s:
             upd["llm_provider"] = s["llm_provider"] if s["llm_provider"] in ("gemini", "claude", "openai") else ""

@@ -127,7 +127,8 @@ def _init(device: str, engine_cfg: dict, cache: dict, load_lock=None, run_device
         _, idx = parse_device(device)
         vram = (engine_cfg.get("gpu_mem") or {}).get(idx)
         batch = engine_cfg.get("batch_size", -1)
-        if device.startswith("cuda") and idx in (engine_cfg.get("display_gpus") or []):
+        if device.startswith("cuda") and (engine_cfg.get("helper") or idx in (engine_cfg.get("display_gpus") or [])):
+            # monitörlü / yardımcı kart: küçük toplu boyut (az bellek; YouTube, tarayıcı, masaüstü yer bulsun)
             from .engines import auto_batch_size
             cap = max(1, int(engine_cfg.get("display_batch") or 4))
             batch = min(auto_batch_size("cuda", vram) if batch < 0 else batch, cap)
@@ -146,16 +147,17 @@ def _init(device: str, engine_cfg: dict, cache: dict, load_lock=None, run_device
                 load_lock.release()
 
 
-def lower_priority() -> None:
-    """Bu süreci düşük önceliğe al: masaüstü, tarayıcı ve oyunlar önce gelsin."""
+def lower_priority(idle: bool = False) -> None:
+    """Bu süreci düşük önceliğe al: masaüstü, tarayıcı ve oyunlar önce gelsin.
+    idle=True (yardımcı kart): en düşük öncelik; işlemci (i3) başka işle meşgulken yardımcı kendiliğinden yavaşlar."""
     try:
         if os.name == "nt":
             import ctypes
             k32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-            from .util import BELOW_NORMAL
-            k32.SetPriorityClass(k32.GetCurrentProcess(), BELOW_NORMAL)
+            from .util import BELOW_NORMAL, IDLE_PRIORITY
+            k32.SetPriorityClass(k32.GetCurrentProcess(), IDLE_PRIORITY if idle else BELOW_NORMAL)
         else:
-            os.nice(5)
+            os.nice(10 if idle else 5)
     except Exception:  # noqa: BLE001
         pass
 
@@ -163,8 +165,8 @@ def lower_priority() -> None:
 def worker_main(wid: str, device: str, engine_cfg: dict, task_q, result_q, shared_cache: dict | None = None,
                 load_lock=None):
     if shared_cache is None:  # ayrı süreç
-        if engine_cfg.get("low_priority", True):
-            lower_priority()
+        if engine_cfg.get("low_priority", True) or engine_cfg.get("helper"):
+            lower_priority(idle=bool(engine_cfg.get("helper")))
         os.environ.setdefault("PYTHONUTF8", "1")
         if sys.stdout is None or sys.stderr is None:  # pythonw (uygulama) altında
             # UTF-8 şart: Windows'un varsayılanı (cp1252) 'ş' gibi harfleri yazamıyor; pyannote/uyarılar
@@ -246,7 +248,8 @@ def retryable(e: BaseException) -> bool:
 class WorkerPool:
     """Süreç (GPU/CPU) ya da iş parçacığı (OpenAI) havuzu; aynı mesaj protokolü."""
 
-    def __init__(self, devices: list[str], engine_cfg: dict, threads: bool = False, names: list[str] | None = None):
+    def __init__(self, devices: list[str], engine_cfg: dict, threads: bool = False, names: list[str] | None = None,
+                 load_lock=None):
         self.devices = devices
         self.threads = threads
         if threads:
@@ -261,7 +264,7 @@ class WorkerPool:
             self.ctx = mp.get_context("spawn")
             self.task_q = self.ctx.Queue()
             self.result_q = self.ctx.Queue()
-            self.load_lock = self.ctx.Lock()
+            self.load_lock = load_lock if load_lock is not None else self.ctx.Lock()  # havuzlar arası ortak olabilir
             names = names or [d if devices.count(d) == 1 else f"{d}#{i}" for i, d in enumerate(devices)]
             self._spec = dict(zip(names, devices))
             self._ecfg = engine_cfg
@@ -286,6 +289,31 @@ class WorkerPool:
         self.workers[name] = self._new_proc(name)
         self.workers[name].start()
         return True
+
+    def stop(self, name: str) -> None:
+        """Tek işçiyi kapat, yeniden açma (yardımcı kart başka programa yer bıraksın: model belleği boşalır)."""
+        if self.threads or name not in self.workers:
+            return
+        w = self.workers[name]
+        if w.is_alive():
+            w.terminate()
+            w.join(5)
+            if w.is_alive():
+                w.kill()
+                w.join(2)
+
+    def drain(self) -> list:
+        """Kuyrukta alınmamış görevleri geri ver (işçi bir daha açılmayacaksa görev kaybolmasın)."""
+        out = []
+        while True:
+            try:
+                t = self.task_q.get_nowait()
+            except queue.Empty:
+                return out
+            except Exception:  # noqa: BLE001
+                return out
+            if t is not None:
+                out.append(t)
 
     def start(self):
         for w in self.workers.values():

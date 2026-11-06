@@ -261,6 +261,7 @@ def replace_retry(src: Path, dst: Path, tries: int = 5) -> None:
 # Windows süreç bayrakları: konsol penceresi açılmasın / düşük öncelik (bilgisayar akıcı kalsın)
 NO_WINDOW = 0x08000000
 BELOW_NORMAL = 0x00004000
+IDLE_PRIORITY = 0x00000040   # IDLE_PRIORITY_CLASS: yalnız işlemci boşken çalışır (yardımcı kart işçisi)
 
 
 def popen_kw(low_priority: bool = False) -> dict:

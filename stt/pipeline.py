@@ -24,6 +24,11 @@ from .util import fmt_clock, keep_awake, log, text_hash
 from .workers import WorkerPool
 
 FPL_MEM_S = 1800     # FPL fikstür verisi bellekte en çok bu kadar tutulur (erteleme / skor için yeniden okunur)
+AUTO_SPECS = ("auto", "all", "hepsi", "tum", "tümü")
+HELPER_SPECS = ("yardim", "yardım", "helper")   # monitörsüz kart(lar) tam + monitörlü kart yardımcı (düşük yük)
+HELPER_RECHECK_S = 30.0  # yardımcı kart meşgulse bu kadar sonra yeniden ölçülür
+HELPER_PARK_S = 120.0    # bu kadar süre meşgul kalırsa yardımcı işçi kapatılır (model belleği o programa kalır)
+HELPER_NEED_GB = 5.0     # kapatılmış yardımcının yeniden açılması için (eşiğin üstünde) gereken boş bellek
 
 
 @dataclass
@@ -158,9 +163,12 @@ def item_fpl(item: Item, cfg: Config) -> tuple[int, str] | None:
 
 
 def detect_devices(spec: str, info: dict | None = None) -> list[str]:
-    """spec: "auto" (monitörsüz kart(lar)) | "all" | "0,1" | "cuda:0" | "cpu" | "cpu,cpu" (test)."""
+    """spec: "auto" (monitörsüz kart(lar)) | "yardim" (ana kartlar = auto; yardımcılar `helper_devices`) |
+    "all" | "0,1" | "cuda:0" | "cpu" | "cpu,cpu" (test)."""
     spec = (spec or "auto").strip().lower()
-    if spec not in ("auto", "all", "hepsi", "tum", "tümü"):
+    if spec in HELPER_SPECS:
+        spec = "auto"
+    if spec not in AUTO_SPECS:
         out = []
         for x in spec.replace("cuda:", "").split(","):
             x = x.strip()
@@ -176,6 +184,22 @@ def detect_devices(spec: str, info: dict | None = None) -> list[str]:
         return ["cpu"]
     from .engines import choose_gpus
     return [f"cuda:{i}" for i in choose_gpus(n, info or {}, "auto" if spec == "auto" else "all")]
+
+
+def helper_devices(spec: str, info: dict | None) -> list[str]:
+    """"yardim" modunda ana kartların (auto) dışında kalan kartlar: yalnız ana kart yetişemeyince metin çevirir.
+    Kart bilgisi yoksa (nvidia-smi yok) ya da tek kart varsa yardımcı yok (monitörlü karta körlemesine gidilmez)."""
+    if (spec or "").strip().lower() not in HELPER_SPECS or not info or len(info) < 2:
+        return []
+    from .engines import choose_gpus
+    main = set(choose_gpus(len(info), info, "auto"))
+    return [f"cuda:{i}" for i in sorted(info) if i not in main]
+
+
+def auto_spec(spec: str | None) -> bool:
+    """Kart seçimi uygulamada mı (elle kart numarası verilmemiş)?"""
+    s = (spec or "auto").strip().lower()
+    return s in AUTO_SPECS or s in HELPER_SPECS
 
 
 class Pipeline:
@@ -202,6 +226,17 @@ class Pipeline:
         self.items: dict = {}                # uid -> Item (tek tek "Durdur" için)
         self.dpool: WorkerPool | None = None
         self.dqueued_n = 0
+        # yardımcı kart (gpus="yardim"): ayrı havuz, ayrı kuyruk; görev yalnız ana kart(lar) yetişemeyince verilir
+        self.hpool: WorkerPool | None = None
+        self.helper_devices: list[str] = []
+        self.hqueued_n = 0
+        self._h_ready: dict[str, float] = {}     # yardımcı -> en erken yeni görev zamanı (dinlenme / meşgul)
+        self._h_probe: dict[str, tuple] = {}     # yardımcı -> (ölçüm zamanı, gpu_load sonucu)
+        self._h_probing: set[str] = set()
+        self._h_busy_since: dict[str, float] = {}
+        self._h_parked: dict[str, str] = {}      # kapatılmış yardımcı -> sebep (kart başka programda)
+        self._h_note: dict[str, str] = {}        # arayüze son bildirilen bekleme sebebi
+        self._h_gone: set[str] = set()           # bir daha açılmayacak yardımcılar (görevleri geri alındı)
         self._ecfg: dict = {}
         self.idle: set[str] = set()          # boşta olduğunu bildiren işçiler
         self.queued_n = 0                    # işçi kuyruğuna konup henüz alınmamış görev sayısı
@@ -232,21 +267,25 @@ class Pipeline:
             self.pool = WorkerPool(devices, ecfg, threads=True)
         else:
             os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"  # cuda:N == nvidia-smi N
-            if os.environ.get("CUDA_VISIBLE_DEVICES") and (cfg.gpus or "auto").lower() in ("auto", "all"):
+            if os.environ.get("CUDA_VISIBLE_DEVICES") and auto_spec(cfg.gpus):
                 log.info("CUDA_VISIBLE_DEVICES=%s kaldırıldı (kart seçimini uygulama yapar).",
                          os.environ.pop("CUDA_VISIBLE_DEVICES"))
             from .engines import gpu_info
             gi = gpu_info()
             devices = detect_devices(cfg.gpus, gi)
             self.devices = devices
+            if all(d.startswith("cuda") for d in devices):
+                self.helper_devices = helper_devices(cfg.gpus, gi)
             ecfg["gpu_mem"] = {i: g["gb"] for i, g in gi.items()}
             ecfg["display_gpus"] = [i for i, g in gi.items() if g.get("display")]
             ecfg["display_batch"] = cfg.display_batch
             ecfg["low_priority"] = cfg.low_priority
             used = {int(d.split(":")[1]) for d in devices if d.startswith("cuda")}
+            helpers = {int(d.split(":")[1]) for d in self.helper_devices}
             for i, g in sorted(gi.items()):
                 mon = " [monitör bağlı]" if g.get("display") else ""
-                state = "kullanılıyor" if i in used else "BOŞ bırakıldı (masaüstü/tarayıcı için)"
+                state = "kullanılıyor" if i in used else "YARDIMCI (ana kart yetişemeyince, düşük yükle)" \
+                    if i in helpers else "BOŞ bırakıldı (masaüstü/tarayıcı için)"
                 log.info("cuda:%d = %s (%.0f GB)%s -> %s", i, g["name"], g["gb"], mon, state)
             if any(i in ecfg["display_gpus"] for i in used):
                 log.info("Monitörün bağlı olduğu kart kullanılıyor: toplu boyut en fazla %d (bilgisayar akıcı kalsın).",
@@ -257,7 +296,16 @@ class Pipeline:
             from .engines import resolve_model_path
             ecfg["model_path"] = resolve_model_path(cfg.model)
             self.pool = WorkerPool(devices, ecfg)
+            if self.helper_devices:
+                log.info("Yardımcı kart: toplu boyut en fazla %d, en düşük öncelik; başka program kartı kullanırken "
+                         "(%%%d üstü ya da %.1f GB'tan az boş bellek) beklenir. Konuşmacı ayırma yardımcıya gitmez.",
+                         cfg.display_batch, cfg.helper_busy_pct, cfg.helper_min_free_gb)
+                # modeller iki havuzda da SIRAYLA yüklensin (ortak kilit: aynı anda iki 3 GB yükleme RAM'i tüketiyordu)
+                self.hpool = WorkerPool(self.helper_devices, {**ecfg, "helper": True},
+                                        load_lock=getattr(self.pool, "load_lock", None))
         self.pool.start()
+        if self.hpool is not None:
+            self.hpool.start()
         self._ecfg = ecfg
 
     def _start_diar_pool(self) -> None:
@@ -287,7 +335,7 @@ class Pipeline:
         mem = self._ecfg.get("gpu_mem") or {}
         display = set(self._ecfg.get("display_gpus") or [])
         cuda = [d for d in self.devices if d.startswith("cuda")]
-        if not cuda and mem and (self.cfg.gpus or "auto").lower() in ("auto", "all"):
+        if not cuda and mem and auto_spec(self.cfg.gpus):
             cuda = [f"cuda:{i}" for i in mem if i not in display]
         cuda.sort(key=lambda d: (int(d.split(":")[1]) in display, -(mem.get(int(d.split(":")[1])) or 0)))
         return cuda[0] if cuda else "cpu"
@@ -295,10 +343,15 @@ class Pipeline:
     def _pool_of(self, wid: str) -> WorkerPool | None:
         if self.dpool is not None and wid in self.dpool.workers:
             return self.dpool
+        if self.hpool is not None and wid in self.hpool.workers:
+            return self.hpool
         return self.pool
 
     def _pools(self) -> list:
-        return [p for p in (self.pool, self.dpool) if p is not None]
+        return [p for p in (self.pool, self.dpool, self.hpool) if p is not None]
+
+    def _is_helper(self, wid: str | None) -> bool:
+        return self.hpool is not None and wid in self.hpool.workers
 
     # ---------------------------------------------------------- olaylar (GUI)
     def emit(self, typ: str, item: Item | None = None, **data) -> None:
@@ -859,6 +912,8 @@ class Pipeline:
                     continue  # iş iptal/başarısız: görevi at
                 self.queued_n += 1
                 self.pool.put(t)
+            if self.hpool is not None:
+                self._helper_dispatch(len(main - self.fatal))
             if self.ddelayed:
                 now = time.time()
                 for due, t in list(self.ddelayed):
@@ -880,6 +935,143 @@ class Pipeline:
                 self.dqueued_n += 1
                 self.dpool.put(t)
 
+    # ---------------------------------------------------------- yardımcı kart ("yardim")
+    def _spawn(self, fn) -> None:
+        threading.Thread(target=fn, name="kart-olcum", daemon=True).start()
+
+    @staticmethod
+    def _gpu_load(idx: int):
+        from .engines import gpu_load
+        return gpu_load(idx)
+
+    def _helper_index(self, wid: str) -> int | None:
+        dev = (getattr(self.hpool, "_spec", None) or {}).get(wid) or wid
+        try:
+            return int(str(dev).split(":")[1])
+        except (IndexError, ValueError):
+            return None
+
+    def _probe_helper(self, wid: str) -> None:
+        """Yardımcı kartın yükünü arka planda ölç (nvidia-smi yavaş olabilir; motor döngüsü beklemesin)."""
+        if wid in self._h_probing:
+            return
+        self._h_probing.add(wid)
+        idx = self._helper_index(wid)
+
+        def run():
+            load = None
+            try:
+                load = self._gpu_load(idx) if idx is not None else None
+            except Exception:  # noqa: BLE001
+                log.debug("kart yükü okunamadı", exc_info=True)
+            finally:
+                self._h_probe[wid] = (time.time(), load)
+                self._h_probing.discard(wid)
+        self._spawn(run)
+
+    def _helper_reason(self, load: dict | None, parked: bool) -> str:
+        """Yardımcı kart neden beklemeli ('' = çalışabilir). Ölçüm yardımcı dinlenirken (ya da kapalıyken) alınır:
+        kullanım başka programlarındır. Okunamazsa çalışılır (eski sürücüde sonsuza dek beklemesin)."""
+        if not load:
+            return ""
+        util, used, total = load.get("util"), load.get("used_mb"), load.get("total_mb")
+        if isinstance(util, (int, float)) and util >= self.cfg.helper_busy_pct:
+            return f"kart başka programla meşgul (%{int(util)})"
+        if isinstance(used, (int, float)) and isinstance(total, (int, float)) and total > 0:
+            free = (total - used) / 1024
+            need = self.cfg.helper_min_free_gb + (HELPER_NEED_GB if parked else 0.0)
+            if free < need:
+                return f"kartta boş bellek az ({free:.1f} GB)"
+        return ""
+
+    def _helper_note(self, wid: str, note: str) -> None:
+        if self._h_note.get(wid, "") == note:
+            return
+        self._h_note[wid] = note
+        if note:
+            log.info("[%s] yardımcı kart bekliyor: %s", wid, note)
+            self.emit("worker", wid=wid, state="paused", note=note)
+        else:
+            log.info("[%s] yardımcı kart yeniden çalışıyor", wid)
+            if wid in self.idle:
+                self.emit("worker", wid=wid, state="idle")
+
+    def _helper_dispatch(self, takers: int) -> None:
+        """Yardımcıya görev: yalnız ana kart(lar)ın alabileceğinden fazla iş varsa (``takers`` = görev alabilen
+        ana işçi sayısı; kart konuşmacı ayırmadaysa 0), yardımcı dinlendiyse ve kart başka programla meşgul
+        değilse. Uzun süre meşgulse yardımcı işçi kapatılır (bellek o programa kalır), kart boşalınca yeniden açılır.
+        ``self.lock`` altında çağrılır."""
+        hp = self.hpool
+        if hp is None or self.hqueued_n > 0:
+            return  # kuyruktaki görev henüz alınmadı: ikinci görev verilmez
+        surplus = sum(1 for t in self.backlog
+                      if (self.jobs.get(t["job"]) is not None and self.jobs[t["job"]].status == "run"))
+        if surplus - takers <= 0:  # ana kart yetişiyor: yardımcı boşta kalır (masaüstü, YouTube için)
+            for wid in list(hp.workers):
+                self._h_busy_since.pop(wid, None)
+                if wid not in self._h_parked:
+                    self._helper_note(wid, "")
+            return
+        now = time.time()
+        for wid in list(hp.workers):
+            parked = wid in self._h_parked
+            if wid in self.fatal or now < self._h_ready.get(wid, 0.0):
+                continue
+            if not parked and wid not in self.idle:
+                continue
+            pr = self._h_probe.get(wid)
+            if pr is None or pr[0] < self._h_ready.get(wid, 0.0):
+                self._probe_helper(wid)  # dinlenme bitti: kartı şimdi ölç (sonuç sonraki turda)
+                continue
+            reason = self._helper_reason(pr[1], parked)
+            if reason:
+                since = self._h_busy_since.setdefault(wid, now)
+                self._h_ready[wid] = now + HELPER_RECHECK_S
+                self._h_probe.pop(wid, None)  # sonraki karar yeni ölçümle
+                if not parked and now - since >= HELPER_PARK_S and wid not in self.inflight:
+                    log.warning("[%s] yardımcı kart %.0f dakikadır bekliyor (%s): işçi kapatılıyor (bellek o programa "
+                                "kalsın), kart boşalınca yeniden açılacak", wid, (now - since) / 60, reason)
+                    self._h_parked[wid] = reason
+                    self.idle.discard(wid)
+                    hp.stop(wid)
+                    reason = "kapatıldı, kart boşalınca açılacak: " + reason
+                elif parked:
+                    reason = "kapatıldı, kart boşalınca açılacak: " + reason
+                self._helper_note(wid, reason)
+                continue
+            self._h_busy_since.pop(wid, None)
+            self._h_probe.pop(wid, None)  # her görev için yeni ölçüm
+            if parked:
+                del self._h_parked[wid]
+                log.info("[%s] kart boşaldı: yardımcı yeniden açılıyor", wid)
+                self._h_note[wid] = ""
+                hp.respawn(wid)
+                self.emit("worker", wid=wid, state="loading")
+                continue
+            self._helper_note(wid, "")
+            while self.backlog:
+                t = self.backlog.popleft()
+                job = self.jobs.get(t["job"])
+                if not job or job.status != "run":
+                    continue
+                self.hqueued_n += 1
+                hp.put(t)
+                break
+            return  # tek görev: alınınca (start) sıradaki yardımcı / görev
+
+    def _helper_gone(self, wid: str) -> None:
+        """Yardımcı bir daha açılmayacak: kuyruğunda bekleyen görev ana kartlara geri döner."""
+        if self.hpool is None:
+            return
+        if any(w not in self.fatal and self.restarts.get(w, 0) < self.cfg.worker_restarts
+               for w in self.hpool.workers if w != wid):
+            return  # başka yardımcı var: kuyruktakini o alır
+        back = self.hpool.drain()
+        with self.lock:
+            for t in reversed(back):
+                self.backlog.appendleft(t)
+            self.hqueued_n = 0
+
     def _on_msg(self, m: dict):
         typ, wid = m["type"], m.get("wid")
         if typ == "ready":
@@ -899,6 +1091,8 @@ class Pipeline:
             self.fatal.add(wid)
             self.idle.discard(wid)
             self.emit("worker", wid=wid, state="error", error=hint)
+            if self._is_helper(wid):
+                self._helper_gone(wid)
             log.error("[%s] işçi başlatılamadı: %s", wid, m["error"])
             log.info("%s", m.get("trace", ""))
             main_ws = set(self.pool.workers) if self.pool else set()
@@ -916,6 +1110,8 @@ class Pipeline:
             self.idle.discard(wid)
             if wid == "diar":
                 self.dqueued_n = max(0, self.dqueued_n - 1)
+            elif self._is_helper(wid):
+                self.hqueued_n = max(0, self.hqueued_n - 1)
             else:
                 self.queued_n = max(0, self.queued_n - 1)
             t = self.tasks.get(m["tid"]) or {}
@@ -928,6 +1124,8 @@ class Pipeline:
         if typ == "done":
             self.restarts[wid] = 0  # çalışıyor: yeniden başlatma sayacı sıfırlanır
         self.idle.add(wid)
+        if self._is_helper(wid):  # yardımcı kart dinlenir (kart serinler, ölçüm yalnız başka programları görür)
+            self._h_ready[wid] = time.time() + self.cfg.helper_rest_s
         self.emit("worker", wid=wid, state="idle")
         task = self.tasks.get(tid)
         if not task:
@@ -1069,7 +1267,8 @@ class Pipeline:
             dur = (job.info.get("duration_s", 0) if job else 0) or 3600
             return max(900.0, 0.25 * dur)
         dur = task.get("end", 0) - task.get("start", 0)
-        dev = (getattr(self.pool, "_spec", None) or {}).get(wid, "") if self.pool else ""
+        pool = self._pool_of(wid) if wid else self.pool
+        dev = (getattr(pool, "_spec", None) or {}).get(wid, "") if pool else ""
         if str(dev).startswith("cuda"):  # ekran kartı 20-40x hızlı: 5 dk'lık parça ~10 sn; 40 dk beklemeye gerek yok
             return max(300.0, 3 * dur)
         return max(900.0, 8 * dur)
@@ -1123,7 +1322,7 @@ class Pipeline:
         for pool in self._pools():
             alive = set(pool.alive())
             for wid in list(pool.workers):
-                if wid in alive:
+                if wid in alive or wid in self._h_parked:  # kapatılmış yardımcı: kart boşalınca açılır
                     continue
                 self.idle.discard(wid)
                 if wid in self.inflight:  # işçi çöktü: görevi yeniden kuyruğa koy
@@ -1143,6 +1342,9 @@ class Pipeline:
                         pool.respawn(wid)
                         self.emit("worker", wid=wid, state="loading")
                     alive.add(wid)  # yeniden başlatılmayı bekliyor: işler başarısız sayılmasın
+                elif pool is self.hpool and wid not in self._h_gone:
+                    self._h_gone.add(wid)
+                    self._helper_gone(wid)
             if pool is self.pool:
                 main_alive = alive
         self._drop_dead_diar()

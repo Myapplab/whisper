@@ -38,6 +38,19 @@ E.2 (C5) ve aşağıdaki K5 planı. **(1.9.5'ten kalan):** kullanıcı Güncelle
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
+- 1.9.9 (Claude; kullanıcı istedi; 480 test): **yeni kart modu "yardımcı"** (`gpus = "yardim"`, Ayarlar > Ekran kartı
+  kullanımı > "RTX 3090 + RTX 3080 yardımcı"). Kullanıcı 125 videoluk kuyrukta 3090'ın yetmediğini, 3080'in de
+  "YouTube'a yer bırakarak" çalışmasını istedi. 3080 yalnız fazla iş varken (özellikle 3090 konuşmacı ayırırken, o
+  sırada 3090'ın metin işçisi bekliyor) metin çevirir; toplu boyut 4, en düşük işlemci önceliği, her parçadan sonra
+  2 sn dinlenme + nvidia-smi ölçümü; başka program kartı %50 üstü kullanıyorsa ya da 1.5 GB'tan az boş bellek varsa
+  bekler, 2 dk sürerse 3080 işçisi kapanır (bellek boşalır), kart boşalınca açılır. Konuşmacı ayırma 3080'e
+  GİTMEZ. Ayrıntı GELISTIRME.md "1.9.9". Ekran görüntüsündeki Görev Yöneticisi "3D %0" CUDA işini göstermez
+  (grafik açılır menüsünden "Cuda"/"Compute_0" seçilmeli) — kullanıcıya söylendi. Kullanıcı "konuşmacı ayırma modu
+  da ekle" dedi: ikinci ayırma işçisinin 3080'de çalışması YAPILMADI (aynı kartta ayırma + metin sırayla çalışmak
+  zorunda; yardımcı zaten ayırma sırasında metni üstleniyor, kazanç az, risk yüksek) — kullanıcıya açıklandı,
+  denedikten sonra hâlâ isterse yapılacak. DENENMEDİ: Windows, gerçek kartlar (nvidia-smi utilization'ın WDDM'de
+  okunması, IDLE önceliğin hızı, YouTube akıcılığı). KULLANICIDAN: Güncelle → modu seç → kart şeridi + Görev
+  Yöneticisi (Cuda grafiği) ekran görüntüsü; YouTube'da takılma olursa söylesin (toplu boyut 2'ye indirilebilir).
 - 1.9.8 (Claude; `docs/TARAMA_2026-11-06.md` A bölümü = veri seti eşleştirmesi; 465 test): kullanıcı "A bölümünü
   yap" dedi. Rapordaki başlık örneklerinin hepsi `tests/test_v198.py`'de; listedeki her hoca ve her takım adı toplu
   deneniyor. Dört tur bağımsız inceleme ajanı (12 + 10 + 8 + 9 bulgu, hepsi testle gösterilip düzeltildi). En

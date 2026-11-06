@@ -19,6 +19,17 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   görür (`CUDA_VISIBLE_DEVICES`, süreç içinde `cuda:0`; günlükte gerçek ad `label`). Ana süreç CUDA başlatmaz
   (`cuda_device_count` nvidia-smi). `Pipeline._diar_device` monitörlü karta asla kendiliğinden gitmez. WebView2
   `--disable-gpu` (`ui_gpu=false`). gpu_info 60 sn önbellekli.
+- **1.9.9 "yardımcı kart" (`gpus = "yardim"`, Ayarlar > Ekran kartı kullanımı):** kullanıcı 100+ videoluk kuyrukta
+  3090'ın konuşmacı ayırma sırasında metin çevirisini beklettiğini gördü, 3080'in de "YouTube'a yer bırakarak"
+  çalışmasını istedi. Ana kartlar = `auto`; kalanlar (`pipeline.helper_devices`) ayrı havuz `Pipeline.hpool` (ayrı
+  kuyruk, model yükleme kilidi ana havuzla ortak). `_helper_dispatch`: yardımcıya görev yalnız bekleyen iş, ana
+  işçilerin alabileceğinden fazlaysa (3090 konuşmacı ayırırken ana işçi sayılmaz: asıl kazanç bu), tek tek, her
+  görevden sonra `helper_rest_s` (2 sn) dinlenme, sonra `engines.gpu_load` (nvidia-smi, arka plan iş parçacığı)
+  ölçümü: kart başka programla %`helper_busy_pct` (50) üstü meşgulse ya da `helper_min_free_gb` (1.5) altı boş bellek
+  varsa 30 sn bekler; 2 dk sürerse yardımcı süreç kapatılır (`_h_parked`, model belleği boşalır), kart boşalınca
+  (+5 GB) yeniden açılır. Yardımcıda toplu boyut ≤ `display_batch` (4), süreç IDLE önceliğinde. Konuşmacı ayırma
+  yardımcıya GİTMEZ (`_diar_device` yalnız ana kartlar). Yardımcı kalıcı düşerse kuyruğundaki görev ana karta döner
+  (`_helper_gone`). Arayüz: kart şeridinde "yardımcı" etiketi, "bekliyor · sebep". Windows'ta / gerçek kartlarda DENENMEDİ.
 - **Konuşmacı ayırma ayrı süreçte** (`Pipeline.dpool`, wid `diar`, ilk ayırma görevinde açılır, belleği en büyük
   kartta): aynı süreçte torch + CTranslate2 → `invalid device ordinal` ve 1.2.0'da `CUDNN_STATUS_EXECUTION_FAILED`
   + `MemoryError` görüldü. `Diarizer.run`: cuDNN hatasında cuDNN kapalı tekrar dener; işlemciye geçmez (1.6.2, `diar_cpu`).

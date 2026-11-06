@@ -51,6 +51,19 @@ def _smi(query: str) -> list[list[str]]:
     return [[x.strip() for x in line.split(",")] for line in r.stdout.splitlines() if line.strip()]
 
 
+def gpu_load(idx: int) -> dict | None:
+    """Kartın anlık yükü (nvidia-smi): {"util": %, "used_mb", "total_mb"}; okunamazsa None.
+    utilization.gpu son ~1 sn'nin ortalamasıdır: yardımcı kart dinlenirken ölçülürse yalnız BAŞKA programları gösterir."""
+    for row in _smi("index,utilization.gpu,memory.used,memory.total"):
+        try:
+            if int(row[0]) != idx:
+                continue
+            return {"util": int(float(row[1])), "used_mb": float(row[2]), "total_mb": float(row[3])}
+        except (ValueError, IndexError):  # "[N/A]" (bazı sürücüler) ya da bozuk satır
+            return None
+    return None
+
+
 def windows_display_adapters() -> list[str] | None:
     """Windows: masaüstünü çizen (monitör bağlı) ekran kartlarının adları. Windows değilse None.
 

@@ -34,7 +34,7 @@ def _common(p: argparse.ArgumentParser) -> None:
     g.add_argument("--model", help="faster-whisper modeli ya da yerel klasör (varsayılan large-v3)")
     g.add_argument("--compute-type", dest="compute_type", help="float16 (GPU), int8 (CPU)...")
     g.add_argument("--beam-size", dest="beam_size", type=int)
-    g.add_argument("--gpus", help="auto | 0,1 | 0 | cpu")
+    g.add_argument("--gpus", help="auto | yardim (monitörlü kart yardımcı, düşük yük) | all | 0,1 | 0 | cpu")
     g.add_argument("--batch", dest="batch_size", type=int, help="toplu boyut (varsayılan: karta göre; 0 = kapalı)")
     g.add_argument("--prompt", help="başlangıç istemi (isimler, terimler)")
     g.add_argument("--no-context", dest="no_context", action="store_true",
