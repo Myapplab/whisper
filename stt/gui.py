@@ -572,7 +572,7 @@ class App:
     def resume_pending(self) -> dict:
         msg = self._busy_msg()
         if msg:
-            return {"count": 0, "error": msg}
+            return {"ok": False, "count": 0, "error": msg}
         from .sources import Item
         n = 0
         for row in self._pending:
@@ -717,7 +717,10 @@ class App:
         eski yolu tutuyor olabilir. Yeni yer varsa o (eski kopya silinemeyip kalmış olsa da)."""
         moved = getattr(self, "_moved", {})
         seen = 0
-        while p and p in moved and seen < 20 and (Path(moved[p]).exists() or not Path(p).exists()):
+        while p and p in moved and seen < 20:
+            old = Path(p)
+            if old.is_dir() or not (Path(moved[p]).exists() or not old.exists()):
+                break  # duran klasör (içinde başka toplantılar var) kendisi açılır
             p, seen = moved[p], seen + 1
         return p
 
@@ -920,16 +923,22 @@ class App:
         if self._logpath:
             open_path(str(self._logpath))
 
+    _RECLASS_LOCK = threading.Lock()
+
     def dataset_reclassify(self, apply: bool = False) -> dict:
         """Veri seti > "Yeniden sınıflandır": önce deneme turu (ne değişecek), onaylanınca uygula.
         Kuyrukta iş varken yapılmaz (biten işin çıktısı aynı anda yazılabilir)."""
-        with self._lock:  # iki çağrı aynı anda başlamasın (çift tıklama); kuyruk denetimi de kilit altında
-            if self._pipe is not None and self._pipe.active() or not self._inbox.empty():
-                return {"ok": False, "error": "Kuyrukta iş varken yapılmaz: işler bitince (ya da Durdur'dan sonra) "
-                                              "tekrar deneyin."}
+        # Önce bayrak (ayrı kilitle: çift tıklama), SONRA kuyruk denetimi: bayraktan sonra Başlat reddedilir, önce
+        # basılmışsa iş kuyrukta görünür. App._lock burada TUTULMAZ: Pipeline kendi kilidi altındayken arayüze olay
+        # gönderir (App._lock); ters sırayla almak "Durdur" ile aynı anda basılınca uygulamayı kilitliyordu.
+        with self._RECLASS_LOCK:
             if getattr(self, "_reclassifying", False):
                 return {"ok": False, "error": "Yeniden sınıflandırma zaten sürüyor."}
             self._reclassifying = True
+        if self._pipe is not None and self._pipe.active() or not self._inbox.empty():
+            self._reclassifying = False
+            return {"ok": False, "error": "Kuyrukta iş varken yapılmaz: işler bitince (ya da Durdur'dan sonra) tekrar "
+                                          "deneyin."}
         try:
             from .reclassify import reclassify
             res = reclassify(Path(self._cfg.out_dir).resolve(), apply=bool(apply), state=self._state())

@@ -169,24 +169,27 @@ def presser_datetime(info: dict) -> datetime | None:
 # international break", "kick on after Chelsea win": çoğu zaman sonraki maçın öncesi), "reacts to transfer rumours",
 # "reaction to call-up", "Champions League / FA Cup draw" (kura), "out for 2-3 weeks", "25-26 season", Türkçe tek
 # başına "sonrası" ("milli ara sonrası").
-_RESULT = r"(?:win|wins|won|defeat|loss|lost|victory|beat|result|game|match|thrashing|comeback|drew)"
+_RESULT = (r"(?:win|wins|won|winner|defeat|loss|lost|victory|beat|result|game|match|thrashing|thriller|comeback|"
+           r"equaliser|equalizer|drew)")
 _SCORE_TXT = (r"(?<![\d-])\d{1,2} ?- ?\d{1,2}(?![\d-])(?! ?(?:weeks?|wks?|days?|months?|years?|seasons?|games?|"
-              r"matches|mins?|minutes?|hafta\w*|gun\w*|ay\b|yil\w*|sezon\w*|mac\w*|dakika\w*|hefte\w*|movsum\w*))")
-_REACT_TO = r"\breact(?:s|ion)? to (?:the |our |their |his |a )?(?:[\w']+ ){0,3}"
+              r"matches|mins?|minutes?|hafta\w*|gun\w*|ay\b|yil\w*|sezon\w*|mac\w*|dakika\w*|hefte\w*|movsum\w*|"
+              r"with\b))")
+_REACT_TO = r"\breact(?:s|ion)? to (?:the |our |their |his |a )?(?:[\w'-]+ ){0,3}"
 _POST_RE = re.compile(
     r"post[ -]?(?:match|game)|"
     rf"\breact(?:s|ion)?\b(?! to\b)|{_REACT_TO}(?:{_SCORE_TXT}|{_RESULT}\b)|"
     r"(?:mac|matc|karsilasma|oyun|derbi|deplasman|galibiyet|yenilgi|beraberlik|maglubiyet)\w* "
     r"(?:sonrasi|sonra|ardindan)\b|\bmac\w* sonu\b")
-# "reacts to Chelsea draw" maç sonucu; "reacts to Champions League / FA Cup / last 16 draw" kura
+# "reacts to Chelsea draw / last night's draw" maç sonucu; "reacts to Champions League / FA Cup / last 16 /
+# quarter-final draw" kura (kura sözcüğü "draw"ın hemen önünde)
 _POST_DRAW_RE = re.compile(rf"{_REACT_TO}draw\b")
-_CUP_DRAW_RE = re.compile(r"\b(?:league|cup|group|stage|round|final|finals|quarter|semi|playoffs?|knockout|last|kura|"
-                          r"\d{2})\b[\w' ]{0,20}\bdraw\b")
+_CUP_DRAW_RE = re.compile(r"\b(?:league|cup|group(?: stage)?|knockout(?: stage| round)?|round of \d+|last (?:16|32|64)|"
+                          r"quarter[- ]?finals?|semi[- ]?finals?|finals?|play[- ]?offs?|kura|europa|conference) draw\b")
 _PRE_RE = re.compile(r"pre[ -]?(?:match|game)|\bpreviews?\b|\bahead of\b|\bbefore (?:the )?(?:game|match)\b|"
                      r"\bpre[ -](?!season)[a-z]|\boncesi\b|\bevvel\b|build[ -]?up")
-# skor: "Arsenal 2-1 Chelsea", "2-1 win", "Qarabağ 2:1 Sabah"; "2-3 weeks", "4-3-3", "25-26 season", tarih, saat,
-# "1:1 with Arteta" (birebir röportaj) değil
-_SCORE_RE = re.compile(rf"{_SCORE_TXT}|(?<=[a-z] )\d:\d(?= [a-z])(?! with\b)")
+# skor: "Arsenal 2-1 Chelsea", "2-1 win", "Qarabağ 2:1 Sabah", "(2:1)"; "2-3 weeks", "4-3-3", "25-26 season",
+# tarih, saat (15:00), "1:1 with Arteta" / "1-1 with Saka" (birebir röportaj) değil
+_SCORE_RE = re.compile(rf"{_SCORE_TXT}|(?<![\d:])\d:\d(?![\d:])(?!\s*with\b)")
 
 
 def phase_hint(title: str) -> str | None:

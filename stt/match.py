@@ -161,9 +161,11 @@ janeiro fevereiro maio junho julho setembro outubro novembro dezembro
 janvier fevrier juin juillet aout septembre octobre novembre decembre
 """.split())  # ad da olabilen aylar yok: March (Solly March), May, June, April, August, Julio, Marco (março), Mars
 
-# Latin-1 + Latin Genişletilmiş-A (Ā-ſ: ć ř š ž č ł ő İ ı ğ ş...; "Jakirović", "Trpišovský") + Azerice Ə ə
-_UP = "A-ZÀ-ÖØ-ÞĀ-ſƏ"
-_LO = "a-zß-öø-ÿĀ-ſə"
+# Büyük / küçük harfler: Latin-1 + Latin Genişletilmiş-A/B (ć ř š ž č ł ő İ ı ğ ş...; "Jakirović", "Trpišovský")
+# + Azerice Ə ə. Aralıklar harfin kendi büyük/küçük bilgisinden kurulur ("şampiyonluk" ad sayılmasın).
+_EXT = [chr(c) for c in range(0xC0, 0x250)] + ["Ə", "ə"]
+_UP = "A-Z" + "".join(c for c in _EXT if c.isupper())
+_LO = "a-z" + "".join(c for c in _EXT if c.islower())
 # Ad: büyük harfle başlar; McKenna, MacAllister, O'Neil, D'Alessandro, Jean-Philippe da ad
 _NAME_WORD = rf"(?:Mc|Mac|O['’]|D['’])?[{_UP}][{_LO}'’]+(?:-(?:[{_UP}][{_LO}'’]+|[{_LO}'’]+))*"
 _PARTICLES = {"van", "von", "der", "den", "de", "di", "da", "du", "del", "della", "le", "la", "ten", "ter",
@@ -219,7 +221,13 @@ _DETERMINERS = {"the", "a", "an", "this", "that", "our", "their", "his", "its", 
                 "no", "what", "very", "so"}
 
 
+# Özne kuralı yalnız bunlarda: "nice" İngilizce sıfat ("Nice Is The Word"), "sabah" Türkçe ("Sabah Can Uzun")
+_SUBJECT_ALIASES = {"sporting", "zira", "om"}
+
+
 def _subject_in(text: str, alias: str) -> bool:
+    if alias not in _SUBJECT_ALIASES:
+        return False
     pat = rf"(?<!\w)({re.escape(alias[0].upper())}(?i:{re.escape(alias[1:])}))\s+(?i:{_AMB_VERBS})\b"
     for m in re.finditer(pat, text or ""):
         prev = re.findall(r"\w+(?:['’]\w+)?", text[:m.start()])

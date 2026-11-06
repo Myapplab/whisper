@@ -38,10 +38,12 @@ E.2 (C5) ve aşağıdaki K5 planı. **(1.9.5'ten kalan):** kullanıcı Güncelle
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
-- 1.9.8 (Claude; `docs/TARAMA_2026-11-06.md` A bölümü = veri seti eşleştirmesi; 369 test): kullanıcı "A bölümünü
-  yap" dedi. Rapordaki başlık örneklerinin hepsi `tests/test_v198.py`'de; ayrıca iki bağımsız inceleme ajanı
-  (ilki 12 sorun buldu, hepsi düzeltildi; en ciddisi: yeniden sınıflandırma Windows'ta yalnız harf büyüklüğü değişen
-  dosya adında yeni yazdığı dosyayı silebiliyordu). Yapılanlar:
+- 1.9.8 (Claude; `docs/TARAMA_2026-11-06.md` A bölümü = veri seti eşleştirmesi; 465 test): kullanıcı "A bölümünü
+  yap" dedi. Rapordaki başlık örneklerinin hepsi `tests/test_v198.py`'de; listedeki her hoca ve her takım adı toplu
+  deneniyor. Dört tur bağımsız inceleme ajanı (12 + 10 + 8 + 9 bulgu, hepsi testle gösterilip düzeltildi). En
+  ciddileri: yeniden sınıflandırma Windows'ta yalnız harf büyüklüğü değişen adda yeni yazdığı dosyayı silebiliyordu;
+  ertelenmiş silme sonradan düzeltilmiş / aynı adı almış dosyayı silebiliyordu (artık boyut + değişiklik zamanı +
+  sahiplik denetimi); "Durdur" ile aynı anda basılınca arayüz kilitlenebiliyordu (kilit sırası). Yapılanlar:
   (1) `match.py`: "derby / nice / Sporting / sabah / Zira / om" tek başına takım değil (niteleyiciyle ya da başka
   takıma bağlıyken: "Leeds v Derby", "Qarabağ - Sabah", "Sporting will be..."); NBA bağlamında "Spurs" Tottenham
   değil; "Arteta on Saka's fitness" rakip değil; McKenna, O'Neil, "ERIK TEN HAG", "SLOT'S", Türkçe ekler; aynı
@@ -63,7 +65,10 @@ E.2 (C5) ve aşağıdaki K5 planı. **(1.9.5'ten kalan):** kullanıcı Güncelle
   (3) Yeni **"Veri seti > Yeniden sınıflandır"** (`stt yeniden-siniflandir [--dene]`, `stt/reclassify.py`): metni
   yeniden çevirmeden eski çıktıları doğru klasöre taşır, mac.json (GW, skor), index, durum kaydı, koleksiyonlar
   yenilenir. Önce ne değişeceğini gösterir, onayla uygular. FPL yoksa çalışmaz; eski sezona, Podcast ve Film'e ve
-  mac.json'da "ek_bilgiler" dolu klasöre dokunmaz. Arayüz Chromium'da (köprüyle) denendi.
+  mac.json'da "ek_bilgiler" dolu klasöre dokunmaz. Elle düzeltilmiş .txt gövdesi / .srt korunur; açık (kilitli)
+  dosyada kayıt atlanır ya da silme sonraki çalıştırmaya kalır (`.stt/siniflandirma_bekleyen.json`). Sınıflandırma
+  sürerken Başlat / Tekrar dene / Devam et / Konuşmacılar Kaydet bekler; kanal takibi bu sırada videoları "görüldü"
+  saymaz (TARAMA C1'in bu kısmı düzeldi). Arayüz Chromium'da (köprüyle), komut satırı uçtan uca denendi.
   DENENMEDİ: Windows / WebView2, gerçek FPL verisi (bu ortamdan erişim kapalı; testler sahte fikstürle), gerçek
   kullanıcı veri seti. KULLANICIDAN: Güncelle → Veri seti → "Yeniden sınıflandır" → çıkan pencerenin ekran görüntüsü
   (uygulamadan önce). AÇIK KALAN: A-E'deki yapılandırılmış sakatlık/kadro JSON'u (E.4); yeni GW bulunan eski

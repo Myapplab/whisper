@@ -1163,7 +1163,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     if (r && !r.ok) { upd.busy = false; $("#btnUpd").disabled = false; showUpd("Güncellenemedi: " + r.error, { err: true }); }
   };
   $("#btnUpdHide").onclick = () => $("#upd").classList.remove("show");
-  $("#btnPendGo").onclick = async () => { const r = await call("resume_pending"); $("#pend").classList.remove("show"); if (r) toast(r.count + " iş yeniden sıraya kondu (biten parçalar korunur)."); };
+  $("#btnPendGo").onclick = async () => { const r = await call("resume_pending"); if (r && r.ok === false) { toast(r.error || "Şu an yapılamıyor."); return; } $("#pend").classList.remove("show"); if (r) toast(r.count + " iş yeniden sıraya kondu (biten parçalar korunur)."); };
   $("#btnPendClear").onclick = async () => { await call("clear_pending"); $("#pend").classList.remove("show"); };
   $("#sUpd").onclick = async () => { $("#sUpdState").textContent = "Denetleniyor…"; await call("update_check"); };
 

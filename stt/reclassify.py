@@ -13,8 +13,10 @@ Güvenlik kuralları:
   yarıda kalan silme bir sonraki çalıştırmada tamamlanır; ama yalnız dosya o andan beri değişmediyse ve hâlâ bu
   kayda aitse (sonradan düzeltilmiş ya da aynı adı almış başka kaydın dosyası silinmez). Klasörde başka kayıt,
   tanınmayan dosya ya da mac.json'da elle eklenmiş "ek_bilgiler" varsa klasör silinmez.
-- Elle düzeltilmiş .txt'nin gövdesi korunur (başlık satırları yeni sınıflandırmayla yazılır); .srt'de veri seti
-  bilgisi yok, her zaman olduğu gibi kalır. Eski .txt / .srt okunamıyorsa (açık) kayıt bu çalıştırmada taşınmaz.
+- .txt yalnız programın ürettiği hâliyle aynıysa yeniden üretilir. Başlık satırları programınki, gövde elle
+  düzeltilmişse gövde korunur, başlık yenilenir; başka her durumda (başlık silinmiş, en üste not eklenmiş, başka
+  kodlama) dosya olduğu gibi kalır / taşınır. .srt'de veri seti bilgisi yok, olduğu gibi kalır. Yerinde güncellemede
+  önce .json ve özet yazılır, .txt en son; eski .txt / .srt okunamıyorsa (açık) kayıt bu çalıştırmada taşınmaz.
 - Yalnız harf büyüklüğü değişen ad ("Erik Ten Hag" -> "Erik ten Hag") taşınmaz: Windows'ta aynı dosyadır, yeni
   yazılan dosya "eski" diye silinirdi. Silmeden önce ayrıca aynı dosya mı diye bakılır.
 - 1.9.8 öncesi json'larda video açıklaması yok: eski sınıflandırmanın yarışması ve başlıkta hiç geçmeyen rakibi
@@ -26,13 +28,13 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from .dataset import (_parse_dt, classify, fpl_data, index_row, out_paths, presser_time, rel_path, update_index,
                       write_match_json)
 from .match import _ALIASES, _tnorm, is_team, looks_like_presser, parse_match
-from .outputs import to_txt, write_all
+from .outputs import to_srt, to_summary, to_txt
 from .util import atomic_write_text, log, read_jsonl, replace_retry, write_jsonl_csv
 
 DOC_SUFFIXES = (".txt", ".srt", ".json", " - ozet.md")
@@ -430,15 +432,7 @@ def _one(root: Path, row: dict, data: dict, season, apply: bool, state, res: dic
         doc["description_head"] = None
         doc["dataset_hint"] = info.get("description")
     doc["match"], doc["dataset"] = match, new_ds
-    paths = write_all(new_dir, new_base, doc, f"{new_base} - ozet.md")
-    if keep_txt is not None:
-        if isinstance(keep_txt, str):  # düzeltilmiş gövde + yeni başlık satırları
-            atomic_write_text(paths["txt"], to_txt(doc).split("\n\n", 1)[0] + "\n\n" + keep_txt)
-        else:
-            _write_bytes(paths["txt"], keep_txt)
-        log.info("Elle düzeltilmiş metin korundu: %s", paths["txt"].name)
-    if keep_srt is not None:
-        _write_bytes(paths["srt"], keep_srt)
+    paths = _write_outputs(new_dir, new_base, doc, keep_txt, keep_srt, same_place)
     if not same_place:
         _move_news(old_dir, old_base, new_dir, new_base, paths)
     if meta.get("team"):
@@ -446,8 +440,8 @@ def _one(root: Path, row: dict, data: dict, season, apply: bool, state, res: dic
     item = {"key": key, "dir": str(old_dir), "base": old_base, "new_dir": str(new_dir), "new_base": new_base,
             "files": {suf: _fingerprint(old_dir / f"{old_base}{suf}") for suf in DOC_SUFFIXES}}
     if not same_place:  # önce niyet yazılır: index güncellendikten sonra çökse de sonraki çalıştırma eski dosyaları siler
-        pending = [x for x in _load_pending(root) if x.get("key") != key] + [item]
-        _save_pending(root, pending)
+        _save_pending(root, [x for x in _load_pending(root) if not _same_item(x, key, old_dir, old_base)
+                             and not _same_item(x, key, new_dir, new_base)] + [item])
     update_index(root, index_row(root, key, meta, doc, paths))
     prev = state.get(key) if state is not None else None
     if prev:
@@ -461,19 +455,32 @@ def _one(root: Path, row: dict, data: dict, season, apply: bool, state, res: dic
     if not same_place:
         moved = res.setdefault("moved_files", {})
         moved[str(old_dir / f"{old_base}.txt")] = str(paths["txt"])
-        moved[str(old_dir)] = str(new_dir)
         failed, _ = _finish_move(root, item)
+        if not old_dir.exists():
+            moved[str(old_dir)] = str(new_dir)  # klasör boşalıp silindiyse "Klasörü aç" yenisini açsın
         if failed:
             res["errors"].append({"key": key, "title": title,
                                   "error": "eski dosya silinemedi (açık olabilir); sonraki çalıştırmada silinecek"})
         else:
-            _save_pending(root, [x for x in _load_pending(root) if x.get("key") != key])
+            _save_pending(root, [x for x in _load_pending(root) if not _same_item(x, key, old_dir, old_base)])
     log.info("Yeniden sınıflandırıldı: %s -> %s", title[:70], rel_path(paths["txt"], root))
 
 
+def _same_item(x: dict, key: str, d: Path, base: str) -> bool:
+    return x.get("key") == key and str(x.get("dir", "")).casefold() == str(d).casefold() \
+        and str(x.get("base", "")).casefold() == base.casefold()
+
+
+def _split_head(text: str) -> tuple[str, str]:
+    head, _, body = text.partition("\n\n")
+    return head.strip(), body.strip()
+
+
 def _edited_txt(p: Path, doc: dict) -> str | bytes | None:
-    """.txt elle düzeltilmiş mi? Gövde (başlık satırlarından sonrası) programın bu json'dan ürettiğinden farklıysa
-    düzeltilmiş gövde (metin) döner; UTF-8 değilse dosyanın kendisi (bayt); değilse None (yeniden üretilebilir).
+    """.txt elle düzeltilmiş mi (``doc``: dosyayı üreten, henüz güncellenmemiş kayıt)?
+    - None: programın ürettiğiyle aynı, yeniden üretilebilir.
+    - str: başlık satırları programınki, gövde düzeltilmiş: gövde (yeni başlıkla yazılır).
+    - bytes: başka her durum (başlık silinmiş / değişmiş, en üste not, başka kodlama): dosya olduğu gibi kalır.
     Dosya var ama okunamıyorsa _Unreadable."""
     if not p.exists():
         return None
@@ -485,10 +492,37 @@ def _edited_txt(p: Path, doc: dict) -> str | bytes | None:
         text = raw.decode("utf-8-sig").replace("\r\n", "\n")
     except UnicodeDecodeError:
         return raw  # başka kodlamayla kaydedilmiş: elle açılıp kaydedilmiş, dokunma
-    gen = to_txt(doc)
-    body = text.split("\n\n", 1)[1] if "\n\n" in text else text
-    gen_body = gen.split("\n\n", 1)[1] if "\n\n" in gen else gen
-    return None if body.strip() == gen_body.strip() else body
+    head, body = _split_head(text)
+    gen_head, gen_body = _split_head(to_txt(doc))
+    if head == gen_head:
+        return None if body == gen_body else body
+    return raw
+
+
+def _write_outputs(d: Path, base: str, doc: dict, keep_txt, keep_srt: bytes | None, same_place: bool) -> dict:
+    """outputs.write_all'ın yerine: önce .json ve özet, sonra .txt / .srt; elle düzeltilmiş metin / altyazı korunur.
+    Yerinde güncellemede .srt hiç yazılmaz (veri seti bilgisi yok), olduğu gibi bırakılan .txt'ye de dokunulmaz:
+    sonraki bir yazma başarısız olsa bile kullanıcının düzeltmesi kaybolmaz."""
+    d.mkdir(parents=True, exist_ok=True)
+    doc.setdefault("created", datetime.now().strftime("%Y-%m-%d %H:%M"))
+    paths = {"txt": d / f"{base}.txt", "srt": d / f"{base}.srt", "json": d / f"{base}.json",
+             "md": d / f"{base} - ozet.md"}
+    atomic_write_text(paths["json"], json.dumps(doc, ensure_ascii=False, indent=1))
+    atomic_write_text(paths["md"], to_summary(doc, paths["txt"].name))
+    if keep_txt is None:
+        atomic_write_text(paths["txt"], to_txt(doc))
+    elif isinstance(keep_txt, str):  # düzeltilmiş gövde + yeni başlık satırları
+        atomic_write_text(paths["txt"], to_txt(doc).partition("\n\n")[0] + "\n\n" + keep_txt + "\n")
+        log.info("Elle düzeltilmiş metin korundu (başlık yenilendi): %s", paths["txt"].name)
+    elif not same_place:
+        _write_bytes(paths["txt"], keep_txt)
+        log.info("Elle değiştirilmiş metin olduğu gibi taşındı: %s", paths["txt"].name)
+    if keep_srt is not None:
+        if not same_place:
+            _write_bytes(paths["srt"], keep_srt)
+    else:
+        atomic_write_text(paths["srt"], to_srt(doc["segments"], bool(doc.get("speakers"))))
+    return paths
 
 
 def _write_bytes(p: Path, data: bytes) -> None:

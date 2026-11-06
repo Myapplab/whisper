@@ -1160,7 +1160,6 @@ def test_neutral_channel_keeps_pattern_opponent(title):
 @pytest.mark.parametrize("title,team", [
     ("Sporting Will Be A Tough Test | Mikel Arteta Press Conference", "Sporting CP"),
     ("SPORTING WILL BE A TOUGH TEST | MIKEL ARTETA", "Sporting CP"),
-    ("Nice Are Dangerous | Enzo Maresca", "Nice"),
     ("Arteta: 'Sporting Have Improved A Lot'", "Sporting CP"),
 ])
 def test_subject_rule_any_case(title, team):
@@ -1255,3 +1254,160 @@ def test_every_known_manager_is_recognised():
             info = {"title": f"{n} press conference", "channel": "Sky Sports News", "upload_date": "20261106"}
             m = parse_match(info)
             assert m["team"] == PL_MANAGERS[n] and looks_like_presser(info, m), n
+
+
+# ---------------------------------------------------------------- dördüncü bağımsız inceleme
+def test_reclassify_does_not_hold_ui_lock_while_asking_pipeline(tmp_path, monkeypatch):
+    """Kilit sırası: Pipeline kilidi altında arayüze olay gönderilir (App._lock); yeniden sınıflandırma App._lock
+    tutarken Pipeline kilidini isterse ("Durdur" ile aynı anda) iki iş parçacığı birbirini bekleyip donuyordu."""
+    import stt.gui as g
+    import stt.reclassify as rc
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(rc, "fpl_data", lambda d, **k: FPL)
+    app = g.App()
+    app._cfg.out_dir = tmp_path
+    seen = []
+
+    class Pipe:
+        def active(self):
+            seen.append(app._lock.locked())
+            return False
+    app._pipe = Pipe()
+    app.dataset_reclassify(False)
+    app._pipe = None
+    assert seen and not any(seen)
+
+
+def test_edited_txt_without_generated_header_kept_as_is(tmp_path):
+    """Kullanıcı başlığı silmiş ya da en üste not eklemiş: ilk blok 'başlık' sanılıp atılmasın."""
+    from stt.reclassify import reclassify
+    p = _old_output(tmp_path, "y_fb", _SAKA_TITLE, "Arsenal", _ts("2026-11-06 12:00"), _SAKA_FOLDER,
+                    "2026-11-06 - Mikel Arteta", _SAKA_OLD)
+    txt = p["txt"].read_text("utf-8")
+    body = txt.split("\n\n", 1)[1].replace("How is Saka?", "How is Bukayo Saka?")
+    p["txt"].write_text(body, encoding="utf-8")                            # başlık silindi, ilk soru düzeltildi
+    reclassify(tmp_path, apply=True, data=FPL)
+    new = (tmp_path / f"{_SAKA_NEW}.txt").read_text("utf-8")
+    assert "How is Bukayo Saka?" in new and "He is fine" in new
+
+
+def test_note_on_top_of_txt_kept(tmp_path):
+    from stt.reclassify import reclassify
+    p = _old_output(tmp_path, "y_nt", _SAKA_TITLE, "Arsenal", _ts("2026-11-06 12:00"), _SAKA_FOLDER,
+                    "2026-11-06 - Mikel Arteta", _SAKA_OLD)
+    p["txt"].write_text("NOTUM: önemli\n\n" + p["txt"].read_text("utf-8"), encoding="utf-8")
+    reclassify(tmp_path, apply=True, data=FPL)
+    assert "NOTUM: önemli" in (tmp_path / f"{_SAKA_NEW}.txt").read_text("utf-8")
+
+
+def test_same_place_update_keeps_edit_when_another_write_fails(tmp_path, monkeypatch):
+    """Yerinde güncelleme: özet dosyası açık (yazılamadı) olsa da kullanıcının metin düzeltmesi kaybolmasın."""
+    from stt.reclassify import reclassify
+    _old_output(tmp_path, "y_pf", _SAKA_TITLE, "Arsenal", _ts("2026-11-06 12:00"), _SAKA_FOLDER,
+                "2026-11-06 - Mikel Arteta", _SAKA_OLD)
+    reclassify(tmp_path, apply=True, data=FPL)
+    txt = tmp_path / f"{_SAKA_NEW}.txt"
+    txt.write_text(txt.read_text("utf-8").replace("trained today", "trained today (elle)"), encoding="utf-8")
+    jp = tmp_path / f"{_SAKA_NEW}.json"
+    doc = json.loads(jp.read_text("utf-8"))
+    doc["dataset"]["score"] = None
+    jp.write_text(json.dumps(doc), encoding="utf-8")
+    md = tmp_path / f"{_SAKA_NEW} - ozet.md"
+    import stt.util as u
+    real = u.replace_retry
+
+    def locked(src, dst, tries=5):
+        if Path(dst) == md:
+            raise PermissionError(13, "The process cannot access the file")
+        return real(src, dst, tries)
+    monkeypatch.setattr(u, "replace_retry", locked)
+    reclassify(tmp_path, apply=True, data=FPL)
+    monkeypatch.undo()
+    assert "trained today (elle)" in txt.read_text("utf-8")
+
+
+def test_record_moved_twice_while_locked_cleans_both(tmp_path, monkeypatch):
+    from stt.reclassify import reclassify
+    p = _old_output(tmp_path, "y_tw", _SAKA_TITLE, "Arsenal", _ts("2026-11-06 12:00"), _SAKA_FOLDER,
+                    "2026-11-06 - Mikel Arteta", _SAKA_OLD)
+    _lock(monkeypatch, p["txt"])
+    reclassify(tmp_path, apply=True, data=FPL)                        # 1. taşıma: eski .txt açık kaldı
+    jp = tmp_path / f"{_SAKA_NEW}.json"
+    doc = json.loads(jp.read_text("utf-8"))
+    doc["dataset"]["gw"] = 99                                          # kayıt ikinci kez taşınsın diye bozuluyor
+    jp.write_text(json.dumps(doc), encoding="utf-8")
+    reclassify(tmp_path, apply=True, data=FPL)
+    monkeypatch.undo()
+    reclassify(tmp_path, apply=True, data=FPL)
+    assert not p["txt"].exists()
+
+
+def test_open_old_folder_with_other_pressers_stays(tmp_path, monkeypatch):
+    import stt.gui as g
+    import stt.reclassify as rc
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(rc, "fpl_data", lambda d, **k: FPL)
+    opened = []
+    monkeypatch.setattr(g, "open_path", lambda p: opened.append(p))
+    app = g.App()
+    app._cfg.out_dir = tmp_path
+    p = _old_output(tmp_path, "y_of", _SAKA_TITLE, "Arsenal", _ts("2026-11-06 12:00"), _SAKA_FOLDER,
+                    "2026-11-06 - Mikel Arteta", _SAKA_OLD)
+    other = p["txt"].parent / "2026-11-06 - başka.txt"
+    other.write_text("başka toplantı", encoding="utf-8")
+    assert app.dataset_reclassify(True)["moved"] == 1
+    app.open(str(p["txt"].parent))
+    assert opened == [str(p["txt"].parent)]
+
+
+@pytest.mark.parametrize("title,want", [
+    ("Fenerbahçe şampiyonluk şansını sürdürdü | basın toplantısı", None),
+    ("Sergen Yalçın şampiyonluk için iddialı", "Sergen Yalçın"),
+    ("Łukasz Piszczek press conference", "Łukasz Piszczek"),
+    ("Niko Kovač press conference", "Niko Kovač"),
+])
+def test_lowercase_extended_letters_not_names(title, want):
+    assert find_manager(title, find_teams(title)) == want
+
+
+@pytest.mark.parametrize("title,want", [
+    ("Mikel Arteta reacts to last night's draw", "mac-sonrasi"),
+    ("Mikel Arteta reacts to last weekend's draw", "mac-sonrasi"),
+    ("Mikel Arteta reacts to last minute draw", "mac-sonrasi"),
+    ("Mikel Arteta reacts to final day draw", "mac-sonrasi"),
+    ("Mikel Arteta reacts to 10 man draw", "mac-sonrasi"),
+    ("Mikel Arteta reacts to 10-man win", "mac-sonrasi"),
+    ("Mikel Arteta reacts to 90th-minute winner", "mac-sonrasi"),
+    ("Mikel Arteta reacts to 5 goal thriller", "mac-sonrasi"),
+    ("Qarabağ - Sabah 3:0 | Qurban Qurbanov", "mac-sonrasi"),
+    ("Qarabağ 3:0 | Mətbuat konfransı", "mac-sonrasi"),
+    ("Qarabağ (2:1) Sabah", "mac-sonrasi"),
+    ("Arteta reacts to Champions League draw", None),
+    ("Arteta reacts to Carabao Cup quarter-final draw", None),
+    ("Arteta reacts to Round of 16 draw", None),
+    ("Arteta reacts to the last 16 draw", None),
+    ("1-1 with Bukayo Saka | Arsenal", None),
+])
+def test_phase_hint_fourth_review(title, want):
+    assert phase_hint(title) == want
+
+
+@pytest.mark.parametrize("title,team", [
+    ("Nice Is The Word | Mikel Arteta press conference", "Nice"),
+    ("Being Nice Is Not Enough", "Nice"),
+    ("Nice Can Be Better | Enzo Maresca", "Nice"),
+    ("Sabah Can Uzun'un açıklamaları", "Sabah"),
+])
+def test_subject_rule_title_case_false_positives(title, team):
+    assert team not in find_teams(title)
+
+
+def test_resume_pending_busy_keeps_banner(tmp_path, monkeypatch):
+    import stt.gui as g
+    monkeypatch.chdir(tmp_path)
+    app = g.App()
+    app._pending = [{"uid": "u1", "kind": "url", "source": "https://youtu.be/a", "title": "a", "extra": {}}]
+    app._reclassifying = True
+    r = app.resume_pending()
+    assert r["ok"] is False and r["error"] and app._pending
+    app._reclassifying = False
