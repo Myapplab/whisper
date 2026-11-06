@@ -8,7 +8,8 @@ Ortak hafıza bu dosyadır. **Oturum sonunda güncelle** (Son durum + liste) ve 
   "Not enough memory" diyordu (RAM + sanal bellek dolu → CUDA da OOM verir). Eskiden OOM hiç tekrar denenmiyor,
   "NVIDIA sürücüsünü güncelleyin" deniyordu. Artık OOM = bellek hatası yolu (`pipeline.is_oom`): ayırma süreci
   kapanır, metin bitince 60/120 sn sonra tekrar (2.'de müzik ayıklamasız); sonunda bellek ipucu (sayfa dosyası).
-  `wait_memory`: sanal bellek 1 GB altındaysa beklemeye devam. Sürerse sayfa dosyası "sistem yönetsin" yapılsın.
+  `wait_memory`: sanal bellek 1 GB altındaysa beklemeye devam. Kullanıcıda ölçüldü: RAM 23.9 (boş 7.7), sanal bellek
+  toplam 31.9 (boş 3.8) GB → sayfa dosyası ~8 GB, asıl darboğaz bu. Sayfa dosyası 16–32 GB sabit yapılması önerildi.
 - Sürüm 1.8.6 (senaryo turu 3, `tests/test_sim3.py`, 164 test): metin birleştirmede dakikalar arayla söylenen aynı
   cümle artık tek 10 dk'lık segmente dönmüyor (`merge.REPEAT_GAP`); tekrar döngüsü kelimelerden de atılıyor (konuşmacı
   bölününce geri geliyordu); sessizlikten sonra erken zamanlanan ilk kelime sonraki konuşmacıya (`EARLY_GAP`);
