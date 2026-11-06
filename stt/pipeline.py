@@ -807,6 +807,14 @@ class Pipeline:
             n = job.attempts.get(tid, 0) + 1
             job.attempts[tid] = n
             log.error("[%s] görev hatası (%s, deneme %d): %s", wid, tid.split(":", 1)[1], n, m["error"])
+            if m.get("restart"):  # ekran kartı takıldı: işçi kendini kapattı, _health temiz açar
+                self.idle.discard(wid)
+                self.emit("worker", wid=wid, state="loading")
+                if task["kind"] == "transcribe" and n < 3:
+                    log.warning("[%s] ekran kartı hatası; işçi yeniden açılıyor, parça tekrar denenecek", wid)
+                    with self.lock:
+                        self.backlog.appendleft(task)
+                    return
             if n < 2 and task["kind"] == "transcribe":
                 with self.lock:
                     self.backlog.appendleft(task)

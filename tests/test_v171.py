@@ -55,3 +55,27 @@ def test_diarizer_sends_progress_via_hook(tmp_path):
     d.wait_memory = lambda *a, **k: None
     turns = d.run(_wav(tmp_path), beat=lambda force=False: seen.append(force))
     assert len(turns) == 2 and seen
+
+
+def test_gpu_fault_detection():
+    from stt.workers import gpu_fault
+    assert gpu_fault("RuntimeError: parallel_for failed: cudaErrorInvalidDevice: invalid device ordinal")
+    assert gpu_fault("RuntimeError: cuBLAS failed with status CUBLAS_STATUS_EXECUTION_FAILED")
+    assert not gpu_fault("RuntimeError: CUDA failed with error out of memory")
+    assert not gpu_fault("ValueError: bozuk ses")
+
+
+def test_gpu_fault_requeues_and_worker_restarts(tmp_path):
+    p = _pipe(tmp_path, ("a",))
+    job, tasks = _job(p, tmp_path)
+    p.backlog.clear()
+    tid = tasks[0]["id"]
+    err = "RuntimeError: parallel_for failed: cudaErrorInvalidDevice: invalid device ordinal"
+    for _ in range(2):  # eskiden 2. hatada iş başarısız oluyordu
+        p._on_msg({"type": "start", "wid": "a", "tid": tid})
+        p._on_msg({"type": "error", "wid": "a", "tid": tid, "error": err, "restart": True})
+        assert job.status == "run" and p.backlog[0]["id"] == tid and "a" not in p.idle
+        p.backlog.clear()
+    p.pool.dead.add("a")
+    p._health()
+    assert p.pool.respawned == ["a"]

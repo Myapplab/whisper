@@ -4,6 +4,10 @@ Kullanıcı iki Claude hesabıyla (iki profil) sırayla çalışır: biri sını
 Ortak hafıza bu dosyadır. **Oturum sonunda güncelle** (Son durum + liste) ve `main`'e push et.
 
 ## Son durum
+- Sürüm 1.7.2 (`main`): metin işçisinde ekran kartı hatası (invalid device ordinal, cuBLAS failed; `workers.gpu_fault`)
+  olunca işçi kendini kapatıyor, `_health` temiz açıyor, parça 3 kez deneniyor (eskiden 2. hatada iş başarısızdı).
+  Güncelleme denetimi commit SHA ile (GitHub API): raw.githubusercontent dal adresi 5 dk önbellekteydi, yeni sürüm
+  hemen görünmüyordu. 128 test.
 - Sürüm 1.7.1 (`main`): 1.7.0 Windows'ta denendi; konuşmacı ayırma %0'da takıldı (büyük olasılıkla HF Xet indirmesi
   donması; community-1 "Agree" sonradan kabul edildi). Düzeltme: `util.net_env()` (HF_HUB_DISABLE_XET=1, indirme
   süre sınırları, PYANNOTE_METRICS_ENABLED=false, HF telemetri kapalı); ayırma işçisi `STT_LOG` ile günlüğe yazıyor
@@ -15,7 +19,7 @@ Ortak hafıza bu dosyadır. **Oturum sonunda güncelle** (Son durum + liste) ve 
 
 ## Sıradaki işler
 0. 1.7.1 sonrası: takılan işte günlükte `(stt-diar)` satırlarının son hâli istensin (hangi adımda durdu).
-   "cuBLAS failed" / "invalid device ordinal" ekran kartı takılmasından; tekrar ederse madde 4.
+   "cuBLAS failed" / "invalid device ordinal": 1.7.2'de işçi yeniden açılıyor; yine de sık oluyorsa madde 4.
    1.7.0 Windows'ta doğrulansın: güncelleme sonrası "Kontrol" (pyannote 4.0.7, konuşmacı modeli community-1),
    günlükte "müzik ayıklandı" (film/podcast), "Ses kütüphanesinden tanındı"; okuyucuda "Konuşmacılar" ekranı.
    Güncelleme pip'te hata verirse günlüğü iste (torchcodec / Smart App Control olabilir).

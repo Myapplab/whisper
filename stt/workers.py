@@ -200,8 +200,16 @@ def worker_main(wid: str, device: str, engine_cfg: dict, task_q, result_q, share
                 result_q.put({"type": "done", "wid": wid, "tid": task["id"], "payload": payload,
                               "elapsed": time.time() - t})
             except Exception as e:  # noqa: BLE001
-                result_q.put({"type": "error", "wid": wid, "tid": task["id"], "error": f"{type(e).__name__}: {e}",
-                              "trace": traceback.format_exc()})
+                err = f"{type(e).__name__}: {e}"
+                # ekran kartı bağlamı bozuldu (invalid device ordinal, cuBLAS failed...): bu süreçte bir daha
+                # düzelmez. Hatayı bildir ve çık; ana süreç işçiyi temiz açar, parça yeniden denenir.
+                restart = (shared_cache is None and device.startswith("cuda") and engine_cfg.get("role") != "diar"
+                           and gpu_fault(err))
+                result_q.put({"type": "error", "wid": wid, "tid": task["id"], "error": err,
+                              "trace": traceback.format_exc(), "restart": restart})
+                if restart:
+                    time.sleep(0.5)  # mesaj kuyruğa yazılsın
+                    return
     except KeyboardInterrupt:  # Ctrl+C tüm konsol süreçlerine gider; sessizce çık
         return
     except Exception as e:  # noqa: BLE001  (model yükleme vb.)
@@ -211,6 +219,16 @@ def worker_main(wid: str, device: str, engine_cfg: dict, task_q, result_q, share
 
 _RETRYABLE = ("mkl_malloc", "bad_alloc", "out of memory", "winerror 1455", "paging file", "cuda failed",
               "device-side", "unspecified launch failure", "illegal memory")
+
+
+_GPU_FAULT = ("invalid device ordinal", "cudaerror", "cublas", "cuda failed", "cuda error", "illegal memory",
+              "unspecified launch failure", "device-side", "cudnn_status_execution_failed")
+
+
+def gpu_fault(err: str) -> bool:
+    """Ekran kartı / sürücü takılması (bellek yetmemesi değil): süreci yeniden açmak gerekir."""
+    e = err.lower()
+    return "out of memory" not in e and any(x in e for x in _GPU_FAULT)
 
 
 def retryable(e: BaseException) -> bool:

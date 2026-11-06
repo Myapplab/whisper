@@ -38,17 +38,33 @@ def parse_version(s: str) -> tuple[int, ...]:
     return tuple(int(x) for x in re.findall(r"\d+", s)[:3]) or (0,)
 
 
-def _get(url: str, timeout: float = 20) -> bytes:
+def _get(url: str, timeout: float = 20, accept: str | None = None) -> bytes:
     import requests
-    r = requests.get(url, timeout=timeout, headers={"User-Agent": f"stt/{__version__}", "Cache-Control": "no-cache"})
+    h = {"User-Agent": f"stt/{__version__}", "Cache-Control": "no-cache"}
+    if accept:
+        h["Accept"] = accept
+    r = requests.get(url, timeout=timeout, headers=h)
     if r.status_code == 404:
         raise RuntimeError("Güncelleme deposuna ulaşılamadı (404). GitHub'da Myapplab/whisper herkese açık mı?")
     r.raise_for_status()
     return r.content
 
 
+def _head_sha() -> str | None:
+    """Daldaki son commit (GitHub API). raw.githubusercontent dal adresini 5 dk önbellekte tutuyor:
+    yeni sürüm hemen görünmüyordu ("en son sürüm" deyip eskiyi gösteriyordu). Commit adresi önbellekten etkilenmez."""
+    try:
+        sha = _get(f"https://api.github.com/repos/{REPO}/commits/{BRANCH}", timeout=10,
+                   accept="application/vnd.github.sha").decode("ascii", "replace").strip()
+        return sha if re.fullmatch(r"[0-9a-f]{40}", sha) else None
+    except Exception:  # noqa: BLE001  (API sınırı vb.: dal adresine düşülür)
+        return None
+
+
 def latest_version() -> str:
-    txt = _get(RAW + "stt/__init__.py", timeout=10).decode("utf-8", "replace")
+    sha = _head_sha()
+    base = f"https://raw.githubusercontent.com/{REPO}/{sha}/" if sha else RAW
+    txt = _get(base + "stt/__init__.py", timeout=10).decode("utf-8", "replace")
     m = re.search(r'__version__\s*=\s*"([^"]+)"', txt)
     if not m:
         raise RuntimeError("Sürüm bilgisi okunamadı")
@@ -131,7 +147,9 @@ def apply(progress=lambda stage, text: None, tool_dir: Path = TOOL_DIR, data: by
     backup = tool_dir / BACKUP
     try:
         progress("download", "Yeni sürüm indiriliyor…")
-        data = data if data is not None else _get(ZIP_URL, timeout=120)
+        if data is None:
+            sha = _head_sha()
+            data = _get(f"https://codeload.github.com/{REPO}/zip/{sha}" if sha else ZIP_URL, timeout=120)
         with tempfile.TemporaryDirectory(prefix="stt-guncelleme-") as td:
             root = _extract(data, Path(td))
             progress("validate", "Yeni sürüm deneniyor…")
