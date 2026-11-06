@@ -732,19 +732,28 @@ class App:
         """Düzeltmeleri yaz (txt/srt/json/özet yeniden), adı konan seslerin imzasını kütüphaneye ekle."""
         try:
             from .outputs import write_all
-            from .voices import apply_corrections, learn_from_doc, save_reference
+            from .voices import apply_corrections, ensure_orig_turns, learn_from_doc, reference_turns, save_reference
             jp = self._doc_path(p)
             doc = json.loads(jp.read_text(encoding="utf-8"))
-            from .voices import reference_turns
+            st = self._state_dir()
             hyp = None if doc.get("corrected") else reference_turns(doc)  # programın kendi çıktısı (ölçüm için)
+            ensure_orig_turns(st, doc)  # eski çıktı: ilk ayırma turları düzeltmeden önce saklansın
             apply_corrections(doc, (data or {}).get("labels"), (data or {}).get("moves"), (data or {}).get("td"))
             base = jp.stem
             write_all(jp.parent, base, doc, f"{base} - ozet.md")
-            st = self._state_dir()
             save_reference(st, doc, hyp)
-            learned = learn_from_doc(st, doc, ignore=(self._cfg.reporter_label, self._cfg.td_label, "Teknik direktör"))
-            log.info("Konuşmacılar düzeltildi: %s (öğrenilen sesler: %s)", base[:60], ", ".join(learned) or "-")
-            return {"ok": True, "learned": learned}
+            skipped: list = []
+            try:
+                learned = learn_from_doc(st, doc, ignore=(self._cfg.reporter_label, self._cfg.td_label,
+                                                          "Teknik direktör"), skipped=skipped)
+            except OSError as e:  # sesler.json o an kilitli (virüs tarayıcı / eğitim süreci): düzeltmeler yazıldı
+                log.warning("Ses kütüphanesi güncellenemedi: %s", e)
+                return {"ok": True, "learned": [], "skipped": [],
+                        "warning": "Düzeltmeler kaydedildi ama ses kütüphanesi şu an güncellenemedi; birazdan tekrar "
+                                   "Kaydet'e basın."}
+            log.info("Konuşmacılar düzeltildi: %s (öğrenilen sesler: %s; öğrenilmeyen: %s)", base[:60],
+                     ", ".join(learned) or "-", ", ".join(skipped) or "-")
+            return {"ok": True, "learned": learned, "skipped": skipped}
         except Exception as e:  # noqa: BLE001
             log.exception("Konuşmacı düzeltmesi kaydedilemedi")
             return {"ok": False, "error": str(e)}

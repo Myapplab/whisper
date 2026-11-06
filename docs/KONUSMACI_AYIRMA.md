@@ -39,6 +39,21 @@ Bu dosya bir sonraki oturumun uygulayacağı plandır. Sırayla yap; her adımda
 - **Sortformer yapılmadı:** NVIDIA NeMo gerektirir (çok büyük, Windows'ta resmî destek zayıf, en çok 4 konuşmacı).
   DER ölçümü (adım 3) gelince community-1 ile karşılaştırılmaya değer olursa ayrı süreçte denenmeli.
 
+## 1.9.5'te yapılanlar (ses kütüphanesi imza yenileme, Gemini raporu 0.4/3)
+- "Kaydet": videonun kütüphanedeki kayıtları baştan kurulur (adı değişen / genel ada dönen konuşmacının eski kaydı
+  kalmaz). Konuşmasının %10'undan fazlası başka kişiye taşınmış kümenin imzası öğrenilmez (`voices.cluster_purity`,
+  `PURE_MIN`); bunun için ilk ayırma turları `ses/<key>.json` `turns`'te saklanır (eski çıktıda ilk düzeltmeden önce
+  satırlardan çıkarılır: `ensure_orig_turns`). Öğrenilmeyenler ekranda yazar.
+- "Kaydet ve eğit" (`stt egit`): her düzeltilmiş videoda kişi imzaları düzeltilmiş satırların sesinden yeniden
+  çıkarılır (`tune.voice_embeddings`: pyannote'un imza modeli `pipe._embedding`, ≥1.5 sn satırlar, uçlardan 0.2 sn
+  kırpılır, ≤10 sn parçalar, kişi başına ≤120 sn; ayırmaya giden sesle aynı ön işlem) ve o videonun karışık küme
+  imzalarının yerine yazılır (`src: "duzeltme"`). Elle eklenen ("+ Yeni kişi") kişiler de öğrenilir. Doğrulandı:
+  pyannote 4 VBx küme imzasını aynı modelin ham imzalarının ağırlıklı ortalamasıyla veriyor → karşılaştırılabilir.
+- `sesler.json` iki süreçten yazılabildiği için kilit dosyası (`_FileLock`); okunamazsa üzerine yazılmaz (eskiden
+  geçici okuma hatasında kütüphane boş sanılıp bütün sesler silinebilirdi); bozuk dosya `.bozuk-<zaman>` yedeklenir.
+- Gerçek modelle / Windows'ta DENENMEDİ (testler sahte imza modeliyle). Kullanıcıda ilk denemede günlükte
+  "Ses imzaları düzeltilmiş satırlardan yenilendi" satırı istensin.
+
 ## 1.9.4'te yapılanlar (Gemini raporu doğrulamasından, `docs/GEMINI_4_ARGON_BULGULAR.md` 0.4)
 - Kişi sayısı: işe verilen sayı kesin; `stt.toml` `min_speakers`/`max_speakers` yalnız sınır (eskiden `min_speakers`
   tek başına kesin sayı oluyordu); basın toplantısında en az 2 otomatik, podcast/film'de alt sınır yok (pyannote 4 VBx

@@ -5,6 +5,10 @@ Kullanıcı okuyucudaki "Konuşmacılar" ekranında bir videonun konuşmacılar�
 geçirir (bölütleme + ses imzaları önbellekte kalır), sonra kümeleme ayarlarının (kaç kişi var kararı) birçok
 değerini dener ve doğru cevaba en yakın sonucu veren ayarı ``<out>/.stt/konusmaci_ayar.json``'a yazar.
 Sonraki her konuşmacı ayırma bu ayarla yapılır (model başına ayrı).
+
+1.9.5: aynı sesten, düzeltilmiş satırlarla kişi imzaları da yeniden çıkarılır (``voice_embeddings``) ve ses
+kütüphanesindeki o videonun imzalarının yerine yazılır: ilk ayırmadaki karışık küme ortalaması yerine temiz imza;
+elle eklenen kişiler de öğrenilir.
 """
 from __future__ import annotations
 
@@ -199,6 +203,52 @@ def _hyp(out) -> list[list]:
     return [[seg.start, seg.end, str(spk)] for seg, _, spk in ann.itertracks(yield_label=True)]
 
 
+VOICE_MIN_SEC = 1.5   # imza için satırın en az süresi
+VOICE_TRIM = 0.2      # satırın başından / sonundan kırpılan (komşu konuşmacının sesi karışmasın)
+VOICE_WIN = 10.0      # bir parça en çok (pyannote'un 10 sn penceresi gibi)
+VOICE_MAX = 120.0     # bir videoda kişi başına en çok bu kadar ses kullanılır
+
+
+def voice_embeddings(emb_model, audio, segs, names, torch=None, sr: int = SR) -> dict:
+    """Düzeltilmiş satırların sesinden kişi imzaları: {ad: (imza, sn)}.
+
+    ``emb_model``: pyannote'un imza modeli (``pipe._embedding``: (parti, 1, örnek) -> (parti, boyut) numpy).
+    pyannote da kişinin (kümenin) imzasını bu modelin parça imzalarının ağırlıklı ortalamasıyla veriyor (VBx
+    kümeleme ham imza uzayında ortalar): yeni imza kütüphanedekilerle ve yeni videoların kümeleriyle karşılaştırılabilir.
+    Kısa satırlar (<1.5 sn) kullanılmaz; uzun satırlar 10 sn'lik parçalara bölünür."""
+    if emb_model is None or not names:
+        return {}
+    import numpy as np
+    if torch is None:
+        import torch  # noqa: PLC0415
+    min_n = max(int(getattr(emb_model, "min_num_samples", 0) or 0), int(0.5 * sr))
+    out: dict = {}
+    for name in names:
+        spans = sorted(((float(a), float(b)) for a, b, lab in segs or []
+                        if str(lab) == name and float(b) - float(a) >= VOICE_MIN_SEC),
+                       key=lambda x: x[0] - x[1])  # uzun satırlar önce
+        vecs, ws, total = [], [], 0.0
+        for a, b in spans:
+            t, b = a + VOICE_TRIM, b - VOICE_TRIM
+            while t < b and total < VOICE_MAX:
+                e = min(b, t + VOICE_WIN)
+                x = np.ascontiguousarray(np.asarray(audio[int(t * sr):int(e * sr)], dtype=np.float32))
+                t = e
+                if len(x) < min_n:
+                    continue
+                v = np.asarray(emb_model(torch.from_numpy(x)[None, None]), dtype=float)
+                v = v[0] if v.ndim == 2 else v
+                if v.ndim == 1 and np.all(np.isfinite(v)) and float(np.linalg.norm(v)) > 1e-9:
+                    vecs.append(v)
+                    ws.append(len(x) / sr)
+                    total += len(x) / sr
+            if total >= VOICE_MAX:
+                break
+        if vecs:
+            out[name] = (np.average(np.stack(vecs), axis=0, weights=ws).tolist(), round(float(sum(ws)), 1))
+    return out
+
+
 def pick_device() -> str | None:
     """Monitör bağlı olmayan en büyük ekran kartı (monitörlü karta kendiliğinden yük verilmez)."""
     from .engines import gpu_info
@@ -221,7 +271,9 @@ def run_tune(cfg, device: str = "cuda:0", progress=lambda text: None) -> dict:
     from .config import diar_agc_on
     d = Diarizer(cfg.diar_model, cfg.hf_token, device, agc=diar_agc_on(cfg), batch=cfg.diar_batch,
                  params=load_tuned(state_dir), cpu_ok=False)
-    files = []
+    from .voices import is_generic
+    ignore = (cfg.reporter_label, cfg.td_label, "Teknik direktör")
+    files, voice_sets = [], []
     for i, ref in enumerate(refs, 1):
         progress(f"Ses hazırlanıyor {i}/{len(refs)}: {(ref.get('title') or '')[:60]}")
         audio = load_wav(str(_audio_for(ref, state_dir, cfg)))
@@ -233,6 +285,19 @@ def run_tune(cfg, device: str = "cuda:0", progress=lambda text: None) -> dict:
             from .audio import agc
             agc(audio)
         files.append(({"waveform": d.torch.from_numpy(audio)[None], "sample_rate": SR, "uri": str(i)}, ref))
+        # ses kütüphanesi: düzeltilmiş satırların sesinden temiz kişi imzası (ayırmaya giden sesle aynı ön işlem)
+        try:
+            segs = ref.get("segs") or ref.get("turns") or []
+            names = sorted({str(lab) for _, _, lab in segs if not is_generic(str(lab), ignore)})
+            if names:
+                progress(f"Ses imzaları çıkarılıyor {i}/{len(refs)}")
+                got = voice_embeddings(getattr(d.pipe, "_embedding", None), audio, segs, names, torch=d.torch)
+                td = ref.get("td_label") if mode == "basin" else None
+                if got:
+                    voice_sets.append((ref.get("key") or "", [(n, v, bool(td and n == td), f"duzeltme:{n}")
+                                                             for n, (v, _sec) in got.items()]))
+        except Exception as e:  # noqa: BLE001  (imza ek iş; eğitimi durdurmasın)
+            log.warning("Ses imzası çıkarılamadı (%s): %s", (ref.get("title") or "")[:60], str(e)[:200])
     pipe = d.pipe
     base = {k: v for k, v in flat_params(pipe.parameters(instantiated=True)).items()
             if k in ("clustering.threshold", "clustering.Fa", "segmentation.min_duration_off")}
@@ -271,4 +336,19 @@ def run_tune(cfg, device: str = "cuda:0", progress=lambda text: None) -> dict:
     else:
         res["saved"] = False
         log.info("Konuşmacı ayarı: şu anki ayar zaten en iyisi (hata %%%.0f)", before * 100)
+    learned: list[str] = []
+    if voice_sets:
+        from .voices import VoiceLibrary
+        lib = VoiceLibrary(state_dir)
+        try:
+            for key, entries in voice_sets:
+                for n in lib.replace_video(key, d.model_used, entries, src="duzeltme",
+                                           names={e[0] for e in entries}):
+                    if n not in learned:
+                        learned.append(n)
+            log.info("Ses imzaları düzeltilmiş satırlardan yenilendi: %s", ", ".join(learned))
+        except OSError as e:  # sesler.json kilitli: ayar eğitimi yine kaydedildi
+            log.warning("Ses kütüphanesi güncellenemedi: %s", e)
+            res["voices_error"] = str(e)[:200]
+    res["voices"] = learned
     return res

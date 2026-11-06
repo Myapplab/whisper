@@ -488,10 +488,13 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     if (!ev.done) { setTrain("Eğitim: " + ev.text); return; }
     const r = ev.result;
     if (ev.error || !r) { setTrain("Eğitim yapılamadı: " + (ev.error || "?")); return; }
-    setTrain(r.saved ? "Eğitildi: konuşmacı hatası %" + r.before + " → %" + r.after + " (" + r.videos + " video, " + r.minutes + " dk). Yeni videolar bu ayarla ayrılır."
-      : "Şu anki ayar zaten en iyisi (hata %" + r.before + "). Daha çok video düzeltip tekrar deneyin.");
+    const v = (r.voices || []).length ? " Ses imzaları düzeltilmiş satırlardan yenilendi: " + r.voices.join(", ") + "."
+      : r.voices_error ? " Ses kütüphanesi şu an güncellenemedi; birazdan tekrar 'Kaydet ve eğit'e basın." : "";
+    setTrain((r.saved ? "Eğitildi: konuşmacı hatası %" + r.before + " → %" + r.after + " (" + r.videos + " video, " + r.minutes + " dk). Yeni videolar bu ayarla ayrılır."
+      : "Şu anki ayar zaten en iyisi (hata %" + r.before + "). Daha çok video düzeltip tekrar deneyin.") + v);
   }
-  function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove("show"), 3500); }
+  function toast(msg) { const t = $("#toast"); t.textContent = msg; t.classList.add("show"); clearTimeout(toast._t);
+    toast._t = setTimeout(() => t.classList.remove("show"), Math.min(15000, Math.max(3500, String(msg).length * 60))); }  // uzun mesaj okunabilsin
 
   // ---------- yeni iş
   function renderChips() {
@@ -789,7 +792,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
         rows.append(el("div", { class: "spkrow" }, el("span", { class: "dot " + col(s.id) }),
           el("input", { type: "text", list: "voiceNames", value: lab(s.id), placeholder: "Ad Soyad",
             oninput: e => { st.labels[s.id] = e.target.value; }, onchange: () => render() }),
-          el("span", { class: "hint" }, (approx ? "~" : "") + fmtDur(tot[s.id] || 0) + (s.voice ? " · sesinden tanındı (%" + Math.round(s.voice * 100) + ")" : "") + (s.sig ? "" : " · ses imzası yok")),
+          el("span", { class: "hint" }, (approx ? "~" : "") + fmtDur(tot[s.id] || 0) + (s.voice ? " · sesinden tanındı (%" + Math.round(s.voice * 100) + ")" : "") + (s.sig ? "" : " · ses imzası yok ('Kaydet ve eğit' çıkarır)")),
           d.mode === "basin" ? el("label", { class: "hint" }, el("input", { type: "radio", name: "tdpick", checked: st.td === s.id, onchange: () => { st.td = s.id; } }), " teknik direktör") : null));
       }
       r.append(rows);
@@ -826,7 +829,9 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
       for (const s of st.spk) if (s.id.startsWith("ELLE_")) labels[s.id] = lab(s.id);
       const res = await call("speakers_save", path, { labels, moves: st.moves, td: st.td });
       if (!res || !res.ok) { toast("Kaydedilemedi: " + ((res && res.error) || "?")); return; }
-      toast(res.learned && res.learned.length ? "Kaydedildi. Öğrenilen sesler: " + res.learned.join(", ") : "Kaydedildi.");
+      const sk = (res.skipped || []).length ? " Sesi şimdi öğrenilmedi: " + res.skipped.join(", ") +
+        " (satırlarının bir kısmı başka kişiye taşındı ya da yeni kişi; 'Kaydet ve eğit' düzeltilmiş satırlardan temiz imza çıkarır)." : "";
+      toast(res.warning || ((res.learned && res.learned.length ? "Kaydedildi. Öğrenilen sesler: " + res.learned.join(", ") + "." : "Kaydedildi.") + sk));
       if (train) {
         const t = await call("speakers_train");
         if (!t || !t.ok) { toast("Eğitilemedi: " + ((t && t.error) || "?")); return; }

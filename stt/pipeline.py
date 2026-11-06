@@ -1228,7 +1228,8 @@ class Pipeline:
         from .voices import VoiceLibrary, apply_voice_names, save_doc_voices
         st = self.out_root / ".stt"
         try:
-            save_doc_voices(st, job.item.key, dj.get("model"), emb)
+            # turlar da saklanır: düzeltmede kümenin ne kadarı başka kişiye taşındı (karışık küme öğrenilmesin)
+            save_doc_voices(st, job.item.key, dj.get("model"), emb, dj.get("turns"))
             if not self.cfg.voice_match:
                 return td_label
             lib = VoiceLibrary(st)

@@ -13,7 +13,7 @@ Ortak hafıza bu dosyadır. **Oturum sonunda güncelle** (Son durum + liste) ve 
 ## ŞU ANKİ İŞ: konuşmacı ayırma iyileştirme (adım adım; her adım ayrı push)
 Kullanıcı istedi: DiariZen + "acımasız eleştiri"nin 10 maddesinin hepsi. Kural: bir adım bitince push et, burada ✅ yap,
 sıradakine geç. Kullanım biterse diğer profil ilk ✅ olmayan adımdan devam eder.
-**SIRADAKİ (1.9.4 sonrası):** Gemini raporu 0.4/3 = ses kütüphanesi imza yenileme (kullanıcının istediği 2. adım; 1.9.5). Sonra K6b kullanıcıda DiariZen kurulumu, K6d + K9 + K4-açık + agc A/B: kullanıcı 3-5 video düzeltince K5 ölçümüyle karar (1.9.4'ten beri "Kontrol" ayara göre ayrı doğruluk gösterir).
+**SIRADAKİ (1.9.5 sonrası):** kullanıcı Güncelle'ye basıp 3-5 basın toplantısını düzeltecek, "Kontrol" ekranını paylaşacak. Gelince: K5 ölçümüyle K4-açık (merge eşikleri) + agc A/B ("Kontrol" ayara göre ayrı doğruluk gösterir) + K6b/K6d (DiariZen) + SUPlime denemesi. İlk eğitimde günlükte "Ses imzaları düzeltilmiş satırlardan yenilendi" satırı istensin (gerçek modelle denenmedi).
 - [x] K1 (#10) ✅ (doctor: sürüm 3.x uyarısı; yedek model uyarısı zaten vardı) Kontrol: pyannote < 4 ise "community-1 çalışmıyor, eski 3.1 kullanılıyor" uyarısı + düzeltme yolu.
 - [x] K2 (#4) ✅ ZATEN VARDI (pipeline `_diarize_task`: min_speakers en az 2) Basın modunda en az 2 konuşmacı otomatik (`min_speakers`), kullanıcı sayı girerse o geçerli.
       ✅ 1.9.4 DÜZELTİLDİ: kod 2'yi her modda uyguluyordu (tek kişilik videoda pyannote 4 VBx kişiyi ikiye bölüyordu)
@@ -37,6 +37,11 @@ sıradakine geç. Kullanım biterse diğer profil ilk ✅ olmayan adımdan devam
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
+- 1.9.5 (Gemini raporu 0.4/3, kullanıcının 2. adımı; 209 test): ses kütüphanesi. "Kaydet": videonun kayıtları baştan
+  kurulur, konuşmasının %10'undan fazlası başka kişiye taşınmış kümenin imzası öğrenilmez (ekranda "Sesi şimdi
+  öğrenilmedi: ..."). "Kaydet ve eğit": imzalar düzeltilmiş satırların sesinden yeniden çıkarılır, elle eklenen
+  kişiler de öğrenilir (eğitim sonucu "Ses imzaları ... yenilendi"). `sesler.json` kilitli + okunamazsa üzerine
+  yazılmaz. Ayrıntı: `docs/KONUSMACI_AYIRMA.md` "1.9.5". Gerçek pyannote modeliyle / Windows'ta DENENMEDİ.
 - 1.9.4 (Gemini raporu 0.4/1, kullanıcı istedi; 195 test): en az 2 konuşmacı yalnız basın toplantısında, `stt.toml`
   min/max yalnız sınır; "Konuşmacılar" ekranında gerçek süre; Ayarlar'da OpenAI anahtarı + kayıtlı anahtarları "Sil"
   (ortam değişkenindeki silinemez, ekranda yazar); DiariZen seçiliyken pyannote yalnız yedek gerekince yüklenir, HF

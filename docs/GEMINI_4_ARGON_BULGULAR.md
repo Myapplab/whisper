@@ -75,7 +75,7 @@ kartında hiçbir şey denenmedi. İşaretler: ✅ doğru · ⚠️ kısmen / ab
    "Kontrol" ayara göre ayrı gösterir), SUPlime ↔ community-1, kelime hizalama (torchaudio 2.9'da `forced_align`
    kaldırıldı → `ctc-forced-aligner` gibi ayrı paket). SUPlime ağırlık lisansı için Gemini "CC BY-NC 4.0" diyor
    (Claude huggingface.co'ya erişemedi, doğrulamadı); kişisel/ticari olmayan kullanım için uygun.
-3. Ses kütüphanesi: imzayı düzeltilmiş satırlardan yeniden çıkar (ayırma işçisinde, ekran kartında).
+3. Ses kütüphanesi: imzayı düzeltilmiş satırlardan yeniden çıkar. **✅ 1.9.5:** "Kaydet" karışık kümeyi öğrenmez, "Kaydet ve eğit" (ayrı süreç, ekran kartı) imzayı düzeltilmiş satırların sesinden çıkarır.
 
 ---
 

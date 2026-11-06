@@ -7,12 +7,17 @@
 - Yeni videoda her konuşmacının imzası kütüphanedekilerle kosinüs benzerliğine göre karşılaştırılır; eşiği
   geçen konuşmacı o adla yazılır.
 - Düzeltilmiş konuşmacı turları ``<out>/.stt/duzeltme/<key>.json``'a yazılır (ölçüm / ileride ince ayar verisi).
+- 1.9.5: "Kaydet"te bir videonun kütüphanedeki kayıtları baştan kurulur. Konuşmasının %10'undan fazlası başka
+  kişiye taşınmış (karışık) kümenin imzası öğrenilmez (``PURE_MIN``). "Kaydet ve eğit"te (``stt egit``, ekran kartında) imzalar
+  düzeltilmiş satırların sesinden yeniden çıkarılır (``src="duzeltme"``); elle eklenen kişiler de böylece öğrenilir.
 """
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
+from collections import defaultdict
 from pathlib import Path
 
 GENERIC = re.compile(r"^\s*(konuşmacı|konusmaci|speaker|kişi|kisi)\s*(\d+|\?)?\s*$", re.I)
@@ -21,6 +26,7 @@ MAX_PER_NAME = 30
 
 MARGIN = 0.05  # en iyi iki aday arasındaki en az benzerlik farkı
 SURE = 0.15    # eşiğin bu kadar üstündeyse fark aranmaz
+PURE_MIN = 0.9  # küme imzası, kümenin konuşmasının en az bu kadarı düzeltmeden sonra da aynı kişideyse öğrenilir
 
 
 def is_generic(label: str | None, extra=()) -> bool:
@@ -43,10 +49,11 @@ def _unit(v):
 
 
 def _write(path: Path, data) -> None:
+    from .util import replace_retry
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")  # iki süreç aynı geçici dosyaya yazmasın
     tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(path)
+    replace_retry(tmp, path)  # Windows'ta dosya bir anlığına kilitliyse tekrar dener
 
 
 def _read(path: Path, default):
@@ -56,10 +63,55 @@ def _read(path: Path, default):
         return default
 
 
+class _FileLock:
+    """Kütüphaneye iki süreç yazabilir (arayüz "Kaydet" + eğitim süreci): oku-değiştir-yaz arasında kilit dosyası.
+    Çöken süreçten kalan kilit ``stale`` sn sonra kaldırılır; ``timeout``da kilitsiz devam edilir (yazma yine atomik)."""
+
+    def __init__(self, path: Path, timeout: float = 10.0, stale: float = 60.0):
+        self.path = Path(str(path) + ".lock")
+        self.timeout, self.stale, self.held = timeout, stale, False
+
+    def __enter__(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        t0 = time.time()
+        while True:
+            try:
+                os.close(os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+                self.held = True
+                return self
+            except FileExistsError:
+                try:
+                    if time.time() - self.path.stat().st_mtime > self.stale:
+                        self.path.unlink(missing_ok=True)
+                        continue
+                except OSError:
+                    pass
+                if time.time() - t0 > self.timeout:
+                    return self
+                time.sleep(0.05)
+            except OSError:  # salt okunur klasör vb.: kilitsiz devam
+                return self
+
+    def __exit__(self, *exc):
+        if self.held:
+            try:
+                self.path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            self.held = False
+        return False
+
+
 # ------------------------------------------------------------------ videonun konuşmacı imzaları
-def save_doc_voices(state_dir: Path, key: str, model: str | None, emb: dict | None) -> None:
+def save_doc_voices(state_dir: Path, key: str, model: str | None, emb: dict | None,
+                    turns: list | None = None) -> None:
+    """Videonun konuşmacı imzaları. ``turns``: imzaların hesaplandığı ilk ayırma turları [başla, bitir, sid] —
+    düzeltmeden sonra kümenin ne kadarının başka kişiye taşındığı (karışık küme) bunlardan bulunur."""
     if emb:
-        _write(Path(state_dir) / "ses" / f"{_safe(key)}.json", {"model": model, "emb": emb})
+        data = {"model": model, "emb": emb}
+        if turns:
+            data["turns"] = [[round(float(a), 3), round(float(b), 3), str(s)] for a, b, s in turns]
+        _write(Path(state_dir) / "ses" / f"{_safe(key)}.json", data)
 
 
 def load_doc_voices(state_dir: Path, key: str) -> dict:
@@ -78,6 +130,32 @@ class VoiceLibrary:
     def save(self, d: dict) -> None:
         _write(self.path, d)
 
+    def _load_for_update(self) -> dict:
+        """Değiştirmeden önce okuma: dosya o an okunamıyorsa (Windows'ta virüs tarayıcı / başka süreç) birkaç kez
+        dener, yine olmazsa hata verir; kütüphane "boş" sanılıp üzerine yazılmasın (bütün sesler silinirdi).
+        Bozuk dosya yedeklenip (``.bozuk-<zaman>``) boş başlanır."""
+        for i in range(5):
+            if not self.path.exists():
+                return {"voices": {}}
+            try:
+                d = json.loads(self.path.read_text(encoding="utf-8"))
+            except OSError:
+                if i == 4:
+                    raise
+                time.sleep(0.2)
+                continue
+            except ValueError:
+                d = None
+            if isinstance(d, dict) and isinstance(d.get("voices"), dict):
+                return d
+            bad = self.path.with_name(self.path.name + time.strftime(".bozuk-%Y%m%d-%H%M%S"))
+            try:
+                self.path.replace(bad)
+            except OSError:
+                pass
+            return {"voices": {}}
+        return {"voices": {}}
+
     def names(self) -> list[dict]:
         v = self.load()["voices"]
         return [{"name": n, "n": len(e.get("embs", [])), "td": bool(e.get("td"))}
@@ -86,35 +164,72 @@ class VoiceLibrary:
     def td_names(self) -> set[str]:
         return {n for n, e in self.load()["voices"].items() if e.get("td")}
 
-    def add(self, name: str, emb, model: str | None, key: str, spk: str, td: bool = False) -> bool:
-        """Bir videodaki bir konuşmacının imzasını ``name`` altına ekle. Aynı video+konuşmacı önceden başka
-        ada eklenmişse oradan alınır (yeniden adlandırma çift kayıt yapmasın)."""
-        if _unit(emb) is None or not name.strip():
-            return False
-        name = name.strip()
-        d = self.load()
-        voices = d["voices"]
-        for n in list(voices):
-            voices[n]["embs"] = [x for x in voices[n].get("embs", []) if not (x.get("key") == key and x.get("spk") == spk)]
-            if not voices[n]["embs"]:
-                del voices[n]
+    @staticmethod
+    def _drop(voices: dict, keep) -> int:
+        """``keep(ad, x)`` False olan imzaları çıkar; boşalan adı sil. Döner: çıkan imza sayısı."""
+        n = 0
+        for name in list(voices):
+            embs = voices[name].get("embs", [])
+            kept = [x for x in embs if keep(name, x)]
+            n += len(embs) - len(kept)
+            voices[name]["embs"] = kept
+            if not kept:
+                del voices[name]
+        return n
+
+    @staticmethod
+    def _append(voices: dict, name: str, emb, model, key: str, spk: str, td: bool, src: str) -> None:
         e = voices.setdefault(name, {"embs": []})
         e["td"] = bool(e.get("td")) or bool(td)
         e["embs"].append({"model": model, "emb": [round(float(x), 5) for x in emb], "key": key, "spk": spk,
-                          "t": time.strftime("%Y-%m-%d")})
+                          "src": src, "t": time.strftime("%Y-%m-%d")})
         same = [x for x in e["embs"] if x.get("model") == model]
         if len(same) > MAX_PER_NAME:  # en eskisi çıkar
             drop = same[0]
             e["embs"] = [x for x in e["embs"] if x is not drop]
-        self.save(d)
+
+    def add(self, name: str, emb, model: str | None, key: str, spk: str, td: bool = False, src: str = "kume") -> bool:
+        """Bir videodaki bir konuşmacının imzasını ``name`` altına ekle. Aynı video+konuşmacı önceden başka
+        ada eklenmişse oradan alınır (yeniden adlandırma çift kayıt yapmasın)."""
+        if _unit(emb) is None or not name.strip():
+            return False
+        with _FileLock(self.path):
+            d = self._load_for_update()
+            self._drop(d["voices"], lambda _n, x: not (x.get("key") == key and x.get("spk") == spk))
+            self._append(d["voices"], name.strip(), emb, model, key, spk, td, src)
+            self.save(d)
         return True
 
-    def remove(self, name: str) -> bool:
-        d = self.load()
-        if name in d["voices"]:
-            del d["voices"][name]
+    def replace_video(self, key: str, model: str | None, entries, src: str = "kume",
+                      names: set | None = None) -> list[str]:
+        """Bir videonun bu modeldeki imzalarını ``entries`` ile değiştir (tek kilitte). ``names`` verilirse yalnız bu
+        adların eski imzaları çıkar (eğitimde imzası çıkarılamayan kişinin önceki imzası kalsın), yoksa hepsi.
+        ``entries``: [(ad, imza, td, spk), ...] (aynı ad birden çok kez olabilir) ya da {ad: (imza, td)}.
+        Döner: eklenen adlar (sırasıyla, tekrarsız)."""
+        if isinstance(entries, dict):
+            entries = [(n, v[0], v[1] if len(v) > 1 else False, f"{src}:{n}") for n, v in entries.items()]
+        good = [((n or "").strip(), e, bool(td), str(spk)) for n, e, td, spk in entries or []
+                if (n or "").strip() and _unit(e) is not None]
+        with _FileLock(self.path):
+            d = self._load_for_update()
+            self._drop(d["voices"], lambda n, x: not (x.get("key") == key and x.get("model") == model
+                                                      and (names is None or n in names)))
+            for name, emb, td, spk in good:
+                self._append(d["voices"], name, emb, model, key, spk, td, src)
             self.save(d)
-            return True
+        out: list[str] = []
+        for g in good:
+            if g[0] not in out:
+                out.append(g[0])
+        return out
+
+    def remove(self, name: str) -> bool:
+        with _FileLock(self.path):
+            d = self._load_for_update()
+            if name in d["voices"]:
+                del d["voices"][name]
+                self.save(d)
+                return True
         return False
 
     def centroids(self, model: str | None) -> dict:
@@ -292,18 +407,66 @@ def _diar_setup(doc: dict) -> dict:
     return out
 
 
-def learn_from_doc(state_dir: Path, doc: dict, ignore=()) -> list[str]:
-    """Kaydedilen (düzeltilmiş) çıktıdaki adı konmuş konuşmacıların imzalarını kütüphaneye ekle."""
-    side = load_doc_voices(state_dir, doc.get("key") or "")
+def cluster_purity(orig_turns: list, segments: list) -> dict:
+    """İlk ayırmadaki her kümenin (sid) konuşmasının, düzeltilmiş satırlarda yine o sid'de kalan oranı (0..1).
+    Kullanıcı kümenin satırlarını başka kişiye taşıdıkça düşer: o kümenin imzası başkasının sesini de içerir."""
+    cur = sorted((float(s["start"]), float(s["end"]), str(s.get("speaker_id"))) for s in segments or []
+                 if s.get("speaker_id") and s.get("start") is not None and s.get("end") is not None)
+    same: dict = defaultdict(float)
+    tot: dict = defaultdict(float)
+    j0 = 0
+    for a, b, sid in sorted((float(a), float(b), str(s)) for a, b, s in orig_turns or []):
+        while j0 < len(cur) and cur[j0][1] <= a:
+            j0 += 1
+        j = j0
+        while j < len(cur) and cur[j][0] < b:
+            ov = min(b, cur[j][1]) - max(a, cur[j][0])
+            if ov > 0:
+                tot[sid] += ov
+                if cur[j][2] == sid:
+                    same[sid] += ov
+            j += 1
+    return {sid: same[sid] / t for sid, t in tot.items() if t > 0}
+
+
+def ensure_orig_turns(state_dir: Path, doc: dict) -> bool:
+    """Eski (1.9.5 öncesi) çıktıda ilk ayırma turları yok: ilk düzeltmeden ÖNCE (satırlar hâlâ programın
+    ataması) satırlardan çıkarıp saklar. Döner: saklandı mı."""
+    key = doc.get("key") or ""
+    side = load_doc_voices(state_dir, key)
+    if not side.get("emb") or side.get("turns") or doc.get("corrected"):
+        return False
+    turns = [[s["start"], s["end"], s["speaker_id"]] for s in doc.get("segments") or []
+             if s.get("speaker_id") and s.get("start") is not None and s.get("end") is not None]
+    if not turns:
+        return False
+    save_doc_voices(state_dir, key, side.get("model"), side["emb"], turns)
+    return True
+
+
+def learn_from_doc(state_dir: Path, doc: dict, ignore=(), skipped: list | None = None) -> list[str]:
+    """Kaydedilen (düzeltilmiş) çıktıdaki adı konmuş konuşmacıların imzalarını kütüphaneye yaz.
+
+    Bu videonun kütüphanedeki kayıtları baştan kurulur (adı değişen / genel ada dönen / silinen konuşmacının eski
+    kaydı kalmasın). Satırlarının %10'undan fazlası başka kişiye taşınmış kümenin imzası öğrenilmez (karışık);
+    elle eklenen kişinin imzası yoktur. İkisi de ``skipped``e yazılır: "Kaydet ve eğit" bunların temiz imzasını
+    düzeltilmiş satırların sesinden çıkarır."""
+    key = doc.get("key") or ""
+    side = load_doc_voices(state_dir, key)
     emb, model = side.get("emb") or {}, side.get("model")
-    if not emb:
-        return []
-    lib = VoiceLibrary(state_dir)
     td = doc.get("td_label") if doc.get("speaker_mode") == "basin" else None
-    learned = []
+    pur = cluster_purity(side.get("turns") or [], doc.get("segments") or []) if side.get("turns") else {}
+    entries: list = []  # aynı ada iki küme olabilir (ör. hoca ikiye bölünmüştü): ikisi de öğrenilir
+    missed: list = []
     for sid, v in (doc.get("speakers") or {}).items():
-        lab = v.get("label")
-        if sid in emb and not is_generic(lab, ignore):
-            if lib.add(lab, emb[sid], model, doc.get("key") or "", sid, td=bool(td and lab == td)):
-                learned.append(lab)
+        lab = (v.get("label") or "").strip()
+        if is_generic(lab, ignore):
+            continue
+        if sid not in emb or (sid in pur and pur[sid] < PURE_MIN):
+            missed.append(lab)
+            continue
+        entries.append((lab, emb[sid], bool(td and lab == td), sid))
+    learned = VoiceLibrary(state_dir).replace_video(key, model, entries) if emb else []
+    if skipped is not None:
+        skipped.extend(n for n in dict.fromkeys(missed) if n not in learned and n not in skipped)
     return learned
