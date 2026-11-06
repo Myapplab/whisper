@@ -532,6 +532,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     const r = await call("start", text, state.files, opts());
     $("#btnStart").disabled = false;
     if (!r) return;
+    if (r.error) { toast(r.error); return; }
     if (r.collections && r.collections.length) {
       $("#chUrl").value = r.collections[0]; setMode("channel"); toast(r.warning);
       if (!r.count) return;
@@ -580,6 +581,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     const urls = state.ch.items.filter(e => state.chSel.has(e.url)).map(e => e.url);
     if (!urls.length) { toast("Hiç video seçilmedi."); return; }
     const r = await call("start_selected", urls, { ...opts(), collection: state.ch.collection });
+    if (r && r.error) { toast(r.error); return; }
     if (r) { toast(r.count + " video kuyruğa eklendi. Metinler ayrıca Koleksiyonlar/" + state.ch.collection + " içinde toplanır."); setView("queue"); }
   }
   $("#btnFollow").onclick = async () => {
@@ -637,6 +639,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
         j.lines && j.lines.length ? el("div", { class: "livebox" }, j.lines.slice(-40).join("\n")) : null,
         tags.length ? el("div", { class: "meta" }, tags) : null,
         j.diar_error ? el("div", { class: "err" }, "Konuşmacılar ayrılamadı: " + j.diar_error) : null,
+        j.skipped ? el("div", { class: "err" }, "Çevrilemeyen bölüm (metinde boş): " + j.skipped.join(", ") + ". Tekrar işlemek için linki yeniden ekleyin.") : null,
         j.error ? el("div", { class: "err" }, j.error) : null,
         j.fpl ? el("div", { class: "meta" }, "FPL GW" + String(j.fpl.gw).padStart(2, "0") + " " + j.fpl.team + " — presser.py " + (j.fpl_rc === 0 ? "çalıştı" : "hata verdi (günlüğe bakın)")) : null,
         (j.txt || j.out_dir || j.kind === "err" || liveOn || j.live_txt || canStop) ? el("div", { class: "row" },
@@ -938,7 +941,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     if (ev.type === "diar") { if (ev.ok) j.speakers = ev.speakers; else j.diar_error = ev.error; }
     if (ev.type === "done") {
       Object.assign(j, { status: "Bitti", kind: "ok", txt: ev.txt, out_dir: ev.out_dir, dataset: ev.dataset, speakers: ev.speakers || 0,
-        diar_error: ev.diar_error, duration: ev.duration, fpl: ev.fpl, fpl_rc: ev.fpl_rc, news: ev.news, liveOn: false });
+        diar_error: ev.diar_error, skipped: ev.skipped, duration: ev.duration, fpl: ev.fpl, fpl_rc: ev.fpl_rc, news: ev.news, liveOn: false });
       refreshDataset();
     }
     if (ev.type === "skipped") {

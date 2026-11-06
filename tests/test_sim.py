@@ -106,3 +106,23 @@ def test_cuda_error_in_music_separation_retries_without_it(tmp_path):
     p._on_msg({"type": "error", "wid": "diar", "tid": d["id"],
                "error": "RuntimeError: müzik ayıklama sırasında ekran kartı hatası: CUDA error: unknown error"})
     assert p.dpool.respawned == ["diar"] and p.dbacklog[0]["vocals"] is False and not job.diar_error
+
+
+def test_retry_redoes_skipped_chunk_and_failed_diarization(tmp_path):
+    import json
+
+    from stt.pipeline import _finished
+    d = tmp_path / "parcalar"
+    d.mkdir()
+    (d / "0000.json").write_text(json.dumps({"segments": [], "language": "en"}))
+    (d / "0001.json").write_text(json.dumps({"segments": [], "language": None, "skipped": True}))
+    (tmp_path / "konusmaci.json").write_text(json.dumps({"error": "CUDA error", "turns": []}))
+    assert _finished(d / "0000.json") and not _finished(d / "0001.json")
+    assert not _finished(tmp_path / "konusmaci.json") and not _finished(tmp_path / "yok.json")
+
+
+def test_done_video_with_skipped_chunk_is_reprocessed(tmp_path):
+    from test_stability import Item
+    p = _pipe(tmp_path, ("cuda:1",))
+    it = Item("url", "https://x/1", key="u_1")
+    assert "çevrilemeyen" in p._redo_reason(it, {"info": {"language": "en", "skipped_chunks": [[0, 60]]}})

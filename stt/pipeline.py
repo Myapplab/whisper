@@ -57,6 +57,18 @@ class Job:
     lang_checked: bool = False
 
 
+def _finished(p: Path) -> bool:
+    """Sürdürmede bu parça / konuşmacı dosyası bitmiş sayılır mı? Atlanan parça ve başarısız ayırma sayılmaz:
+    "Tekrar dene"de yeniden denenir (eskiden boş dosya "bitti" sayılıyor, hiç yeniden denenmiyordu)."""
+    if not p.exists():
+        return False
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return not (isinstance(d, dict) and (d.get("skipped") or d.get("error")))
+
+
 def is_ram_error(err: str) -> bool:
     e = err.lower()
     return any(x in e for x in ("memoryerror", "bad_alloc", "not enough memory", "winerror 1455", "mkl_malloc",
@@ -380,6 +392,8 @@ class Pipeline:
         info = prev.get("info") or {}
         if info.get("live") and not item.extra.get("live"):
             return "Önceki çıktı canlı yayın kaydıydı; videonun tamamı yeniden işleniyor"
+        if info.get("skipped_chunks"):
+            return "Önceki çıktıda çevrilemeyen bölüm vardı; yeniden işleniyor"
         if self._opt(item, "diarize") and not info.get("diarized"):
             return "Önceki çıktıda konuşmacı ayrımı yok"
         if self._opt(item, "diarize") and info.get("diarized"):
@@ -505,8 +519,8 @@ class Pipeline:
         tasks = [self._transcribe_task(item, i, job.wav, c["start"], c["end"], lang, prompt, n=len(chunks),
                                        speech=(c["speech_start"], c["speech_end"]))
                  for i, c in enumerate(chunks)
-                 if not (job.work / "parcalar" / f"{i:04d}.json").exists()]  # sürdürme: biten parçalar atlanır
-        if self._opt(item, "diarize") and not (job.work / "konusmaci.json").exists():
+                 if not _finished(job.work / "parcalar" / f"{i:04d}.json")]  # sürdürme: biten parçalar atlanır
+        if self._opt(item, "diarize") and not _finished(job.work / "konusmaci.json"):
             tasks.insert(0, self._diarize_task(item, job.wav))
         done_before = len(chunks) - sum(1 for t in tasks if t["kind"] == "transcribe")
         if done_before:
@@ -764,6 +778,8 @@ class Pipeline:
         (aynı anda çalışınca metin işçisi 'invalid device ordinal' ile hep düşüyordu): sırayla."""
         if not self.pool or getattr(self.pool, "threads", False):
             return set()
+        if any(j.live_active for j in self.jobs.values()):
+            return set()  # canlı yayın sürüyor: metin gecikmesin (ayırma kısa, aynı anda çalışabilir)
         ddev = (getattr(self.dpool, "devices", None) or [None])[0] if self.dpool is not None else None
         if ddev is None and self.dbacklog:
             ddev = self._diar_device()
@@ -903,7 +919,7 @@ class Pipeline:
                 log.warning("PARÇA ATLANDI (%s–%s) çevrilemedi: %s", fmt_clock(task["start"]), fmt_clock(task["end"]),
                             m["error"][:160])
                 (job.work / "parcalar" / f"{task['idx']:04d}.json").write_text(
-                    json.dumps({"segments": [], "language": None}), encoding="utf-8")
+                    json.dumps({"segments": [], "language": None, "skipped": True}), encoding="utf-8")
                 job.done_chunks += 1
                 job.pending.discard(tid)
                 self._maybe_finalize(job)
@@ -1301,6 +1317,7 @@ class Pipeline:
                        info={"language": doc["language"], "duration_s": doc["duration_s"], "diarized": bool(speakers),
                              "fpl": doc.get("fpl"), "fpl_returncode": fpl_res["returncode"] if fpl_res else None,
                              "json": str(paths["json"]), "speaker_mode": doc.get("speaker_mode"),
+                             "skipped_chunks": info.get("skipped_chunks") or None,
                              "live": True if job.live else None})
         if job.item.extra.get("collection"):
             try:
@@ -1318,6 +1335,7 @@ class Pipeline:
         self.emit("done", job.item, title=doc["title"], out_dir=str(out), txt=str(paths["txt"]),
                   json=str(paths["json"]), dataset=doc["dataset"], speakers=len(speakers),
                   diar_error=None if speakers else job.diar_error, duration=doc["duration_s"], fpl=doc.get("fpl"),
+                  skipped=[f"{fmt_clock(a)}–{fmt_clock(b)}" for a, b in info.get("skipped_chunks") or []] or None,
                   fpl_rc=fpl_res["returncode"] if fpl_res else None,
                   live_txt=str(job.live_txt) if job.live_txt else None,
                   news=str(paths["news"]) if paths.get("news") else None)

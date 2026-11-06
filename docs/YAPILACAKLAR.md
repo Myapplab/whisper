@@ -4,6 +4,11 @@ Kullanıcı iki Claude hesabıyla (iki profil) sırayla çalışır: biri sını
 Ortak hafıza bu dosyadır. **Oturum sonunda güncelle** (Son durum + liste) ve `main`'e push et.
 
 ## Son durum
+- Sürüm 1.8.5 (senaryo turu 2): "Tekrar dene"de atlanan parça ve başarısız ayırma yeniden yapılır
+  (`pipeline._finished`; eskiden boş/hata dosyası "bitti" sayılıyordu); atlanan bölüm kartta gösterilir, linki
+  yeniden ekleyince video yeniden işlenir (`_redo_reason`); canlı yayın sürerken sıralı çalışma kapalı (canlı metin
+  gecikmesin); eğitim sürerken Başlat engelli, uygulama kapanınca eğitim süreci kapanır.
+  Bilinen sınır: iki kartta metin işçisi varsa sıralı çalışma tam değil (ortak görev kuyruğu); kullanıcıda 3080 boş.
 - Sürüm 1.8.4: Memphis videosunda ayırma "CUDA error: unknown error" ile düştü, video konuşmacısız bitti. Artık ayırmada
   ekran kartı hatası olunca süreç yeniden açılıp görev 2 kez daha deneniyor (2.'de müzik ayıklamasız);
   `_vocals` CUDA hatasını yutmuyor ("müzik ayıklama sırasında ..." ile hemen bildiriyor → müzik ayıklamasız tekrar).

@@ -486,6 +486,9 @@ class App:
         self._inbox.put(it)
 
     def start(self, text: str, paths: list[str], opts: dict) -> dict:
+        if getattr(self, "_training", False):  # eğitim ekran kartını kullanıyor: iki iş aynı kartta çakışmasın
+            msg = "Konuşmacı eğitimi sürüyor; birkaç dakika sonra tekrar Başlat'a basın."
+            return {"ok": False, "count": 0, "error": msg, "warning": msg}
         from .channel import is_collection_url
         urls = [u.rstrip(").,;") for u in URL_RE.findall(text or "")]
         collections = [u for u in urls if is_collection_url(u)] if not opts.get("live") else []
@@ -583,6 +586,9 @@ class App:
                 "matched": sum(1 for e in items if e.get("match")), "collection": coll, "ai": use_ai}
 
     def start_selected(self, urls: list[str], opts: dict) -> dict:
+        if getattr(self, "_training", False):  # eğitim ekran kartını kullanıyor: iki iş aynı kartta çakışmasın
+            msg = "Konuşmacı eğitimi sürüyor; birkaç dakika sonra tekrar Başlat'a basın."
+            return {"ok": False, "count": 0, "error": msg, "warning": msg}
         from .sources import Item
         n = 0
         for u in urls or []:
@@ -735,6 +741,7 @@ class App:
                 pr = subprocess.Popen([console_python(), "-m", "stt", "egit", "-o", str(Path(self._cfg.out_dir).resolve())],
                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8",
                                       errors="replace", cwd=str(TOOL_DIR))
+                self._train_proc = pr
                 for line in pr.stdout:  # type: ignore[union-attr]
                     line = line.strip()
                     if line.startswith("ILERLEME: "):
@@ -904,6 +911,12 @@ def _shutdown(app: "App") -> None:
             app._pipe.kill()
     except Exception:  # noqa: BLE001
         pass
+    tp = getattr(app, "_train_proc", None)  # eğitim süreci ekran kartında açık kalmasın
+    if tp is not None and tp.poll() is None:
+        try:
+            tp.kill()
+        except Exception:  # noqa: BLE001
+            pass
     logging.shutdown()
     os._exit(0)
 
