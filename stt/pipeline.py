@@ -32,6 +32,7 @@ HELPER_PARK_S = 60.0     # başka programlar ayrılan belleği bu kadar süre a�
 # yardımcının toplu boyuta göre kartta kapladığı bellek (GB, tahmin + pay). faster-whisper README (large-v2 fp16,
 # beam 5, RTX 3070 Ti): tekli 4.5 GB, toplu 8 6.1 GB. Gerçekte fazla gelirse kapanır, sonra bir küçük boyutla açılır.
 HELPER_FOOT_GB = {8: 6.4, 4: 5.6, 2: 5.2}
+HELPER_REGROW_S = 1800.0  # küçültülen toplu boyut / öğrenilen bellek bu kadar sonra varsayılana döner
 HELPER_IDLE_PARK_S = 300.0  # bu kadar süre iş fazlası olmazsa yardımcı kapatılır (model belleği karta geri döner)
 HELPER_OFF = "kapalı · gerekince açılır"
 
@@ -248,6 +249,12 @@ class Pipeline:
         self._h_gone: set[str] = set()           # bir daha açılmayacak yardımcılar (görevleri geri alındı)
         self._h_last: dict[str, float] = {}      # yardımcı -> son görev / hazır olma zamanı (boşta kapatma için)
         self._h_cap: dict[str, int] = {}         # yardımcı -> en büyük toplu boyut (bellek yetmeyince küçülür)
+        self._h_cap_max: dict[str, int] = {}     # yardımcı -> kartın asıl en büyük toplu boyutu (geri büyüme)
+        self._h_shrunk_at: dict[str, float] = {}  # yardımcı -> son küçültme zamanı
+        self._h_foot: dict[str, dict] = {}       # yardımcı -> toplu boyut -> kapladığı bellek (GB; ölçümle büyür)
+        self._h_open_free: dict[str, float] = {}  # yardımcı -> açılırken kartta boş bellek (kendi payını ölçmek için)
+        self._h_own: dict[str, float] = {}       # yardımcı -> ölçülen kendi payı (GB; açılış başına bir kez)
+        self._h_done: dict[str, int] = {}        # yardımcı -> açılıştan beri biten görev
         self._h_batch: dict[str, int] = {}       # yardımcı -> şu an yüklü modelin toplu boyutu
         self._ecfg: dict = {}
         self.idle: set[str] = set()          # boşta olduğunu bildiren işçiler
@@ -313,6 +320,7 @@ class Pipeline:
                 for d in self.helper_devices:
                     gb = (gi.get(int(d.split(":")[1])) or {}).get("gb")
                     self._h_cap[d] = cfg.batch_size if cfg.batch_size >= 1 else auto_batch_size("cuda", gb)
+                    self._h_cap_max[d] = self._h_cap[d]
                 log.info("Yardımcı kart: YouTube / tarayıcı için %.1f GB boş bırakılır, kalan bellek bu işe verilir "
                          "(toplu boyut ona göre, en çok %s); en düşük işlemci önceliği. Konuşmacı ayırma yardımcıya gitmez.",
                          cfg.helper_reserve_gb, "/".join(str(v) for v in self._h_cap.values()))
@@ -992,7 +1000,14 @@ class Pipeline:
         Kapalı yardımcı: boş bellekten ayrılan çıkınca kalan yere sığan en büyük toplu boyutla açılır (yoksa bekler).
         Açık yardımcı: başka programlar ayrılan belleğin yarısından fazlasını kullandıysa bekler (uzarsa kapanır).
         Ölçülemezse (eski sürücü) çalışılır; açılışta küçük toplu boyut."""
+        if parked and self._h_shrunk_at.get(wid) and time.time() - self._h_shrunk_at[wid] >= HELPER_REGROW_S:
+            # küçültme kalıcı olmasın (sebep çoğu zaman geçici: oyun, ağır video): varsayılana dön
+            self._h_shrunk_at.pop(wid, None)
+            self._h_foot.pop(wid, None)
+            if wid in self._h_cap_max:
+                self._h_cap[wid] = self._h_cap_max[wid]
         cap = self._h_cap.get(wid) or 4
+        foot = self._h_foot.get(wid) or HELPER_FOOT_GB
         sizes = [b for b in sorted(HELPER_FOOT_GB, reverse=True) if b <= cap] or [min(HELPER_FOOT_GB)]
         used, total = (load or {}).get("used_mb"), (load or {}).get("total_mb")
         if not (isinstance(used, (int, float)) and isinstance(total, (int, float)) and total > 0):
@@ -1001,18 +1016,42 @@ class Pipeline:
         reserve = self.cfg.helper_reserve_gb
         if parked:
             for b in sizes:
-                if free - reserve >= HELPER_FOOT_GB[b]:
+                if free - reserve >= foot[b]:
                     return "", b
             return f"kartta yer yok ({free:.1f} GB boş, {reserve:.1f} GB ayrılmış)", 0
         if free < reserve / 2:
             return f"başka programlar belleği kullanıyor ({free:.1f} GB boş)", 0
+        self._helper_measure(wid, load)
         return "", self._h_batch.get(wid, 0)
 
     def _helper_shrink(self, wid: str) -> None:
-        """Bellek yetmedi: bir sonraki açılış bir küçük toplu boyutla (aynı boyutla açılıp kapanma döngüsü olmasın)."""
+        """Bellek yetmedi: bir sonraki açılış bir küçük toplu boyutla (aynı boyutla açılıp kapanma döngüsü olmasın).
+        ``HELPER_REGROW_S`` sonra geri büyür."""
         cur = self._h_batch.get(wid) or self._h_cap.get(wid) or 4
         smaller = [b for b in HELPER_FOOT_GB if b < cur]
         self._h_cap[wid] = max(smaller) if smaller else min(HELPER_FOOT_GB)
+        self._h_shrunk_at[wid] = time.time()
+
+    def _helper_measure(self, wid: str, load: dict | None) -> None:
+        """Yardımcının kendi bellek payını ölç: açılıştaki boş bellek − ilk parçadan sonraki boş bellek (açılışa yakın:
+        başka programların değişimi az karışır). Tahmini 0.5 GB'tan fazla aşıyorsa o boyutun belleği öğrenilir; sonraki
+        açılış buna göre yer ister (yoksa aç → bekle → kapan döngüsü olurdu). Kapanma anındaki ölçüm KULLANILMAZ: o an
+        boşalan bellek çoğunlukla başka programındır (oyun) ve toplu boyut gereksiz küçülürdü."""
+        if wid in self._h_own or not self._h_done.get(wid):
+            return
+        b = self._h_batch.get(wid)
+        open_free = self._h_open_free.get(wid)
+        used, total = (load or {}).get("used_mb"), (load or {}).get("total_mb")
+        if not b or open_free is None or not (isinstance(used, (int, float)) and isinstance(total, (int, float))):
+            return
+        own = open_free - (total - used) / 1024
+        self._h_own[wid] = own
+        foot = self._h_foot.get(wid) or HELPER_FOOT_GB
+        if own > foot.get(b, 0.0) + 0.5:
+            self._h_foot[wid] = {**foot, b: round(own + 0.2, 2)}
+            self._h_shrunk_at.setdefault(wid, time.time())  # öğrenilen değer de bir süre sonra varsayılana döner
+            log.info("[%s] yardımcı toplu boyut %d ile ~%.1f GB kaplıyor (tahmin %.1f): sonraki açılış buna göre", wid,
+                     b, own, HELPER_FOOT_GB.get(b, 0.0))
 
     def _helper_note(self, wid: str, note: str) -> None:
         if self._h_note.get(wid, "") == note:
@@ -1071,8 +1110,7 @@ class Pipeline:
                 if not parked and now - since >= HELPER_PARK_S and wid not in self.inflight:
                     log.warning("[%s] yardımcı kart %.0f dakikadır bekliyor (%s): işçi kapatılıyor (bellek o programa "
                                 "kalsın), kart boşalınca yeniden açılacak", wid, (now - since) / 60, reason)
-                    self._helper_shrink(wid)
-                    self._park_helper(wid, reason)
+                    self._park_helper(wid, reason)  # sebep başka programlar: toplu boyut küçülmez
                 elif parked:
                     self._helper_note(wid, "kapalı, kart boşalınca açılacak: " + reason)
                 else:
@@ -1086,6 +1124,13 @@ class Pipeline:
                          batch, self.cfg.helper_reserve_gb)
                 self._h_note[wid] = ""
                 self._h_batch[wid] = batch
+                self._h_own.pop(wid, None)
+                self._h_done[wid] = 0
+                ld = pr[1] or {}
+                if isinstance(ld.get("used_mb"), (int, float)) and isinstance(ld.get("total_mb"), (int, float)):
+                    self._h_open_free[wid] = (ld["total_mb"] - ld["used_mb"]) / 1024
+                else:
+                    self._h_open_free.pop(wid, None)
                 if isinstance(getattr(hp, "_ecfg", None), dict):
                     hp._ecfg = {**hp._ecfg, "helper_batch": batch}  # yeni süreç bu toplu boyutla yükler
                 hp.respawn(wid)
@@ -1194,6 +1239,10 @@ class Pipeline:
         if self._is_helper(wid):  # yardımcı kart dinlenir (kart serinler, ölçüm yalnız başka programları görür)
             self._h_ready[wid] = time.time() + self.cfg.helper_rest_s
             self._h_last[wid] = time.time()
+            if typ == "done":
+                self._h_done[wid] = self._h_done.get(wid, 0) + 1
+                if self._h_done[wid] == 1:
+                    self._h_probe.pop(wid, None)  # kendi payı ilk parçadan SONRAKİ ölçümle (_helper_measure)
         self.emit("worker", wid=wid, state="idle")
         task = self.tasks.get(tid)
         if not task:

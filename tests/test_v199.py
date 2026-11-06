@@ -91,6 +91,7 @@ def test_helper_takes_surplus_after_probe(tmp_path):
 
 def test_helper_rests_after_each_task(tmp_path):
     p, job, tasks = _pipe(tmp_path, n=6, helper_rest_s=60)
+    p._h_done["cuda:0"] = 3                                       # kendi payı zaten ölçüldü (ilk parça değil)
     _ready(p, "cuda:1", "cuda:0")
     p._dispatch()
     p._dispatch()
@@ -119,6 +120,7 @@ def test_helper_rests_after_each_task(tmp_path):
 def test_full_power_by_default_no_rest(tmp_path):
     p, job, tasks = _pipe(tmp_path, n=6)
     assert p.cfg.helper_rest_s == 0.0
+    p._h_done["cuda:0"] = 3
     _ready(p, "cuda:1", "cuda:0")
     p._dispatch()
     p._dispatch()
@@ -201,7 +203,7 @@ def test_helper_parked_after_long_busy_and_reopened(tmp_path):
     p._dispatch()
     p._dispatch()
     assert p.hpool.respawned == ["cuda:0"] and not p._h_parked
-    assert p.hpool._ecfg["helper_batch"] == 4        # 8'le bellek yetmemişti: bir küçük boyutla (açılıp kapanma döngüsü yok)
+    assert p.hpool._ecfg["helper_batch"] == 8        # sebep başka programdı: kart boşalınca yine tam boyut
     assert p.hpool.put_q == []                                        # önce model yüklensin (ready)
 
 
@@ -444,3 +446,73 @@ def test_worker_uses_helper_batch_from_pipeline(monkeypatch):
            "condition_on_previous_text": True}
     w._init("cuda:0", cfg, {})
     assert seen["batch"] == 8                       # ayrılan bellek dışında yer var: kartın tam toplu boyutu
+
+
+def _open(p, used_mb):
+    p.load = {"util": 0, "used_mb": used_mb, "total_mb": 10240.0}
+    p._h_ready["cuda:0"] = 0
+    p._dispatch()
+    p._dispatch()
+    assert "cuda:0" not in p._h_parked
+    _ready(p, "cuda:0")
+    return p.hpool._ecfg["helper_batch"]
+
+
+def _one_task(p, used_after):
+    p._dispatch()
+    p._dispatch()
+    t = p.hpool.put_q[-1]
+    p._on_msg({"type": "start", "wid": "cuda:0", "tid": t["id"]})
+    p.load = {"util": 0, "used_mb": used_after, "total_mb": 10240.0}
+    p._on_msg({"type": "done", "wid": "cuda:0", "tid": t["id"], "elapsed": 1.0,
+               "payload": {"segments": [], "language": "en"}})
+    p._dispatch()                                    # ilk parçadan sonra yeni ölçüm
+    p._dispatch()
+    t2 = p.hpool.put_q[-1]                           # ölçümden sonra verilen görev de bitsin (yardımcı boşta kalsın)
+    p._on_msg({"type": "start", "wid": "cuda:0", "tid": t2["id"]})
+    p._on_msg({"type": "done", "wid": "cuda:0", "tid": t2["id"], "elapsed": 1.0,
+               "payload": {"segments": [], "language": "en"}})
+
+
+def test_own_footprint_learned_from_first_task_not_from_park(tmp_path):
+    """Kendi payı tahminden büyükse (ilk parçadan sonra ölçülür) sonraki açılış daha küçük boyutla; aç-kapa döngüsü yok."""
+    p, job, tasks = _pipe(tmp_path, n=40)
+    p._h_cap["cuda:0"] = p._h_cap_max["cuda:0"] = 8
+    p._h_parked["cuda:0"] = "kapalı"
+    _ready(p, "cuda:1")
+    assert _open(p, 800.0) == 8                      # 9.2 GB boş
+    _one_task(p, 800.0 + 8.0 * 1024)                 # gerçekte 8 GB kapladı (tahmin 6.4)
+    assert p._h_foot["cuda:0"][8] == 8.2
+    # başka programlar belleği aldı -> kapanır; sonra kart boşalınca 8 artık sığmıyor (9.2 - 2 < 8.2) -> 4
+    p.load = {"util": 0, "used_mb": 9800.0, "total_mb": 10240.0}
+    p._h_ready["cuda:0"] = 0
+    p._h_probe.pop("cuda:0", None)
+    p._dispatch()
+    p._dispatch()
+    p._h_busy_since["cuda:0"] = time.time() - 1000
+    p._h_ready["cuda:0"] = 0
+    p._dispatch()
+    p._dispatch()
+    assert "cuda:0" in p._h_parked
+    assert _open(p, 800.0) == 4
+
+
+def test_normal_footprint_keeps_full_batch(tmp_path):
+    p, job, tasks = _pipe(tmp_path, n=40)
+    p._h_cap["cuda:0"] = p._h_cap_max["cuda:0"] = 8
+    p._h_parked["cuda:0"] = "kapalı"
+    _ready(p, "cuda:1")
+    assert _open(p, 800.0) == 8
+    _one_task(p, 800.0 + 6.0 * 1024)                 # tahmine uygun
+    assert "cuda:0" not in p._h_foot and p._h_own["cuda:0"] == 6.0
+
+
+def test_shrink_regrows_after_half_hour(tmp_path):
+    p, job, tasks = _pipe(tmp_path, n=40)
+    p._h_cap["cuda:0"] = p._h_cap_max["cuda:0"] = 8
+    p._h_batch["cuda:0"] = 8
+    p._helper_shrink("cuda:0")                        # ör. görevde bellek yetmedi
+    free9 = {"util": 0, "used_mb": 1024.0, "total_mb": 10240.0}
+    assert p._helper_check("cuda:0", free9, parked=True) == ("", 4)
+    p._h_shrunk_at["cuda:0"] = time.time() - 4000
+    assert p._helper_check("cuda:0", free9, parked=True) == ("", 8)
