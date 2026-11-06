@@ -374,6 +374,12 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
         <input type="password" id="sHf" placeholder="hf_…  (boş bırakırsanız mevcut token kalır)">
         <span class="hint" id="sHfState"></span>
         <span class="hint">huggingface.co/pyannote/speaker-diarization-community-1, /speaker-diarization-3.1 ve /segmentation-3.0 sayfalarında “Agree” deyin.</span></div>
+      <div class="field"><label for="sDiarEng">Konuşmacı ayırma motoru</label>
+        <div class="inline"><select id="sDiarEng"><option value="pyannote">pyannote community-1 (varsayılan)</option>
+          <option value="diarizen">DiariZen (deneysel, daha doğru olabilir)</option></select>
+          <button class="btn small" id="sDzInstall" type="button">DiariZen'i kur</button></div>
+        <span class="hint" id="sDzState"></span>
+        <span class="hint">DiariZen ayrı bir ortama kurulur (~4 GB, 10–30 dk), yalnız ticari olmayan kullanım içindir; hata verirse pyannote kullanılır.</span></div>
       <div class="field"><label for="sFpl">FPL repo klasörü (presser.py'nin olduğu yer)</label>
         <div class="inline"><input type="text" id="sFpl" placeholder="boş = FPL yok"><button class="btn small" id="sFplPick" type="button">Seç</button></div>
         <span class="hint" id="sFplState"></span></div>
@@ -833,6 +839,8 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     g.value = s.gpus || "auto";
     $("#sOut").value = s.out_dir || ""; $("#sFpl").value = s.fpl_repo || ""; $("#sCookie").value = s.cookies_browser || "auto";
     $("#sCookieFile").value = s.cookies_file || ""; $("#sBrowser").checked = !!s.browser_capture; $("#sUiGpu").checked = !!s.ui_gpu;
+    $("#sDiarEng").value = s.diar_engine || "pyannote";
+    $("#sDzState").textContent = s.diarizen_installed ? "DiariZen kurulu ✓" : "DiariZen kurulu değil";
     $("#sLlm").value = s.llm_provider || "none"; $("#sLlmModel").value = s.llm_model || ""; $("#sBudget").value = s.llm_budget_usd ?? 5;
     $("#sGemKey").value = ""; $("#sClaKey").value = ""; $("#sApiTok").value = "";
     $("#sGemState").textContent = s.gemini_key_set ? "Anahtar kayıtlı." : "aistudio.google.com › Get API key";
@@ -859,13 +867,17 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     const r = await call("llm_test");
     $("#sLlmTestOut").textContent = r ? (r.ok ? "Çalışıyor ✓ (" + (r.status.model || r.status.provider) + ")" : "Olmadı: " + r.error) : "";
   };
+  $("#sDzInstall").onclick = async () => {
+    const r = await call("diarizen_install");
+    if (r && !r.ok) toast(r.error); else $("#sDzState").textContent = "Kuruluyor… (günlükte ilerleme)";
+  };
   $("#sFollowNow").onclick = async () => { toast("Takip edilen kanallar kontrol ediliyor…"); const r = await call("follow_check_now"); if (r) toast(r.count + " yeni video bulundu."); };
   $("#sSave").onclick = async (keepOpen) => {
     const s = await call("save_settings", { out_dir: $("#sOut").value, hf_token: $("#sHf").value, fpl_repo: $("#sFpl").value, cookies_browser: $("#sCookie").value, gpus: $("#sGpu").value,
       cookies_file: $("#sCookieFile").value, browser_capture: $("#sBrowser").checked, ui_gpu: $("#sUiGpu").checked,
       llm_provider: $("#sLlm").value, llm_model: $("#sLlmModel").value, llm_budget_usd: $("#sBudget").value, gemini_api_key: $("#sGemKey").value,
       anthropic_api_key: $("#sClaKey").value, llm_news: $("#sLlmNews").checked, llm_qa: $("#sLlmQa").checked,
-      api_port: $("#sApiPort").value, api_token: $("#sApiTok").value, webhook_url: $("#sHook").value, follow_interval_h: $("#sFollowH").value });
+      api_port: $("#sApiPort").value, api_token: $("#sApiTok").value, webhook_url: $("#sHook").value, follow_interval_h: $("#sFollowH").value, diar_engine: $("#sDiarEng").value });
     if (keepOpen === true) { if (s) fillSettings(s); return; }
     if (s) { fillSettings(s); toast("Ayarlar kaydedildi."); $("#mSettings").classList.remove("show"); refreshDataset(); }
   };
@@ -901,6 +913,11 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
   };
   function onEvent(ev) {
     switch (ev.type) {
+      case "diarizen": {
+        $("#sDzState").textContent = ev.done ? (ev.error ? "Kurulamadı: " + ev.error : "DiariZen kurulu ✓") : ev.text;
+        if (ev.done) toast(ev.error ? "DiariZen kurulamadı (ayrıntı günlükte)." : "DiariZen kuruldu. Ayarlar'da motoru seçip kaydedin.");
+        break;
+      }
       case "log": {
         const line = el("div", { class: ev.level }, ev.text); const log = $("#log"); log.append(line);
         while (log.childElementCount > 600) log.firstChild.remove();

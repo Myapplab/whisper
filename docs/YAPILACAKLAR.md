@@ -6,9 +6,7 @@ Ortak hafıza bu dosyadır. **Oturum sonunda güncelle** (Son durum + liste) ve 
 ## ŞU ANKİ İŞ: konuşmacı ayırma iyileştirme (adım adım; her adım ayrı push)
 Kullanıcı istedi: DiariZen + "acımasız eleştiri"nin 10 maddesinin hepsi. Kural: bir adım bitince push et, burada ✅ yap,
 sıradakine geç. Kullanım biterse diğer profil ilk ✅ olmayan adımdan devam eder.
-**SIRADAKİ (1.9.1 sonrası):** K6c (Ayarlar'a konuşmacı motoru seçimi + 'DiariZen'i kur' düğmesi; şimdilik
-PowerShell: `C:\stt\.venv\Scripts\python.exe -m stt diarizen-kur`, sonra stt.toml'a `diar_engine = "diarizen"`),
-K6b kullanıcıda kurulum denemesi, K6d + K9 + K4-açık: kullanıcı 3-5 video düzeltince K5 ölçümüyle karar.
+**SIRADAKİ (1.9.2 sonrası):** K6b kullanıcıda kurulum denemesi (Ayarlar > 'DiariZen'i kur'; K6c ✅ 1.9.2), K6d + K9 + K4-açık: kullanıcı 3-5 video düzeltince K5 ölçümüyle karar.
 - [x] K1 (#10) ✅ (doctor: sürüm 3.x uyarısı; yedek model uyarısı zaten vardı) Kontrol: pyannote < 4 ise "community-1 çalışmıyor, eski 3.1 kullanılıyor" uyarısı + düzeltme yolu.
 - [x] K2 (#4) ✅ ZATEN VARDI (pipeline `_diarize_task`: min_speakers en az 2) Basın modunda en az 2 konuşmacı otomatik (`min_speakers`), kullanıcı sayı girerse o geçerli.
 - [x] K3 (#9) ✅ (gui.html: sarı "Bitti · konuşmacısız"; index'te diarized zaten vardı) Konuşmacısız biten iş görünür olsun: kartta sarı "Bitti · konuşmacısız" + index'te diarized=false.
@@ -21,7 +19,7 @@ K6b kullanıcıda kurulum denemesi, K6d + K9 + K4-açık: kullanıcı 3-5 video 
       geçer, DiariZen cuda:0 = 3090). Hata → pyannote. Ses imzası YOK (ses kütüphanesi DiariZen'le öğrenmez).
       min/max konuşmacı `pipe.min_speakers/max_speakers` özniteliğiyle (DiariZen __call__ bunları config'ten okuyor;
       gerçekten etkili mi doğrulanmadı). SIRADAKİ: K6b kullanıcıda kurulum denemesi (günlükte "[diarizen kurulum]"),
-      K6c Ayarlar'a "Konuşmacı motoru" seçimi + "DiariZen'i kur" düğmesi, K6d K5 ölçümüyle community-1 karşılaştırması.
+      K6c ✅ (1.9.2: Ayarlar > Konuşmacı ayırma motoru + 'DiariZen'i kur', `App.diarizen_install`), K6d K5 ölçümüyle community-1 karşılaştırması.
 - [x] K7 (#2) ✅ `merge._td_guess`: uzun (≥5 sn) turların toplamı, tek uzun turu olan yarı puan (açılış yapan sözcü); ses kütüphanesi zaten önce geliyordu. Tercüman durumu çözülmedi (dil bilgisi gerekir).
 - [x] K8 (#5) ✅ `merge.exclusive_turns`: başka turun tamamen içindeki ≥1 sn söz kazanır (daha kısası "hı hı"). pyannote 4 zaten örtüşmesiz veriyor; bu kural 3.x ve DiariZen çıktısı için.
 - [~] K9 (#6) kısmen: sessizlik sonrası erken ilk kelime 1.8.6'da (`EARLY_GAP`). Başka kural ölçümsüz eklenmedi (zarar riski); K5 sonuçlarına göre.

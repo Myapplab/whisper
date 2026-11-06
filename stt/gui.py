@@ -72,7 +72,8 @@ def save_settings(updates: dict, path: Path = TOOL_DIR / "stt.toml") -> None:
             data[k] = v
     lines = ["# stt ayarları (uygulamadan kaydedildi)"]
     lines += [f"{k} = {_toml_value(v)}" for k, v in data.items() if isinstance(v, (str, int, float, bool))]
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    from .util import atomic_write_text
+    atomic_write_text(path, "\n".join(lines) + "\n")  # yarıda kalırsa token'lar silinmesin
 
 
 class _UiLogHandler(logging.Handler):
@@ -86,6 +87,14 @@ class _UiLogHandler(logging.Handler):
             self.app._push({"type": "log", "level": record.levelname, "text": self.format(record)})
         except Exception:  # noqa: BLE001
             pass
+
+
+def _diarizen_installed() -> bool:
+    try:
+        from .diarizen import installed
+        return installed()
+    except Exception:  # noqa: BLE001
+        return False
 
 
 class App:
@@ -349,7 +358,8 @@ class App:
                 "openai_key_set": bool(llm.key("openai")),
                 "llm_budget_usd": c.llm_budget_usd, "llm_news": bool(c.llm_news), "llm_qa": bool(c.llm_qa),
                 "llm": llm.status(), "api_port": c.api_port or 0, "api_token_set": bool(c.api_token),
-                "webhook_url": c.webhook_url or "", "follow_interval_h": c.follow_interval_h}
+                "webhook_url": c.webhook_url or "", "follow_interval_h": c.follow_interval_h,
+                "diar_engine": c.diar_engine or "pyannote", "diarizen_installed": _diarizen_installed()}
 
     def save_settings(self, s: dict) -> dict:
         upd: dict = {}
@@ -382,10 +392,12 @@ class App:
                     upd[k] = typ(s[k])
                 except (TypeError, ValueError):
                     pass
+        if s.get("diar_engine") in ("pyannote", "diarizen"):
+            upd["diar_engine"] = s["diar_engine"]
         if "webhook_url" in s:
             upd["webhook_url"] = (s.get("webhook_url") or "").strip()
         save_settings(upd)
-        old = (str(self._cfg.out_dir), self._cfg.hf_token, self._cfg.gpus)
+        old = (str(self._cfg.out_dir), self._cfg.hf_token, self._cfg.gpus, self._cfg.diar_engine)
         old_port = self._cfg.api_port
         self._cfg = load_config()
         self._llm = None
@@ -393,7 +405,7 @@ class App:
             # motorun açılışta kopyaladığı değerler (kart, model...) etkilenmez; onlar için aşağıda yeniden başlatılır
             self._pipe.cfg = self._cfg
             self._pipe._llm = None
-        if (str(self._cfg.out_dir), self._cfg.hf_token, self._cfg.gpus) != old:
+        if (str(self._cfg.out_dir), self._cfg.hf_token, self._cfg.gpus, self._cfg.diar_engine) != old:
             self._restart.set()  # işler bitince motor yeni ayarlarla açılır
         if self._cfg.api_port != old_port:
             self._start_api()
@@ -768,6 +780,26 @@ class App:
             self._push({"type": "train", "done": True, "result": res, "error": err})
         threading.Thread(target=run, daemon=True, name="stt-egitim").start()
         return {"ok": True, "videos": n}
+
+    def diarizen_install(self) -> dict:
+        """Ayarlar > 'DiariZen'i kur': ayrı ortam (stt/diarizen.py), arka planda; ilerleme günlükte ve Ayarlar'da."""
+        if getattr(self, "_dz_installing", False):
+            return {"ok": False, "error": "Kurulum zaten sürüyor."}
+        self._dz_installing = True
+
+        def run():
+            err = None
+            try:
+                from .diarizen import install
+                install(lambda t: self._push({"type": "diarizen", "text": t}))
+            except Exception as e:  # noqa: BLE001
+                err = str(e)[:300]
+                log.error("DiariZen kurulamadı: %s", e)
+            finally:
+                self._dz_installing = False
+            self._push({"type": "diarizen", "done": True, "error": err})
+        threading.Thread(target=run, daemon=True, name="stt-diarizen").start()
+        return {"ok": True}
 
     def voices_list(self) -> list[dict]:
         from .voices import VoiceLibrary
