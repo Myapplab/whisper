@@ -103,7 +103,20 @@ def prepare_env() -> None:
     os.environ.pop("CUDA_VISIBLE_DEVICES", None)
     os.environ.setdefault("PYTHONUTF8", "1")        # alt süreçler (presser.py vb.) UTF-8 yazsın
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    net_env()
     add_tool_paths()
+
+
+def net_env() -> None:
+    """Model indirmeleri takılmasın, dışarıya kullanım verisi gitmesin (alt süreçlere de geçer).
+
+    - HF'nin yeni indirme yöntemi (Xet) Windows'ta zaman zaman donuyordu: kapalı, klasik HTTP indirme.
+    - İndirmelere süre sınırı: bağlantı bu kadar saniye ses vermezse hata verir (sonsuza dek beklemez).
+    - pyannote 4 ve huggingface_hub kullanım verisi (telemetri) göndermesin."""
+    for k, v in (("HF_HUB_DISABLE_XET", "1"), ("HF_HUB_DOWNLOAD_TIMEOUT", "60"), ("HF_HUB_ETAG_TIMEOUT", "30"),
+                 ("HF_HUB_DISABLE_TELEMETRY", "1"), ("HF_HUB_DISABLE_PROGRESS_BARS", "1")):
+        os.environ.setdefault(k, v)
+    os.environ["PYANNOTE_METRICS_ENABLED"] = "false"
 
 
 def memory_status() -> dict | None:

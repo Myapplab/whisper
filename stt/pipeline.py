@@ -768,6 +768,11 @@ class Pipeline:
                 self.failed_reason = "Model yüklenemedi: " + hint
                 self.emit("fatal", error=self.failed_reason)
             return
+        if typ == "beat":  # işçi hâlâ çalışıyor (konuşmacı ayırma): takılma süresi baştan sayılır
+            cur = self.inflight.get(wid)
+            if cur and cur[0] == m.get("tid"):
+                self.inflight[wid] = (cur[0], time.time())
+            return
         if typ == "start":
             self.inflight[wid] = (m["tid"], time.time())
             self.idle.discard(wid)
@@ -879,11 +884,13 @@ class Pipeline:
         self._maybe_finalize(job)
 
     def _task_timeout(self, task: dict) -> float:
-        """Takılma sınırı (sn): GPU kilitlenirse işçi yeniden başlatılır."""
+        """Takılma sınırı (sn): GPU kilitlenir / indirme donarsa işçi yeniden başlatılır.
+        Konuşmacı ayırma ilerledikçe sinyal gönderir; süre SON SİNYALDEN sayılır (eskiden 3 x video süresiydi,
+        takılan iş saatlerce bekliyordu)."""
         if task.get("kind") == "diarize":
             job = self.jobs.get(task.get("job", ""))
             dur = (job.info.get("duration_s", 0) if job else 0) or 3600
-            return max(1800.0, 3 * dur)
+            return max(900.0, 0.25 * dur)
         return max(900.0, 8 * (task.get("end", 0) - task.get("start", 0)))
 
     def _requeue(self, wid: str, tid: str, why: str) -> None:

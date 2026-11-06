@@ -907,6 +907,7 @@ def main() -> int:
     _hide_child_consoles()
     from .util import prepare_env
     prepare_env()  # ffmpeg / deno / GPU sırası / UTF-8: stt.bat'a gerek yok
+    os.environ["STT_LOG"] = str(logpath)  # işçi süreçleri (konuşmacı ayırma) de bu günlüğe yazsın
     os.environ["PYTHONUTF8"] = "1"  # alt süreçler (GPU işçileri, ffmpeg, presser.py) Türkçe harfleri yazabilsin
     logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s", datefmt="%H:%M:%S",
                         handlers=[logging.FileHandler(logpath, encoding="utf-8")])

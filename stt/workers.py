@@ -41,20 +41,60 @@ def _handle(task: dict, wid: str, device: str, engine_cfg: dict, cache: dict):
     if kind == "diarize":
         lock = cache.setdefault("_diar_lock", threading.Lock())
         with lock:
+            beat = cache.get("beat")
             if "diar" not in cache:
                 # kart pipeline'da seçilir (monitörlü karta asla kendiliğinden gidilmez); "auto" = işlemci
                 ddev = device if device.startswith("cuda") else "cpu"
+                t0 = time.time()
+                log.info("[diar] konuşmacı modeli yükleniyor (%s, ilk seferde indirilir)", engine_cfg["diar_model"])
                 from .engines import Diarizer
+                if beat:
+                    beat(True)
                 cache["diar"] = Diarizer(engine_cfg["diar_model"], engine_cfg["hf_token"], ddev,
                                          agc=engine_cfg.get("agc", True), batch=engine_cfg.get("diar_batch", 8),
                                          gpu_frac=engine_cfg.get("diar_gpu_frac"), ram_pct=engine_cfg.get("ram_limit_pct", 70),
                                          cpu_ok=engine_cfg.get("diar_cpu", False))
+                log.info("[diar] konuşmacı modeli hazır (%.0f sn)", time.time() - t0)
             d = cache["diar"]
             turns = d.run(task["wav"], task.get("min_speakers"), task.get("max_speakers"),
-                          vocals=bool(task.get("vocals")))
+                          vocals=bool(task.get("vocals")), beat=beat)
             return {"turns": turns, "device": d.device, "emb": d.last_emb, "model": d.model_used,
                     "vocals": bool(task.get("vocals"))}
     raise ValueError(f"bilinmeyen görev: {kind}")
+
+
+def _beater(result_q, wid: str, tid: str, every: float = 30.0):
+    """Uzun görevde "hâlâ çalışıyorum" sinyali (en çok ``every`` sn'de bir). Ana süreç takılma süresini
+    son sinyalden sayar: ilerleyen iş kesilmez, gerçekten takılan iş erken yeniden başlatılır."""
+    last = [0.0]
+
+    def beat(force: bool = False) -> None:
+        now = time.time()
+        if force or now - last[0] >= every:
+            last[0] = now
+            try:
+                result_q.put({"type": "beat", "wid": wid, "tid": tid})
+            except Exception:  # noqa: BLE001
+                pass
+    return beat
+
+
+def _worker_logging(diar: bool) -> None:
+    """İşçi sürecinin kayıtları: uygulamada (pythonw) ekran yok, ``STT_LOG`` günlüğüne yazılır.
+    Konuşmacı ayırma ayrıntılı (model yükleme, indirme, müzik ayıklama); metin işçileri yalnız uyarılar."""
+    path = os.environ.get("STT_LOG")
+    handlers: list[logging.Handler] = []
+    if path:
+        try:
+            handlers.append(logging.FileHandler(path, encoding="utf-8"))
+        except OSError:
+            pass
+    logging.basicConfig(level=logging.INFO if (diar or not handlers) else logging.WARNING,
+                        format="[%(asctime)s] (%(processName)s) %(message)s" if handlers else "[%(asctime)s] %(message)s",
+                        datefmt="%H:%M:%S", handlers=handlers or None, force=True)
+    for noisy in ("faster_whisper", "speechbrain", "lightning", "pytorch_lightning", "httpx", "httpcore",
+                  "urllib3", "filelock", "fsspec", "matplotlib", "numba"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 def isolate_gpu(device: str) -> str:
@@ -134,11 +174,13 @@ def worker_main(wid: str, device: str, engine_cfg: dict, task_q, result_q, share
                 st.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
             except Exception:  # noqa: BLE001
                 pass
-        from .util import quiet_warnings
+        from .util import net_env, quiet_warnings
         quiet_warnings()
-        logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s", datefmt="%H:%M:%S")
-        for noisy in ("faster_whisper", "speechbrain", "lightning", "pytorch_lightning", "httpx"):
-            logging.getLogger(noisy).setLevel(logging.WARNING)
+        net_env()
+        _worker_logging(engine_cfg.get("role") == "diar")
+        if engine_cfg.get("role") == "diar":
+            import socket
+            socket.setdefaulttimeout(120)  # müzik ayıklama modeli indirmesi (torch.hub) takılırsa hata versin
     cache: dict = shared_cache if shared_cache is not None else {}
     run_device = device
     if shared_cache is None and engine_cfg.get("isolate_gpu", True):
@@ -151,6 +193,7 @@ def worker_main(wid: str, device: str, engine_cfg: dict, task_q, result_q, share
             if task is None:
                 break
             result_q.put({"type": "start", "wid": wid, "tid": task["id"]})
+            cache["beat"] = _beater(result_q, wid, task["id"])
             t = time.time()
             try:
                 payload = _handle(task, wid, run_device, engine_cfg, cache)

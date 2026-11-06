@@ -475,6 +475,7 @@ class Diarizer:
     model_used = None    # gerçekten yüklenen model (yeni model olmazsa eskisine düşülür)
     last_emb = None      # son ayırmadaki konuşmacı ses imzaları
     _sep = None          # müzik ayıklama modeli (HDemucs), ilk gerekince yüklenir
+    _beat_fn = None      # "hâlâ çalışıyorum" sinyali (işçi -> ana süreç; takılma denetimi)
     def __init__(self, model: str, token: str | None, device: str, agc: bool = True, batch: int = 8,
                  gpu_frac: float | None = None, ram_pct: int = 70, cpu_ok: bool = False):
         os.environ.setdefault("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")  # pyannote 3.x + torch>=2.6
@@ -573,6 +574,7 @@ class Diarizer:
             usable = min(m["ram_free"] * self.ram_pct / 100, m["commit_free"])
             if usable >= need:
                 return
+            self._beat()
             if time.time() - t0 < 1:
                 log.warning("Konuşmacı ayırma için bellek bekleniyor: ~%.1f GB gerekli, kullanılabilir %.1f GB "
                             "(boş RAM %.1f GB, sanal bellek %.1f GB)", need, usable, m["ram_free"], m["commit_free"])
@@ -582,6 +584,8 @@ class Diarizer:
     def _run(self, audio, kw) -> list[list]:
         file = {"waveform": self.torch.from_numpy(audio)[None], "sample_rate": SR}
         cents = None
+        if self._beat_fn is not None:  # pyannote her adımda / toplu işte çağırır: ilerleme sinyali
+            kw = {**kw, "hook": self._hook}
         if self.v4:
             out = self.pipe(file, **kw)
             full = getattr(out, "speaker_diarization", out)
@@ -617,7 +621,9 @@ class Diarizer:
             if self._sep is None:
                 from torchaudio.pipelines import HDEMUCS_HIGH_MUSDB_PLUS as bundle
                 log.info("Müzik ayıklama modeli yükleniyor (ilk seferde ~300 MB iner)")
+                self._beat(True)
                 m = bundle.get_model().eval().to(torch.device(self.device))
+                log.info("Müzik ayıklama modeli hazır (%.0f sn)", time.time() - t0)
                 srcs = list(getattr(m, "sources", []) or [])
                 self._sep = (m, bundle.sample_rate, srcs.index("vocals") if "vocals" in srcs else 3)
             model, msr, vi = self._sep
@@ -627,6 +633,7 @@ class Diarizer:
             dev = torch.device(self.device)
             with torch.inference_mode():
                 for a, b, c, d in chunk_spans(len(x), 10 * SR, SR):  # 12 sn pencere: bellek az
+                    self._beat()
                     ch = torch.from_numpy((x[a:b] - mean) / std).to(dev)
                     up = torchaudio.functional.resample(ch, SR, msr)
                     y = model(up[None, None].expand(1, 2, -1).contiguous())[0, vi].mean(0)
@@ -666,12 +673,23 @@ class Diarizer:
                 time.sleep(30)
                 self.wait_memory(len(audio) / SR, max_wait=600)
 
-    def run(self, wav: str, min_speakers=None, max_speakers=None, vocals: bool = False) -> list[list]:
+    def _beat(self, force: bool = False) -> None:
+        if self._beat_fn is not None:
+            self._beat_fn(force)
+
+    def _hook(self, *_a, **_k) -> None:
+        self._beat()
+
+    def run(self, wav: str, min_speakers=None, max_speakers=None, vocals: bool = False, beat=None) -> list[list]:
+        self._beat_fn = beat
         audio = load_wav(wav)
+        log.info("[%s] konuşmacı ayırma başlıyor (%.0f dk ses%s)", self.device, len(audio) / SR / 60,
+                 ", önce müzik ayıklanacak" if vocals else "")
         self.wait_memory(len(audio) / SR)
         self.last_emb = None
         if vocals:  # film / podcast: müzik ve efektler ses imzasını bozmasın
             audio = self._vocals(audio)
+            self._beat(True)
         if self.agc:  # uzaktan konuşan muhabirler de ayrı konuşmacı olarak bulunsun
             from .audio import agc
             agc(audio)
