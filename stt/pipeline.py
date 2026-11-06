@@ -57,6 +57,15 @@ class Job:
     lang_checked: bool = False
 
 
+def _pos_int(v) -> int | None:
+    """Pozitif tam sayı ya da None ("x", 0, -1, None -> None)."""
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
 def _finished(p: Path) -> bool:
     """Sürdürmede bu parça / konuşmacı dosyası bitmiş sayılır mı? Atlanan parça ve başarısız ayırma sayılmaz:
     "Tekrar dene"de yeniden denenir (eskiden boş dosya "bitti" sayılıyor, hiç yeniden denenmiyordu)."""
@@ -317,11 +326,35 @@ class Pipeline:
         return "basin" if looks_like_presser(info, match) else "herkes"
 
     def _speakers_wanted(self, item: Item) -> int | None:
-        n = item.extra.get("speakers") or self.cfg.min_speakers
-        try:
-            return int(n) if n and int(n) > 0 else None
-        except (TypeError, ValueError):
-            return None
+        """Bu iş için verilen kesin konuşmacı sayısı (arayüzde 'kişi sayısı'); yoksa None."""
+        return _pos_int(item.extra.get("speakers"))
+
+    def _speaker_bounds(self, item: Item, mode: str) -> tuple[int | None, int | None]:
+        """Konuşmacı ayırmaya verilecek (en az, en çok) kişi sayısı.
+
+        - İşe verilen sayı kesindir (en az = en çok). CLI ``--speakers N`` de genel ayarda ikisini birden N yapar.
+        - Genel ``min_speakers`` / ``max_speakers`` (stt.toml) yalnız sınırdır; eskiden ``min_speakers`` tek başına
+          yazılınca kesin sayı gibi davranıyordu (en çok da o sayı oluyordu).
+        - Basın toplantısında en az 2 (hoca + muhabir; yoksa muhabir hocanın içine karışıyordu). Podcast / film'de
+          alt sınır yok: pyannote 4 (VBx) bulduğu kişi sayısı alt sınırdan azsa sesi zorla böler, tek kişilik video
+          iki "konuşmacı" oluyordu."""
+        n = self._speakers_wanted(item)
+        if n:
+            return n, n
+        lo, hi = _pos_int(self.cfg.min_speakers), _pos_int(self.cfg.max_speakers)
+        if lo is None and mode == "basin":
+            lo = 2
+        if lo and hi and lo > hi:
+            lo = hi
+        return lo, hi
+
+    def _item_mode(self, item: Item) -> str:
+        """İşin konuşmacı biçimi ('basin' / 'herkes'); bitirmedeki (`_finalize`) kararla aynı bilgiyle."""
+        job = self.jobs.get(item.key)
+        info = {**(job.info if job else {})}
+        info["title"] = info.get("title") or item.title
+        match = job.match if job is not None and job.match else parse_match(info)
+        return self._speaker_mode(item, info, match)
 
     # ---------------------------------------------------------- girdi ekleme
     def submit(self, item: Item) -> None:
@@ -559,23 +592,19 @@ class Pipeline:
                 "idx": idx, "n": n, "job": item.key}
 
     def _diarize_task(self, item: Item, wav: Path) -> dict:
-        n = self._speakers_wanted(item)
+        mode = self._item_mode(item)
+        lo, hi = self._speaker_bounds(item, mode)
         return {"id": f"{item.key}:d", "kind": "diarize", "wav": str(wav), "job": item.key,
-                "min_speakers": n or self.cfg.min_speakers or 2, "max_speakers": n or self.cfg.max_speakers,
-                "vocals": self._want_vocals(item)}
+                "min_speakers": lo, "max_speakers": hi, "vocals": self._want_vocals(item, mode)}
 
-    def _want_vocals(self, item: Item) -> bool:
+    def _want_vocals(self, item: Item, mode: str | None = None) -> bool:
         """Konuşmacı ayırmadan önce müzik ayıklansın mı: auto = podcast / film evet, basın toplantısı hayır."""
         v = str(self._opt(item, "diar_music") or "auto").strip().lower()
         if v in ("on", "acik", "açık", "1", "true", "evet"):
             return True
         if v in ("off", "kapali", "kapalı", "0", "false", "hayir", "hayır"):
             return False
-        job = self.jobs.get(item.key)
-        info = {**(job.info if job else {})}
-        info["title"] = info.get("title") or item.title
-        match = job.match if job is not None and job.match else parse_match(info)
-        return self._speaker_mode(item, info, match) == "herkes"
+        return (mode or self._item_mode(item)) == "herkes"
 
     def _prompt(self, item: Item, job: Job) -> str | None:
         cfg = self.cfg
