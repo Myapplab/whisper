@@ -154,10 +154,16 @@ intervista out back set big top all one two three four five six seven eight nine
 ready return returns fit doubt ruled miss misses available injured lineup xi starting bench goal goals assist
 assists start starts debut contract deal signing signs sign loan special key title race relegation chances
 weeks days months video clip clips every best
-""".split())
+january february july september october november december
+enero febrero marzo abril mayo junio agosto septiembre setiembre octubre noviembre diciembre
+gennaio febbraio aprile maggio giugno luglio settembre ottobre dicembre
+janeiro fevereiro maio junho julho setembro outubro novembro dezembro
+janvier fevrier juin juillet aout septembre octobre novembre decembre
+""".split())  # ad da olabilen aylar yok: March (Solly March), May, June, April, August, Julio, Marco (março), Mars
 
-_UP = "A-ZÀ-ÖØ-ÞĞİŞÇÜÖƏ"
-_LO = "a-zà-öø-ÿğışçüöə"
+# Latin-1 + Latin Genişletilmiş-A (Ā-ſ: ć ř š ž č ł ő İ ı ğ ş...; "Jakirović", "Trpišovský") + Azerice Ə ə
+_UP = "A-ZÀ-ÖØ-ÞĀ-ſƏ"
+_LO = "a-zß-öø-ÿĀ-ſə"
 # Ad: büyük harfle başlar; McKenna, MacAllister, O'Neil, D'Alessandro, Jean-Philippe da ad
 _NAME_WORD = rf"(?:Mc|Mac|O['’]|D['’])?[{_UP}][{_LO}'’]+(?:-(?:[{_UP}][{_LO}'’]+|[{_LO}'’]+))*"
 _PARTICLES = {"van", "von", "der", "den", "de", "di", "da", "du", "del", "della", "le", "la", "ten", "ter",
@@ -214,9 +220,9 @@ _DETERMINERS = {"the", "a", "an", "this", "that", "our", "their", "his", "its", 
 
 
 def _subject_in(text: str, alias: str) -> bool:
-    pat = rf"(?<![\w'’])({re.escape(alias[0].upper())}(?i:{re.escape(alias[1:])}))\s+{_AMB_VERBS}\b"
+    pat = rf"(?<!\w)({re.escape(alias[0].upper())}(?i:{re.escape(alias[1:])}))\s+(?i:{_AMB_VERBS})\b"
     for m in re.finditer(pat, text or ""):
-        prev = re.findall(r"[\w']+", text[:m.start()])
+        prev = re.findall(r"\w+(?:['’]\w+)?", text[:m.start()])
         if not prev or prev[-1].lower() not in _DETERMINERS:
             return True
     return False
@@ -416,21 +422,26 @@ def manager_team(name: str | None, date: str | None = None) -> str | None:
     return team
 
 
-# Rakip adı yerine geçen genel sözcükler: "Boxing Day clash", "North London Derby", "Emirates Stadium",
-# "Gameweek 11", "St James' Park". Rakip yalnız bunlardan oluşuyorsa rakip yok sayılır (normal maç araması);
-# sözlükte olmayan adla PL maçı eşleştirilirken de sayılmaz ("Exeter City" Manchester City değil).
-GENERIC_OPP = set("""
+# Rakip adı yerine geçen yer / zaman / derbi sözcükleri: "Boxing Day clash", "North London Derby", "Emirates
+# Stadium", "Gameweek 11", "St James' Park". Rakip yalnız bunlardan oluşuyorsa rakip yok sayılır (normal maç araması).
+VENUE_WORDS = set("""
 boxing day gameweek matchweek gw round stadium park arena ground road lane emirates anfield etihad trafford old bridge
 stamford selhurst goodison craven cottage molineux turf moor st james mary marys north south east west london
-merseyside manchester tyne wear midlands black country local city united town county athletic albion wanderers
-rovers fc afc the derby clash showdown trip visit test tie fixture game match week weekend home away cup final semi
-league big new year christmas festive opener
+merseyside manchester tyne wear midlands black country local the derby clash showdown trip visit test tie fixture
+game match week weekend home away cup final semi league big new year christmas festive opener
 """.split())
+# Kulüp adı eki: tek başına bir kulübü anabilir ("previews City", "previews Athletic"), ama "Exeter City"yi
+# Manchester City ile eşleştirmek için yetmez
+CLUB_SUFFIX = {"city", "united", "town", "county", "athletic", "albion", "wanderers", "rovers", "fc", "afc"}
 
 
 def opp_words(name: str) -> set[str]:
-    """Rakip metninin ayırt edici sözcükleri (genel sözcükler ve kısa sözcükler hariç)."""
-    return {w for w in _alias_norm(name or "").split() if len(w) > 2 and w not in GENERIC_OPP}
+    """Rakip metninin ayırt edici sözcükleri (yer / zaman sözcükleri, kulüp ekleri ve kısa sözcükler hariç)."""
+    return {w for w in _alias_norm(name or "").split() if len(w) > 2 and w not in VENUE_WORDS | CLUB_SUFFIX}
+
+
+def opp_suffix_words(name: str) -> set[str]:
+    return {w for w in _alias_norm(name or "").split() if w in CLUB_SUFFIX}
 
 
 _OPP_RE = re.compile(rf"(?:(?i:\b(?:previews?|ahead\s+of|against|versus|vs)\b\.?)|\bv\b\.?)\s+((?:{_NAME_WORD}\s?){{1,3}})")
@@ -451,7 +462,7 @@ def _opponent_by_pattern(title: str, home: str | None) -> str | None:
             return None if canon == home else canon
         if home and _alias_norm(cand) == _alias_norm(home):
             return None
-        if not opp_words(cand):
+        if not opp_words(cand) and not opp_suffix_words(cand):
             continue  # "Boxing Day", "North London Derby": rakip adı değil
         return cand
     return None
@@ -579,8 +590,8 @@ def parse_match(info: dict) -> dict:
             # rakip: başlıktaki tek takım, yoksa açıklamadaki ilk başka takım (açıklama çoğu zaman hocanın kendi
             # kulübünü de anar: "Manchester City manager Enzo Maresca..."), yoksa kalıpla bulunan
             other = title_teams[0] if title_teams else next((x for x in find_teams(desc) if x != mt), None)
-            if other is None and away not in (None, mt) and not is_team(away):
-                other = away
+            if other is None:
+                other = _opponent_by_pattern(title, mt)
             team, home, away = mt, mt, other
     if away is not None and away == home:
         away = None  # takım kendisiyle oynamaz ("Manchester City vs Manchester City")

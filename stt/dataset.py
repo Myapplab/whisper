@@ -25,8 +25,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path, PurePath
 
-from .match import (_ALIAS_MAP, _ALIASES, _alias_norm, _known_manager, _norm, find_teams, is_team, opp_words,
-                    safe_filename)
+from .match import (_ALIAS_MAP, _ALIASES, _alias_norm, _known_manager, _norm, find_teams, is_team, opp_suffix_words,
+                    opp_words, safe_filename)
 from .util import atomic_write_text, log, read_jsonl, write_jsonl_csv
 
 FPL_BASE = "https://fantasy.premierleague.com/api"
@@ -169,27 +169,32 @@ def presser_datetime(info: dict) -> datetime | None:
 # international break", "kick on after Chelsea win": çoğu zaman sonraki maçın öncesi), "reacts to transfer rumours",
 # "reaction to call-up", "Champions League / FA Cup draw" (kura), "out for 2-3 weeks", "25-26 season", Türkçe tek
 # başına "sonrası" ("milli ara sonrası").
-_RESULT = (r"(?:win|wins|won|defeat|loss|lost|victory|beat|result|game|match|thrashing|comeback|drew|"
-           r"(?<!league )(?<!cup )(?<!group )(?<!stage )(?<!round )(?<!final )draw)")
+_RESULT = r"(?:win|wins|won|defeat|loss|lost|victory|beat|result|game|match|thrashing|comeback|drew)"
+_SCORE_TXT = (r"(?<![\d-])\d{1,2} ?- ?\d{1,2}(?![\d-])(?! ?(?:weeks?|wks?|days?|months?|years?|seasons?|games?|"
+              r"matches|mins?|minutes?|hafta\w*|gun\w*|ay\b|yil\w*|sezon\w*|mac\w*|dakika\w*|hefte\w*|movsum\w*))")
+_REACT_TO = r"\breact(?:s|ion)? to (?:the |our |their |his |a )?(?:[\w']+ ){0,3}"
 _POST_RE = re.compile(
     r"post[ -]?(?:match|game)|"
-    rf"\breact(?:s|ion)?\b(?! to\b)|\breact(?:s|ion)? to (?:the |our |their |his |a )?(?:[\w']+ ){{0,3}}(?:\d|{_RESULT}\b)|"
+    rf"\breact(?:s|ion)?\b(?! to\b)|{_REACT_TO}(?:{_SCORE_TXT}|{_RESULT}\b)|"
     r"(?:mac|matc|karsilasma|oyun|derbi|deplasman|galibiyet|yenilgi|beraberlik|maglubiyet)\w* "
     r"(?:sonrasi|sonra|ardindan)\b|\bmac\w* sonu\b")
+# "reacts to Chelsea draw" maç sonucu; "reacts to Champions League / FA Cup / last 16 draw" kura
+_POST_DRAW_RE = re.compile(rf"{_REACT_TO}draw\b")
+_CUP_DRAW_RE = re.compile(r"\b(?:league|cup|group|stage|round|final|finals|quarter|semi|playoffs?|knockout|last|kura|"
+                          r"\d{2})\b[\w' ]{0,20}\bdraw\b")
 _PRE_RE = re.compile(r"pre[ -]?(?:match|game)|\bpreviews?\b|\bahead of\b|\bbefore (?:the )?(?:game|match)\b|"
                      r"\bpre[ -](?!season)[a-z]|\boncesi\b|\bevvel\b|build[ -]?up")
-# skor: "Arsenal 2-1 Chelsea", "2-1 win", "Qarabağ 2:1 Sabah"; "2-3 weeks", "4-3-3", "25-26 season", tarih, saat değil
-_SCORE_RE = re.compile(r"(?:(?<![\d-])\d{1,2} ?- ?\d{1,2}(?![\d-])|(?<![\d:])\d:\d(?![\d:]))"
-                       r"(?! ?(?:weeks?|wks?|days?|months?|years?|seasons?|games?|matches|mins?|minutes?|hafta\w*|"
-                       r"gun\w*|ay\b|yil\w*|sezon\w*|mac\w*|dakika\w*|hefte\w*|mövsüm\w*|movsum\w*))")
+# skor: "Arsenal 2-1 Chelsea", "2-1 win", "Qarabağ 2:1 Sabah"; "2-3 weeks", "4-3-3", "25-26 season", tarih, saat,
+# "1:1 with Arteta" (birebir röportaj) değil
+_SCORE_RE = re.compile(rf"{_SCORE_TXT}|(?<=[a-z] )\d:\d(?= [a-z])(?! with\b)")
 
 
 def phase_hint(title: str) -> str | None:
     """Başlık maç öncesi mi sonrası mı diyor? İkisi birden ya da hiçbiri: None (saate göre karar verilir).
     Skor ancak başlıkta takım adı ya da sonuç sözcüğü de varsa maç sonrası sayılır."""
     t = _norm(re.sub(r"[–—]", "-", title or ""))
-    post = bool(_POST_RE.search(t)) or bool(
-        _SCORE_RE.search(t) and (find_teams(title) or re.search(rf"\b{_RESULT}\b", t)))
+    post = bool(_POST_RE.search(t)) or bool(_POST_DRAW_RE.search(t) and not _CUP_DRAW_RE.search(t)) or bool(
+        _SCORE_RE.search(t) and (find_teams(title) or re.search(rf"\b(?:{_RESULT}|draw)\b", t)))
     pre = bool(_PRE_RE.search(t))
     if post == pre:
         return None
@@ -197,12 +202,13 @@ def phase_hint(title: str) -> str | None:
 
 
 def _same_club(name: str, team: str | None) -> bool:
-    """Sözlükte olmayan rakip metni ("Hotspur", "Utd") o takımın bir adıyla örtüşüyor mu? Genel sözcükler
-    ("City", "United", "Athletic") sayılmaz: "Exeter City" Manchester City değil."""
+    """Sözlükte olmayan rakip metni o takımın bir adıyla örtüşüyor mu? Ayırt edici sözcük varsa yalnız o sayılır
+    ("Exeter City" Manchester City değil); yalnız kulüp eki varsa ek ("previews City" -> Manchester City)."""
     if not team:
         return False
     team_words = {w for a, c in _ALIASES if c == team for w in a.split()}
-    return bool(opp_words(name) & team_words)
+    own = opp_words(name) or opp_suffix_words(name)
+    return bool(own & team_words)
 
 
 def find_fixture(team: str, opponent: str | None, when: datetime, data: dict, phase: str | None = None,
@@ -323,8 +329,8 @@ def classify(match: dict, info: dict, data: dict | None) -> dict:
                 if fx:
                     by_id = {v["id"]: k for k, v in teams.items()}
                     other = by_id.get(fx["team_a"] if fx["team_h"] == teams[team]["id"] else fx["team_h"])
-                    if not (comp_title == "Premier League" or not opp_words(str(opponent))
-                            or _same_club(str(opponent), other)):
+                    vague = not (opp_words(str(opponent)) or opp_suffix_words(str(opponent)))  # "Manchester"
+                    if not (comp_title == "Premier League" or vague or _same_club(str(opponent), other)):
                         fx = None
                 if fx:
                     log.info("Rakip sözlükte yok (%s); %s maçı kullanıldı.", str(opponent)[:60], fx.get("id"))

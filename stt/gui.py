@@ -570,6 +570,9 @@ class App:
         return {"count": n}
 
     def resume_pending(self) -> dict:
+        msg = self._busy_msg()
+        if msg:
+            return {"count": 0, "error": msg}
         from .sources import Item
         n = 0
         for row in self._pending:
@@ -681,7 +684,10 @@ class App:
                 continue
             if new:
                 log.info("Takip: %s -> %d yeni video", row.get("name"), len(new))
-                self.start_selected([e["url"] for e in new], {**(row.get("opts") or {}), "collection": row["name"]})
+                r = self.start_selected([e["url"] for e in new], {**(row.get("opts") or {}), "collection": row["name"]})
+                if r.get("ok") is False:  # eğitim / yeniden sınıflandırma sürüyor: "görüldü" sayma, sonra tekrar
+                    log.info("Takip: %s yeni videoları sonraki denetimde eklenecek (%s)", row.get("name"), r.get("error"))
+                    continue
             seen = (row.get("seen") or []) + [e.get("id") or e["url"] for e in new]
             f.update(row["id"], last=time.time(), seen=seen[-2000:], found=(row.get("found") or 0) + len(new))
             total += len(new)
@@ -700,17 +706,18 @@ class App:
 
 
     def open(self, p: str) -> None:
-        open_path(p)
+        open_path(self._moved_path(p))
 
     def open_out(self) -> None:
         Path(self._cfg.out_dir).mkdir(parents=True, exist_ok=True)
         open_path(str(Path(self._cfg.out_dir).resolve()))
 
     def _moved_path(self, p: str) -> str:
-        """Yeniden sınıflandırmayla taşınmış metin: açık okuyucu / Konuşmacılar ekranı eski yolu tutuyor olabilir."""
+        """Yeniden sınıflandırmayla taşınmış metin / klasör: açık okuyucu, Konuşmacılar ekranı ya da kuyruktaki kart
+        eski yolu tutuyor olabilir. Yeni yer varsa o (eski kopya silinemeyip kalmış olsa da)."""
         moved = getattr(self, "_moved", {})
         seen = 0
-        while p and not Path(p).exists() and p in moved and seen < 20:
+        while p and p in moved and seen < 20 and (Path(moved[p]).exists() or not Path(p).exists()):
             p, seen = moved[p], seen + 1
         return p
 
@@ -751,6 +758,9 @@ class App:
 
     def speakers_save(self, p: str, data: dict) -> dict:
         """Düzeltmeleri yaz (txt/srt/json/özet yeniden), adı konan seslerin imzasını kütüphaneye ekle."""
+        if getattr(self, "_reclassifying", False):
+            return {"ok": False, "error": "Veri seti yeniden sınıflandırılıyor; birkaç saniye sonra tekrar Kaydet'e basın "
+                                          "(düzeltmeleriniz ekranda duruyor)."}
         try:
             from .outputs import write_all
             from .voices import apply_corrections, ensure_orig_turns, learn_from_doc, reference_turns, save_reference
@@ -913,10 +923,10 @@ class App:
     def dataset_reclassify(self, apply: bool = False) -> dict:
         """Veri seti > "Yeniden sınıflandır": önce deneme turu (ne değişecek), onaylanınca uygula.
         Kuyrukta iş varken yapılmaz (biten işin çıktısı aynı anda yazılabilir)."""
-        if self._pipe is not None and self._pipe.active() or not self._inbox.empty():
-            return {"ok": False, "error": "Kuyrukta iş varken yapılmaz: işler bitince (ya da Durdur'dan sonra) tekrar "
-                                          "deneyin."}
-        with self._lock:  # iki çağrı aynı anda başlamasın (çift tıklama)
+        with self._lock:  # iki çağrı aynı anda başlamasın (çift tıklama); kuyruk denetimi de kilit altında
+            if self._pipe is not None and self._pipe.active() or not self._inbox.empty():
+                return {"ok": False, "error": "Kuyrukta iş varken yapılmaz: işler bitince (ya da Durdur'dan sonra) "
+                                              "tekrar deneyin."}
             if getattr(self, "_reclassifying", False):
                 return {"ok": False, "error": "Yeniden sınıflandırma zaten sürüyor."}
             self._reclassifying = True
