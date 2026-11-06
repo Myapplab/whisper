@@ -148,11 +148,17 @@ def _smooth(labels: list[str | None], min_run: int = 2, durs: list[float] | None
     if len(runs) < 2:
         return out
     for k, (a, b) in enumerate(runs):
-        short = (sum(durs[a:b]) < min_sec) if durs is not None else (b - a < min_run)
-        if not short:
+        cur = sum(durs[a:b]) if durs is not None else (b - a)
+        lim = (HEAD_MIN_SEC if (k == 0 and b - a >= HEAD_MIN_WORDS) else min_sec) if durs is not None else min_run
+        if cur >= lim:
             continue
         left = out[runs[k - 1][0]] if k > 0 else None
         right = out[runs[k + 1][0]] if k + 1 < len(runs) else None
+        if left is None and k + 1 < len(runs):
+            ra, rb = runs[k + 1]
+            rsize = sum(durs[ra:rb]) if durs is not None else (rb - ra)
+            if rsize <= cur:  # cümle başındaki daha uzun koşu, sondaki kısa kaymaya yutulmasın
+                continue
         repl = left if left is not None else right
         if repl is not None:
             for i in range(a, b):
@@ -161,19 +167,31 @@ def _smooth(labels: list[str | None], min_run: int = 2, durs: list[float] | None
 
 
 SENT_END = ".?!…"
+CLAUSE_END = ",;:"
 SENT_GAP = 0.6       # bu kadar sessizlik de cümle sonu sayılır (sn)
+TURN_GAP = 0.25      # konuşmacı değişiyorsa bu kadar boşluk (ya da virgül) cümle sınırı sayılır
 SPLIT_MIN_SEC = 1.5  # cümle ortasında konuşmacı değişimi için öbür konuşmacının en az süresi
 SPLIT_MIN_WORDS = 4  # ... ve en az kelime sayısı
+HEAD_MIN_SEC = 0.8   # cümle başındaki farklı konuşmacı en az bu kadar sürerse sonraki konuşmacıya yutulmaz
+HEAD_MIN_WORDS = 2   # ... ve en az kelime sayısı
 EARLY_GAP = 1.5      # segment başındaki kelimeden sonra bu kadar boşluk: kelime zamanı kaymış olabilir
 
 
-def _sentences(words: list[dict]) -> list[tuple[int, int]]:
-    """Kelimeleri cümlelere böl: noktalama (. ? ! …) ya da uzun sessizlik."""
+def _sentences(words: list[dict], raw: list | None = None) -> list[tuple[int, int]]:
+    """Kelimeleri cümlelere böl: noktalama (. ? ! …), uzun sessizlik ya da konuşmacı değişiminde virgül/duraksama."""
     out, a = [], 0
     for i, w in enumerate(words):
-        end = w["word"].strip().rstrip("\"'”’»)]").endswith(tuple(SENT_END))
-        gap = i + 1 < len(words) and words[i + 1]["start"] - w["end"] > SENT_GAP
-        if end or gap or i + 1 == len(words):
+        stripped = w["word"].strip().rstrip("\"'”’»)]")
+        end = stripped.endswith(tuple(SENT_END))
+        dt = words[i + 1]["start"] - w["end"] if i + 1 < len(words) else 0.0
+        gap = i + 1 < len(words) and dt > SENT_GAP
+        # Whisper konuşmacı değişiminde nokta yerine virgül koymuşsa (ya da kısa duraksama varsa) ve akustik
+        # konuşmacı orada değişiyorsa birinci konuşmacının cümlesi ikinciye yutulmasın
+        turn_break = (raw is not None and i + 1 < len(words) and i - a + 1 >= 2 and len(words) - (i + 1) >= 2
+                      and raw[i] is not None and raw[i + 1] is not None and raw[i] != raw[i + 1]
+                      and raw[i - 1] == raw[i] and raw[i + 1] == raw[i + 2]
+                      and (stripped.endswith(tuple(CLAUSE_END)) or dt >= TURN_GAP))
+        if end or gap or turn_break or i + 1 == len(words):
             out.append((a, i + 1))
             a = i + 1
     return out
@@ -182,7 +200,7 @@ def _sentences(words: list[dict]) -> list[tuple[int, int]]:
 QUESTION_MIN_SEC = 0.4  # "?" ile biten cümlenin sonundaki başka konuşmacı parçası en az bu kadar sürerse ayrı tutulur
 
 
-def _sentence_labels(labels: list, durs: list[float], question: bool = False) -> list:
+def _sentence_labels(labels: list, durs: list[float], question: bool = False, prev_spk: str | None = None) -> list:
     """Cümleye süre ağırlıklı çoğunluk oyu; yalnızca iki konuşmacı da uzun (≥1.5 sn, ≥4 kelime) konuşmuşsa böl.
 
     ``question``: cümle "?" ile bitiyor. Sondaki farklı konuşmacı parçası kısa da olsa (ör. muhabirin "…and Saka?"
@@ -191,7 +209,7 @@ def _sentence_labels(labels: list, durs: list[float], question: bool = False) ->
         runs = _runs(labels)
         a, b = runs[-1]
         if len(runs) > 1 and labels[a] is not None and sum(durs[a:b]) >= QUESTION_MIN_SEC:
-            return _sentence_labels(labels[:a], durs[:a]) + [labels[a]] * (b - a)
+            return _sentence_labels(labels[:a], durs[:a], prev_spk=prev_spk) + [labels[a]] * (b - a)
     vote: dict = defaultdict(float)
     for lab, d in zip(labels, durs):
         if lab is not None:
@@ -200,8 +218,13 @@ def _sentence_labels(labels: list, durs: list[float], question: bool = False) ->
         return list(labels)
     major = max(vote, key=vote.get)
     runs = _runs(labels)
-    strong = [labels[a] is not None and b - a >= SPLIT_MIN_WORDS and sum(durs[a:b]) >= SPLIT_MIN_SEC
-              for a, b in runs]
+    strong = [labels[a] is not None and (
+        (b - a >= SPLIT_MIN_WORDS and sum(durs[a:b]) >= SPLIT_MIN_SEC)
+        # cümle başında 1. konuşmacı kısa bir cümle/ifade söyleyip (≥2 kelime, ≥0.8 sn) hemen ardından 2. konuşmacı
+        # uzun konuşmaya geçtiyse (ve 2. konuşmacı önceki cümlenin devamı değilse) 1. cümle 2. konuşmacıya yutulmasın
+        or (k == 0 and len(runs) >= 2 and b - a >= HEAD_MIN_WORDS and sum(durs[a:b]) >= HEAD_MIN_SEC
+            and prev_spk != labels[runs[1][0]])
+    ) for k, (a, b) in enumerate(runs)]
     if len({labels[a] for (a, _), st in zip(runs, strong) if st}) < 2:
         return [major] * len(labels)
     out = list(labels)
@@ -252,11 +275,13 @@ def assign_speakers(segments: list[dict], turns: list[list]) -> list[dict]:
     turns = exclusive_turns(sorted(turns, key=lambda t: t[0]))
     out: list[dict] = []
     hint = 0
+    prev_spk = None
     for seg in segments:
         words = seg.get("words") or []
         if not words:
             spk, hint = _speaker_at(seg["start"], seg["end"], turns, hint)
             out.append({**seg, "speaker_id": spk})
+            prev_spk = spk or prev_spk
             continue
         raw = []
         for w in words:
@@ -264,12 +289,15 @@ def assign_speakers(segments: list[dict], turns: list[list]) -> list[dict]:
             raw.append(spk)
         durs = [_dur(w) for w in words]
         labels: list = []
-        sents = _sentences(words)
+        sents = _sentences(words, raw)
         for a, b in sents:
             q = words[b - 1]["word"].strip().rstrip("\"'”’»)]").endswith("?")
             # soru cümlesinde kısa parçayı yumuşatma silmesin (yalnız tek kelimelik sıçramalar katılır)
             sm = _smooth(raw[a:b], min_run=2) if q else _smooth(raw[a:b], durs=durs[a:b])
-            labels += _sentence_labels(sm, durs[a:b], question=q)
+            cur_labels = _sentence_labels(sm, durs[a:b], question=q, prev_spk=prev_spk)
+            labels += cur_labels
+            if cur_labels and cur_labels[-1] is not None:
+                prev_spk = cur_labels[-1]
         # sessizlikten sonraki ilk kelimenin zamanı Whisper'da birkaç sn erken çıkabiliyor (faster-whisper #125):
         # segment başındaki 1-2 kelimelik, noktalamasız ve uzun boşlukla ayrılmış parça sonraki cümleye aittir
         if len(sents) > 1:

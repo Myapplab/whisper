@@ -24,7 +24,7 @@ def turns_from_segments(segments: list[dict]) -> list[dict]:
         gap = s["start"] - turns[-1]["end"] if turns else 0
         if turns and turns[-1]["speaker"] == spk and (spk is not None or gap < 2.0):
             turns[-1]["text"] += " " + s["text"]
-            turns[-1]["end"] = s["end"]
+            turns[-1]["end"] = max(turns[-1]["end"], s["end"])
         else:
             turns.append({"speaker": spk, "start": s["start"], "end": s["end"], "text": s["text"]})
     for t in turns:

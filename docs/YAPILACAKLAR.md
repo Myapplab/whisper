@@ -37,6 +37,16 @@ sıradakine geç. Kullanım biterse diğer profil ilk ✅ olmayan adımdan devam
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
+- 1.9.6 (kullanıcı geri bildirimi; 218 test): eğitimden önce Konuşmacılar ekranında tam düzeltme yapılabilmesi ve ilk
+  cümlenin yutulmaması. (1) `merge.py`: Konuşmacı 1 bir cümle söyleyip ardından Konuşmacı 2 5 cümle söylediğinde ilk
+  cümlenin son kelimesindeki kayma yüzünden tüm cümlenin Konuşmacı 2'ye yazılması (`_smooth` `k=0` hatası) ve virgül /
+  kısa duraksamayla bağlanan konuşmacı geçişlerinin tek cümlede erimesi (`_sentences`, `_sentence_labels`) düzeltildi.
+  (2) `gui.html` / `gui.py` / `voices.py`: Konuşmacılar ekranında her satırın metni doğrudan düzenlenebilir (`.srt`
+  dahil güncellenir), `✂ Böl` birleşik satırı imleçten ya da ilk cümle sonundan ikiye böler, `👥 Aynı anda` aynı
+  saniyede ikinci konuşmacı satırı ekler (`tune._solo_spans` üst üste konuşulan saniyeleri ses imzasından çıkarır),
+  `+ Satır` kaçırılan sözü ekler, `✕` satırı siler, süreye tıklayınca başlangıç-bitiş değiştirilir. (3) `"Kaydet ve
+  eğit"` ile çıkarılmış `src="duzeltme"` imzası sonradan düz `"Kaydet"`e basılınca silinmez (`keep_duzeltme`). Windows'ta
+  ve gerçek GPU'da DENENMEDİ.
 - 1.9.5 (Gemini raporu 0.4/3, kullanıcının 2. adımı; 209 test): ses kütüphanesi. "Kaydet": videonun kayıtları baştan
   kurulur, konuşmasının %10'undan fazlası başka kişiye taşınmış kümenin imzası öğrenilmez (ekranda "Sesi şimdi
   öğrenilmedi: ..."). "Kaydet ve eğit": imzalar düzeltilmiş satırların sesinden yeniden çıkarılır, elle eklenen

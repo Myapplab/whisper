@@ -39,6 +39,31 @@ Bu dosya bir sonraki oturumun uygulayacağı plandır. Sırayla yap; her adımda
 - **Sortformer yapılmadı:** NVIDIA NeMo gerektirir (çok büyük, Windows'ta resmî destek zayıf, en çok 4 konuşmacı).
   DER ölçümü (adım 3) gelince community-1 ile karşılaştırılmaya değer olursa ayrı süreçte denenmeli.
 
+## 1.9.6'da yapılanlar (ilk cümle yutulması + Konuşmacılar satır düzenleme/bölme/aynı anda konuşma)
+- **İlk cümlenin sonraki konuşmacının çok cümleli bloğuna yutulması (`stt/merge.py`):**
+  1. `_smooth`: cümle başında (`k == 0`, `left is None`) konuşmacı koşusu kendisinden kısa/eşit bir kuyruk kaymasına
+     (`rsize <= cur`) asla ezdirilmez; ayrıca cümle başındaki `≥ 2 kelime` ve `≥ 0.8 sn` (`HEAD_MIN_WORDS/HEAD_MIN_SEC`)
+     koşu korunur (eskiden 0.9 sn'lik ilk cümlenin son kelimesi 0.2 sn sonraki konuşmacıya kayınca tüm cümle sonraki
+     konuşmacıya yazılıyordu).
+  2. `_sentences`: nokta/soru/ünlem ve `≥ 0.6 sn` boşluğa ek olarak, virgül/noktalı virgül (`,;:`) veya `≥ 0.25 sn`
+     (`TURN_GAP`) duraksamada akustik konuşmacı değişiyorsa (her iki tarafta en az 2 tutarlı kelime) cümleyi böler.
+  3. `_sentence_labels`: noktalamasız/duraksamasız geçişte bile cümle başındaki `≥ 2 kelime, ≥ 0.8 sn` koşu önceki
+     cümledeki konuşmacıdan (`prev_spk`) farklı bir konuşmacıya geçiyorsa korunur (orta yerdeki sandviç sapmalar ise
+     bölünmez).
+- **Konuşmacılar ekranında satır içi düzenleme (`stt/gui.html`, `stt/gui.py`, `stt/voices.py`):**
+  - **Metin düzeltme (`.lntxt`):** yanlış anlaşılan kelimeler doğrudan satır kutusunda düzeltilir; `voices._sync_words`
+    kelime zamanlarını günceller ya da temizler (böylece `.srt` eski kelimeleri yazmaz).
+  - **Satır bölme (`✂ Böl`, `voices.split_segment`):** iki konuşmacının cümleleri tek satırda birleşmişse imleç
+    yerinden (imleç yoksa ilk cümle sonundan `.?!…`, o da yoksa ilk `,;:` ya da ortadan) iki satıra böler; kelime
+    zamanları varsa bölünme saniyesini kelime sınırından alır.
+  - **Aynı anda konuşma (`👥 Aynı anda`):** iki kişinin aynı anda söylediği kelime/cümle için aynı `[start, end]`
+    aralığında ikinci konuşmacıya satır ekler. `tune._solo_spans` üst üste binen saniyeleri ses imzası çıkarımından
+    (`voice_embeddings`) düşer; böylece karışık ses tek kişinin imzasını bozmaz.
+  - **Kaçırılan söz (`+ Satır`), satır silme (`✕`) ve süre düzenleme (`.tm`'ye tıklama):** atlanan sözler eklenir,
+    uydurma satırlar silinir.
+  - **Eğitim imzasını koruma (`keep_duzeltme`):** `"Kaydet ve eğit"` ile çıkarılmış `src="duzeltme"` ses imzası,
+    sonradan düz `"Kaydet"`e basıldığında küme saflığı `< %90` olsa bile silinmez.
+
 ## 1.9.5'te yapılanlar (ses kütüphanesi imza yenileme, Gemini raporu 0.4/3)
 - "Kaydet": videonun kütüphanedeki kayıtları baştan kurulur (adı değişen / genel ada dönen konuşmacının eski kaydı
   kalmaz). Konuşmasının %10'undan fazlası başka kişiye taşınmış kümenin imzası öğrenilmez (`voices.cluster_purity`,

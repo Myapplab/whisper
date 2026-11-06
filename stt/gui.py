@@ -722,7 +722,10 @@ class App:
                                   "voice": v.get("voice"), "sig": k in emb}
                                  for k, v in (doc.get("speakers") or {}).items()],
                     "segments": [{"id": sg.get("id"), "start": sg.get("start"), "end": sg.get("end"),
-                                  "sid": sg.get("speaker_id"), "text": sg.get("text", "")}
+                                  "sid": sg.get("speaker_id"), "text": sg.get("text", ""),
+                                  "words": [{"start": w["start"], "end": w["end"], "word": w["word"]}
+                                            for w in (sg.get("words") or [])
+                                            if isinstance(w, dict) and "start" in w and "end" in w and "word" in w]}
                                  for sg in doc.get("segments") or []],
                     "voices": VoiceLibrary(self._state_dir()).names()}
         except Exception as e:  # noqa: BLE001
@@ -738,7 +741,8 @@ class App:
             st = self._state_dir()
             hyp = None if doc.get("corrected") else reference_turns(doc)  # programın kendi çıktısı (ölçüm için)
             ensure_orig_turns(st, doc)  # eski çıktı: ilk ayırma turları düzeltmeden önce saklansın
-            apply_corrections(doc, (data or {}).get("labels"), (data or {}).get("moves"), (data or {}).get("td"))
+            apply_corrections(doc, (data or {}).get("labels"), (data or {}).get("moves"),
+                              (data or {}).get("td"), (data or {}).get("segments"))
             base = jp.stem
             write_all(jp.parent, base, doc, f"{base} - ozet.md")
             save_reference(st, doc, hyp)

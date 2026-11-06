@@ -209,13 +209,36 @@ VOICE_WIN = 10.0      # bir parça en çok (pyannote'un 10 sn penceresi gibi)
 VOICE_MAX = 120.0     # bir videoda kişi başına en çok bu kadar ses kullanılır
 
 
+def _solo_spans(segs, name: str) -> list[tuple[float, float]]:
+    """``name`` kişisinin başka kimseyle aynı anda konuşmadığı (örtüşmesiz) >= VOICE_MIN_SEC aralıkları."""
+    others = [(float(a), float(b)) for a, b, lab in segs or [] if str(lab) != name and float(b) > float(a)]
+    out: list[tuple[float, float]] = []
+    for a, b, lab in segs or []:
+        if str(lab) != name or float(b) - float(a) < VOICE_MIN_SEC:
+            continue
+        cur = [(float(a), float(b))]
+        for oa, ob in others:
+            nxt = []
+            for x0, x1 in cur:
+                if ob <= x0 or oa >= x1:
+                    nxt.append((x0, x1))
+                else:
+                    if oa > x0:
+                        nxt.append((x0, oa))
+                    if ob < x1:
+                        nxt.append((ob, x1))
+            cur = nxt
+        out.extend((x0, x1) for x0, x1 in cur if x1 - x0 >= VOICE_MIN_SEC)
+    return sorted(out, key=lambda x: x[0] - x[1])
+
+
 def voice_embeddings(emb_model, audio, segs, names, torch=None, sr: int = SR) -> dict:
     """Düzeltilmiş satırların sesinden kişi imzaları: {ad: (imza, sn)}.
 
     ``emb_model``: pyannote'un imza modeli (``pipe._embedding``: (parti, 1, örnek) -> (parti, boyut) numpy).
     pyannote da kişinin (kümenin) imzasını bu modelin parça imzalarının ağırlıklı ortalamasıyla veriyor (VBx
     kümeleme ham imza uzayında ortalar): yeni imza kütüphanedekilerle ve yeni videoların kümeleriyle karşılaştırılabilir.
-    Kısa satırlar (<1.5 sn) kullanılmaz; uzun satırlar 10 sn'lik parçalara bölünür."""
+    Kısa satırlar (<1.5 sn) ve iki kişinin aynı anda konuştuğu kısımlar kullanılmaz; uzun satırlar 10 sn'lik parçalara bölünür."""
     if emb_model is None or not names:
         return {}
     import numpy as np
@@ -224,9 +247,7 @@ def voice_embeddings(emb_model, audio, segs, names, torch=None, sr: int = SR) ->
     min_n = max(int(getattr(emb_model, "min_num_samples", 0) or 0), int(0.5 * sr))
     out: dict = {}
     for name in names:
-        spans = sorted(((float(a), float(b)) for a, b, lab in segs or []
-                        if str(lab) == name and float(b) - float(a) >= VOICE_MIN_SEC),
-                       key=lambda x: x[0] - x[1])  # uzun satırlar önce
+        spans = _solo_spans(segs, str(name))  # uzun ve örtüşmesiz satırlar önce
         vecs, ws, total = [], [], 0.0
         for a, b in spans:
             t, b = a + VOICE_TRIM, b - VOICE_TRIM

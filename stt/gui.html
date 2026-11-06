@@ -764,28 +764,80 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
   async function openSpeakers(path) {
     const d = await call("speakers_load", path); if (!d) return;
     if (!d.ok) { toast(d.error || "Açılamadı"); return; }
-    const st = { labels: {}, moves: {}, td: null, spk: d.speakers.map(s => ({ ...s })), voices: d.voices || [] };
+    let maxId = (d.segments || []).reduce((m, s, i) => Math.max(m, Number(s.id ?? i) || 0), 0);
+    const st = {
+      labels: {}, moves: {}, td: null, spk: d.speakers.map(s => ({ ...s })), voices: d.voices || [],
+      segs: (d.segments || []).map((sg, i) => ({
+        ...sg, id: sg.id ?? i, orig_id: sg.id ?? i,
+        words: Array.isArray(sg.words) ? sg.words.map(w => ({ ...w })) : []
+      }))
+    };
     if (d.mode === "basin") { const t = st.spk.find(s => s.label === d.td_label); st.td = t ? t.id : null; }
-    let nNew = 0, delAsk = null;
+    let nNew = 0, delAsk = null, focusId = null;
     const r = $("#reader");
     const lab = id => { const s = st.spk.find(x => x.id === id); return st.labels[id] ?? (s ? s.label : "?"); };
-    const sidOf = sg => st.moves[sg.id] ?? sg.sid;
+    const sidOf = sg => sg.sid;
     const col = id => "s" + (Math.max(0, st.spk.findIndex(x => x.id === id)) % 6);
+    const parseClock = s => {
+      const p = String(s || "").trim().split(":").map(x => parseFloat(x.replace(",", ".")));
+      if (p.some(isNaN) || !p.length || p.length > 3) return null;
+      return p.reduce((a, b) => a * 60 + b, 0);
+    };
     // konuşma süresi: satırın gerçek bitişi (eskiden sonraki satırın başına kadar sayılıyordu: aradaki sessizlik de
     // konuşma görünüyordu). Bitişi olmayan eski satırda eski tahmin, süre "~" ile gösterilir.
     const tot = {}; let approx = false;
     const recount = () => { for (const k in tot) delete tot[k]; approx = false;
-      d.segments.forEach((sg, i) => { let e = sg.end;
-        if (typeof e !== "number" || !(e >= sg.start)) { approx = true; const nx = d.segments[i + 1]; e = nx ? Math.min(nx.start, sg.start + 30) : sg.start + 5; }
+      st.segs.forEach((sg, i) => { let e = sg.end;
+        if (typeof e !== "number" || !(e >= sg.start)) { approx = true; const nx = st.segs[i + 1]; e = nx ? Math.min(nx.start, sg.start + 30) : sg.start + 5; }
         tot[sidOf(sg)] = (tot[sidOf(sg)] || 0) + Math.max(0, e - sg.start); }); };
     const newSpk = () => { const id = "ELLE_" + (++nNew); st.spk.push({ id, label: "Konuşmacı " + (st.spk.length + 1), seconds: 0, sig: false }); st.labels[id] = "Konuşmacı " + st.spk.length; return id; };
+    const otherSpk = sid => {
+      const o = st.spk.find(s => s.id !== sid && (tot[s.id] || s.id.startsWith("ELLE_"))) || st.spk.find(s => s.id !== sid);
+      return o ? o.id : newSpk();
+    };
+    const setSid = (sg, v) => { sg.sid = v; if (sg.orig_id !== null && sg.orig_id !== undefined) st.moves[sg.id] = v; };
     const pick = (cur, onPick) => el("select", { onchange: e => { const v = e.target.value === "__new" ? newSpk() : e.target.value; onPick(v); render(); } },
       st.spk.map(s => el("option", { value: s.id, selected: s.id === cur }, lab(s.id))), el("option", { value: "__new" }, "+ Yeni kişi"));
+    const isOv = (sg, idx) => st.segs.some((o, j) => j !== idx && Math.min(Number(sg.end) || 0, Number(o.end) || 0) - Math.max(Number(sg.start) || 0, Number(o.start) || 0) > 0.05);
+    const splitSeg = (idx, cut) => {
+      const sg = st.segs[idx], txt = (sg.text || "").trim();
+      const ws = txt.split(/\s+/).filter(Boolean);
+      if (ws.length < 2) { toast("Bölmek için satırda en az 2 kelime olmalı."); return; }
+      let k = null;
+      if (typeof cut === "number" && cut > 0 && cut < txt.length) {
+        const left = txt.slice(0, cut).trim();
+        k = left ? left.split(/\s+/).length : 1;
+      }
+      if (!k || k <= 0 || k >= ws.length) {
+        k = ws.findIndex((w, i) => i < ws.length - 1 && /[.?!…]+["'”’»)\]]*$/.test(w));
+        if (k >= 0) k += 1;
+        else {
+          k = ws.findIndex((w, i) => i < ws.length - 1 && /[,;:]+$/.test(w));
+          k = k >= 0 ? k + 1 : Math.max(1, Math.floor(ws.length / 2));
+        }
+      }
+      k = Math.max(1, Math.min(ws.length - 1, k));
+      const t1 = ws.slice(0, k).join(" "), t2 = ws.slice(k).join(" ");
+      const s0 = Number(sg.start) || 0, e0 = Math.max(s0, Number(sg.end) || s0);
+      let e1, s2, w1 = [], w2 = [];
+      if (Array.isArray(sg.words) && sg.words.length === ws.length) {
+        w1 = sg.words.slice(0, k); w2 = sg.words.slice(k);
+        e1 = Math.round(Number(w1[w1.length - 1].end ?? s0) * 1000) / 1000;
+        s2 = Math.round(Math.max(e1, Number(w2[0].start ?? e1)) * 1000) / 1000;
+      } else {
+        const r0 = t1.length / Math.max(1, t1.length + t2.length);
+        e1 = s2 = Math.round((s0 + (e0 - s0) * r0) * 1000) / 1000;
+      }
+      const b = { id: ++maxId, orig_id: sg.orig_id ?? sg.id, start: s2, end: Math.max(s2, e0), sid: sg.sid, text: t2, words: w2 };
+      sg.end = e1; sg.text = t1; sg.words = w1; delete sg._cut;
+      st.segs.splice(idx + 1, 0, b);
+      render();
+    };
     function render() {
       const y = r.scrollTop; recount(); r.replaceChildren();
       r.append(el("datalist", { id: "voiceNames" }, st.voices.map(v => el("option", { value: v.name }))),
-        el("div", { class: "hd" }, "Konuşmacılara gerçek adlarını yazın; yanlış konuşmacıya yazılmış satırları soldaki kutudan düzeltin, sonra Kaydet'e basın. " +
-          "Adı yazılan seslerin imzası öğrenilir: sonraki videolarda bu kişiler kendiliğinden adıyla yazılır."));
+        el("div", { class: "hd" }, "Konuşmacılara gerçek adlarını yazın; yanlış konuşmacıya yazılmış satırları soldaki kutudan düzeltin, yanlış anlaşılan kelimeleri doğrudan metin kutusunda değiştirin. " +
+          "Bir satırda iki kişinin cümlesi birleşmişse imleci böleceğiniz yere koyup (ya da doğrudan) '✂ Böl'e basın; aynı anda söylenen sözler için '👥 Aynı anda'yı, kaçırılan sözler için '+ Satır'ı kullanın."));
       const rows = el("div", { class: "spkrows" });
       for (const s of st.spk) {
         if (!tot[s.id] && !s.id.startsWith("ELLE_")) continue;
@@ -809,25 +861,82 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
             st.voices = (await call("voice_delete", v.name)) || st.voices; delAsk = null; render(); } }, "✕"))));
       r.append(bar);
       let blk = null, prev = null;
-      for (const sg of d.segments) {
+      st.segs.forEach((sg, i) => {
         const sid = sidOf(sg);
         if (sid !== prev) {
-          const ids = []; const start = sg.start;
-          for (let i = d.segments.indexOf(sg); i < d.segments.length && sidOf(d.segments[i]) === sid; i++) ids.push(d.segments[i].id);
+          const grp = []; const start = sg.start;
+          for (let j = i; j < st.segs.length && sidOf(st.segs[j]) === sid; j++) grp.push(st.segs[j]);
           blk = el("div", { class: "blk" }, el("h4", { class: col(sid) }, "[" + fmtDur(start) + "] " + lab(sid),
-            el("span", { class: "hint" }, "bu bölümün tamamı:"), pick(sid, v => ids.forEach(i => { st.moves[i] = v; }))));
+            el("span", { class: "hint" }, "bu bölümün tamamı:"), pick(sid, v => grp.forEach(x => setSid(x, v)))));
           r.append(blk); prev = sid;
         }
-        blk.append(el("div", { class: "ln" }, el("span", { class: "tm" }, fmtDur(sg.start)),
-          pick(sid, v => { st.moves[sg.id] = v; }), el("span", {}, sg.text)));
-      }
+        const ov = isOv(sg, i);
+        const inp = el("input", {
+          type: "text", class: "lntxt", "data-seg": sg.id, value: sg.text || "",
+          placeholder: "Konuşma metnini yazın…",
+          oninput: e => { sg.text = e.target.value; sg._cut = e.target.selectionStart; sg.words = []; },
+          onclick: e => { sg._cut = e.target.selectionStart; },
+          onkeyup: e => { sg._cut = e.target.selectionStart; },
+          onselect: e => { sg._cut = e.target.selectionStart; }
+        });
+        blk.append(el("div", { class: "ln" },
+          el("span", {
+            class: "tm" + (ov ? " ov" : ""),
+            title: (ov ? "Aynı anda konuşma · " : "") + fmtDur(sg.start) + " – " + fmtDur(sg.end ?? sg.start) + " (süreyi değiştirmek için tıklayın)",
+            onclick: () => {
+              const cur = fmtDur(sg.start) + " - " + fmtDur(sg.end ?? sg.start);
+              const ans = prompt("Satırın başlangıç - bitiş süresi (dk:sn - dk:sn):", cur);
+              if (!ans) return;
+              const parts = ans.split(/\s*[-–]\s*/);
+              const a = parseClock(parts[0]), b = parts[1] !== undefined ? parseClock(parts[1]) : sg.end;
+              if (a === null || b === null || b < a) { toast("Geçersiz süre biçimi (ör. 1:05 - 1:12)."); return; }
+              sg.start = a; sg.end = b;
+              st.segs.sort((x, y) => (x.start - y.start) || (x.end - y.end));
+              render();
+            }
+          }, (ov ? "👥 " : "") + fmtDur(sg.start)),
+          pick(sid, v => setSid(sg, v)),
+          inp,
+          el("span", { class: "lnacts" },
+            el("button", { type: "button", title: "Cümleyi imleç yerinden (imleç yoksa ilk cümle sonundan) iki satıra böl — ilk cümle başka konuşmacıya aitse ayırmak için",
+              onclick: () => splitSeg(i, sg._cut) }, "✂ Böl"),
+            el("button", { type: "button", title: "Bu satırla aynı saniyede konuşan ikinci kişiyi ekle (aynı anda söylenen sözler için)",
+              onclick: () => {
+                const dup = { id: ++maxId, orig_id: null, start: sg.start, end: sg.end, sid: otherSpk(sid), text: sg.text, words: [] };
+                st.segs.splice(i + 1, 0, dup); focusId = dup.id; render();
+              } }, "👥 Aynı anda"),
+            el("button", { type: "button", title: "Bu satırdan sonraya kaçırılan konuşma satırı ekle",
+              onclick: () => {
+                const nx = st.segs[i + 1];
+                const s0 = Number(sg.end ?? sg.start) || 0;
+                const e0 = nx && nx.start > s0 ? Math.min(nx.start, s0 + 5) : s0 + 2;
+                const add = { id: ++maxId, orig_id: null, start: s0, end: Math.max(s0 + 0.5, e0), sid: otherSpk(sid), text: "", words: [] };
+                st.segs.splice(i + 1, 0, add); focusId = add.id; render();
+              } }, "+ Satır"),
+            el("button", { type: "button", title: "Bu satırı sil",
+              onclick: () => {
+                if (st.segs.length <= 1) { toast("Son kalan satır silinemez."); return; }
+                st.segs.splice(i, 1); render();
+              } }, "✕"))));
+      });
       r.scrollTop = y;
+      if (focusId !== null) {
+        const f = r.querySelector(`input.lntxt[data-seg="${focusId}"]`);
+        focusId = null;
+        if (f) { f.focus(); f.select(); }
+      }
     }
     async function save(train) {
+      const cleanSegs = st.segs.filter(s => (s.text || "").trim());
+      if (!cleanSegs.length) { toast("En az bir dolu konuşma satırı olmalı."); return; }
       const labels = {};
       for (const s of st.spk) if (st.labels[s.id] !== undefined && st.labels[s.id].trim() && st.labels[s.id] !== s.label) labels[s.id] = st.labels[s.id].trim();
       for (const s of st.spk) if (s.id.startsWith("ELLE_")) labels[s.id] = lab(s.id);
-      const res = await call("speakers_save", path, { labels, moves: st.moves, td: st.td });
+      const segments = cleanSegs.map(s => ({
+        id: s.id, orig_id: s.orig_id, start: s.start, end: s.end, sid: s.sid, text: (s.text || "").trim(),
+        ...(Array.isArray(s.words) && s.words.length ? { words: s.words } : {})
+      }));
+      const res = await call("speakers_save", path, { labels, moves: st.moves, td: st.td, segments });
       if (!res || !res.ok) { toast("Kaydedilemedi: " + ((res && res.error) || "?")); return; }
       const sk = (res.skipped || []).length ? " Sesi şimdi öğrenilmedi: " + res.skipped.join(", ") +
         " (satırlarının bir kısmı başka kişiye taşındı ya da yeni kişi; 'Kaydet ve eğit' düzeltilmiş satırlardan temiz imza çıkarır)." : "";

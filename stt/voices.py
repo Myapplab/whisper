@@ -201,26 +201,40 @@ class VoiceLibrary:
         return True
 
     def replace_video(self, key: str, model: str | None, entries, src: str = "kume",
-                      names: set | None = None) -> list[str]:
+                      names: set | None = None, keep_duzeltme: set | None = None) -> list[str]:
         """Bir videonun bu modeldeki imzalarını ``entries`` ile değiştir (tek kilitte). ``names`` verilirse yalnız bu
         adların eski imzaları çıkar (eğitimde imzası çıkarılamayan kişinin önceki imzası kalsın), yoksa hepsi.
+        ``keep_duzeltme``: düz "Kaydet"te (``src="kume"``) bu adların daha önce "Kaydet ve eğit" ile çıkarılmış temiz
+        (``src="duzeltme"``) imzası varsa silinmez ve kaba küme imzasıyla ezilmez.
         ``entries``: [(ad, imza, td, spk), ...] (aynı ad birden çok kez olabilir) ya da {ad: (imza, td)}.
-        Döner: eklenen adlar (sırasıyla, tekrarsız)."""
+        Döner: eklenen / korunan adlar (sırasıyla, tekrarsız)."""
         if isinstance(entries, dict):
             entries = [(n, v[0], v[1] if len(v) > 1 else False, f"{src}:{n}") for n, v in entries.items()]
         good = [((n or "").strip(), e, bool(td), str(spk)) for n, e, td, spk in entries or []
                 if (n or "").strip() and _unit(e) is not None]
         with _FileLock(self.path):
             d = self._load_for_update()
-            self._drop(d["voices"], lambda n, x: not (x.get("key") == key and x.get("model") == model
-                                                      and (names is None or n in names)))
+            kept_duz = {n for n in (keep_duzeltme or ())
+                        if any(x.get("key") == key and x.get("model") == model and x.get("src") == "duzeltme"
+                               for x in (d["voices"].get(n) or {}).get("embs", []))} if src == "kume" else set()
+            self._drop(d["voices"], lambda n, x: (
+                not (x.get("key") == key and x.get("model") == model and (names is None or n in names))
+                or (n in kept_duz and x.get("src") == "duzeltme")
+            ))
             for name, emb, td, spk in good:
+                if name in kept_duz:
+                    if name in d["voices"] and td:
+                        d["voices"][name]["td"] = True
+                    continue
                 self._append(d["voices"], name, emb, model, key, spk, td, src)
             self.save(d)
         out: list[str] = []
         for g in good:
             if g[0] not in out:
                 out.append(g[0])
+        for n in sorted(kept_duz):
+            if n not in out:
+                out.append(n)
         return out
 
     def remove(self, name: str) -> bool:
@@ -316,21 +330,122 @@ def _sid_key(x) -> str:
     return str(x)
 
 
+def split_segment(seg: dict, pos: int | None = None) -> tuple[dict, dict] | None:
+    """Bir satırı imleç konumundan (``pos`` verilmemişse ilk cümle sonundan, o da yoksa ilk virgülden ya da ortadan)
+    iki satıra böl. Kelime zamanları (``words``) varsa bölünme saniyesi kelime sınırından alınır."""
+    t = (seg.get("text") or "").strip()
+    if not t:
+        return None
+    left = right = ""
+    if isinstance(pos, int) and 0 < pos < len(t):
+        if not t[pos].isspace() and not t[pos - 1].isspace():
+            lo = t.rfind(" ", 0, pos)
+            hi = t.find(" ", pos)
+            if lo > 0 and (hi < 0 or pos - lo <= hi - pos):
+                pos = lo
+            elif hi > 0:
+                pos = hi
+        left, right = t[:pos].strip(), t[pos:].strip()
+    if not (left and right):
+        m = re.match(r"^(.+?[.?!…]+[\"'”’»)\]]*)\s+([\s\S]+)$", t) or re.match(r"^(.+?[,;:])\s+([\s\S]+)$", t)
+        if m:
+            left, right = m.group(1).strip(), m.group(2).strip()
+        else:
+            toks = t.split()
+            if len(toks) < 2:
+                return None
+            half = len(toks) // 2
+            left, right = " ".join(toks[:half]), " ".join(toks[half:])
+    if not (left and right):
+        return None
+    a, b = float(seg.get("start", 0.0) or 0.0), float(seg.get("end", 0.0) or 0.0)
+    ws = [dict(w) for w in (seg.get("words") or []) if "start" in w and "end" in w and "word" in w]
+    if len(ws) >= 2:
+        k = min(range(1, len(ws)),
+                key=lambda i: abs(len("".join(str(w["word"]) for w in ws[:i]).strip()) - len(left)))
+        w1, w2 = ws[:k], ws[k:]
+        e1 = round(float(w1[-1]["end"]), 3)
+        s2 = round(max(e1, float(w2[0]["start"])), 3)
+        p1 = {**seg, "start": round(a, 3), "end": e1, "text": left, "words": w1}
+        p2 = {**seg, "start": s2, "end": round(max(s2, b), 3), "text": right, "words": w2}
+    else:
+        mid = round(a + max(0.0, b - a) * (len(left) / max(1, len(left) + len(right))), 3)
+        p1 = {k: v for k, v in seg.items() if k != "words"} | {"start": round(a, 3), "end": mid, "text": left}
+        p2 = {k: v for k, v in seg.items() if k != "words"} | {"start": mid, "end": round(max(mid, b), 3), "text": right}
+    return p1, p2
+
+
+def _sync_words(words: list | None, text: str, start: float, end: float) -> list[dict] | None:
+    """Satır bölündüğünde ya da metni düzenlendiğinde kelime zamanlarını (``words``) güncelle."""
+    if not words:
+        return None
+    sub = [dict(w) for w in words
+           if isinstance(w, dict) and "start" in w and "end" in w
+           and start - 0.05 <= (float(w["start"]) + float(w["end"])) / 2 <= end + 0.05]
+    if not sub:
+        return None
+    joined = "".join(str(w.get("word", "")) for w in sub).strip()
+    if joined == text.strip():
+        return sub
+    toks = text.strip().split()
+    if len(toks) == len(sub):
+        for i, (w, tok) in enumerate(zip(sub, toks)):
+            w["word"] = tok if i == 0 and not str(w.get("word", "")).startswith(" ") else " " + tok
+        return sub
+    return None
+
+
 def apply_corrections(doc: dict, labels: dict | None = None, moves: dict | None = None,
-                      td: str | None = None) -> dict:
+                      td: str | None = None, segments: list[dict] | None = None) -> dict:
     """Okuyucudaki düzeltmeleri çıktıya uygula.
 
     labels: {konuşmacı_id: yeni ad}; moves: {segment_id: konuşmacı_id} (yeni id'ler de olabilir);
-    td: basın toplantısında teknik direktör olan konuşmacı_id. Süreler yeniden hesaplanır."""
+    td: basın toplantısında teknik direktör olan konuşmacı_id;
+    segments: düzenlenmiş satır listesi (metin düzeltme, satır bölme, kaçırılan / aynı anda konuşma ekleme, silme).
+    Süreler yeniden hesaplanır."""
     labels = {str(k): str(v).strip() for k, v in (labels or {}).items() if str(v).strip()}
     moves = {str(k): str(v) for k, v in (moves or {}).items() if v}
     segs = doc.get("segments") or []
     spk = {str(k): dict(v) for k, v in (doc.get("speakers") or {}).items()}
     old_td = doc.get("td_label")
     td_sid = td or next((k for k, v in spk.items() if old_td and v.get("label") == old_td), None)
-    for s in segs:
-        if _sid_key(s.get("id")) in moves:
-            s["speaker_id"] = moves[_sid_key(s.get("id"))]
+    if segments is not None:
+        orig_map = {_sid_key(s.get("id")): s for s in segs}
+        new_segs = []
+        for it in segments:
+            if not isinstance(it, dict):
+                continue
+            text = str(it.get("text") or "").strip()
+            if not text:
+                continue
+            kid = _sid_key(it.get("id"))
+            oid = _sid_key(it.get("orig_id") if it.get("orig_id") is not None else it.get("id"))
+            base = dict(orig_map.get(oid) or {})
+            try:
+                a = round(max(0.0, float(it.get("start", base.get("start", 0.0)) or 0.0)), 3)
+            except (TypeError, ValueError):
+                a = round(float(base.get("start", 0.0) or 0.0), 3)
+            try:
+                b = round(max(a, float(it.get("end", base.get("end", a)) or a)), 3)
+            except (TypeError, ValueError):
+                b = max(a, round(float(base.get("end", a) or a), 3))
+            sid = moves.get(kid) or str(it.get("sid") or it.get("speaker_id") or base.get("speaker_id") or "")
+            raw_words = it.get("words") if "words" in it else base.get("words")
+            ws = _sync_words(raw_words, text, a, b)
+            entry = {**base, "start": a, "end": b, "text": text, "speaker_id": sid}
+            if ws:
+                entry["words"] = ws
+            else:
+                entry.pop("words", None)
+            new_segs.append(entry)
+        new_segs.sort(key=lambda s: (s["start"], s["end"]))
+        for i, s in enumerate(new_segs):
+            s["id"] = i
+        segs = doc["segments"] = new_segs
+    else:
+        for s in segs:
+            if _sid_key(s.get("id")) in moves:
+                s["speaker_id"] = moves[_sid_key(s.get("id"))]
     n_new = 0
     for s in segs:
         sid = s.get("speaker_id")
@@ -458,15 +573,17 @@ def learn_from_doc(state_dir: Path, doc: dict, ignore=(), skipped: list | None =
     pur = cluster_purity(side.get("turns") or [], doc.get("segments") or []) if side.get("turns") else {}
     entries: list = []  # aynı ada iki küme olabilir (ör. hoca ikiye bölünmüştü): ikisi de öğrenilir
     missed: list = []
+    active: set[str] = set()
     for sid, v in (doc.get("speakers") or {}).items():
         lab = (v.get("label") or "").strip()
         if is_generic(lab, ignore):
             continue
+        active.add(lab)
         if sid not in emb or (sid in pur and pur[sid] < PURE_MIN):
             missed.append(lab)
             continue
         entries.append((lab, emb[sid], bool(td and lab == td), sid))
-    learned = VoiceLibrary(state_dir).replace_video(key, model, entries) if emb else []
+    learned = VoiceLibrary(state_dir).replace_video(key, model, entries, keep_duzeltme=active) if (emb or active) else []
     if skipped is not None:
         skipped.extend(n for n in dict.fromkeys(missed) if n not in learned and n not in skipped)
     return learned
