@@ -594,7 +594,7 @@ class Diarizer:
                 except Exception:  # noqa: BLE001
                     pass
 
-    def wait_memory(self, dur_s: float, max_wait: float = 1200.0) -> None:
+    def wait_memory(self, dur_s: float, max_wait: float = 600.0) -> None:
         """Boş RAM'in ``ram_pct``'si işe yetene kadar bekle (en çok ``max_wait`` sn): Whisper o sırada
         model yüklüyor / tarayıcı RAM'i doldurmuşsa ayırma hata vermesin, biraz geç başlasın."""
         from .util import memory_status
@@ -606,6 +606,12 @@ class Diarizer:
                 return
             usable = min(m["ram_free"] * self.ram_pct / 100, m["commit_free"])
             if usable >= need:
+                return
+            if m["ram_free"] * self.ram_pct / 100 >= need and time.time() - t0 >= 60:
+                # RAM yetiyor, yalnız sanal bellek (sayfa dosyası) dolu görünüyor: Windows çoğu zaman sayfa
+                # dosyasını büyütür. 20 dk beklemek yerine dene; gerçekten yetmezse bellek hatası yolu var.
+                log.warning("Sanal bellek az (%.1f GB) ama boş RAM yeterli (%.1f GB); konuşmacı ayırma deneniyor",
+                            m["commit_free"], m["ram_free"])
                 return
             self._beat()
             if time.time() - t0 < 1:

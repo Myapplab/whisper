@@ -4,6 +4,11 @@ Kullanıcı iki Claude hesabıyla (iki profil) sırayla çalışır: biri sını
 Ortak hafıza bu dosyadır. **Oturum sonunda güncelle** (Son durum + liste) ve `main`'e push et.
 
 ## Son durum
+- Sürüm 1.8.2: Windows'ta doğrulandı: `(stt-diar)` günlüğü çalışıyor, community-1 yükleniyor, müzik ayıklama 40 dk
+  seste 33 sn, ayırma 36 sn. Yeni sorun: "bellek bekleniyor ... boş RAM 6.5 GB, sanal bellek 1.5 GB" → 20 dk
+  bekliyordu. `Diarizer.wait_memory`: RAM yetiyorsa sanal bellek az olsa da 60 sn sonra deniyor; en çok 10 dk.
+  Kullanıcıda sayfa dosyası küçük olabilir (commit_free düşük); sorun sürerse sayfa dosyası büyütülsün.
+  PowerShell 5'te günlük okurken `-Encoding UTF8` ekle (yoksa Türkçe harfler bozuk görünüyor).
 - Sürüm 1.8.1: `invalid device ordinal` konuşmacı ayırma boştayken de çıktı (NBA videosu, parça 0–3 tamam, t:0004 üç
   kez) → eşzamanlılık değil, İÇERİĞE BAĞLI CTranslate2 hatası (büyük olasılıkla kelime zamanı hizalama / toplu çeviri).
   `WhisperEngine._fallback`: toplu olmadan, sonra kelime zamansız tekrar (`engines.odd_cuda_error`); bu hata artık

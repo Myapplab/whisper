@@ -153,3 +153,17 @@ def test_failing_chunk_is_skipped_not_whole_job(tmp_path):
         p._on_msg({"type": "error", "wid": "a", "tid": tid, "error": "RuntimeError: parallel_for failed"})
     assert job.status == "run" and tid not in job.pending
     assert job.info["skipped_chunks"] == [[240.0, 300.0]]
+
+
+def test_wait_memory_does_not_block_on_low_pagefile_when_ram_is_free(monkeypatch):
+    import stt.util as util
+    from stt import engines
+    from stt.engines import Diarizer
+    clock = [0.0]
+    monkeypatch.setattr(engines.time, "time", lambda: clock[0])
+    monkeypatch.setattr(engines.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    monkeypatch.setattr(util, "memory_status", lambda: {"ram_free": 6.5, "commit_free": 1.5})
+    d = Diarizer.__new__(Diarizer)
+    d.ram_pct = 70
+    d.wait_memory(2100)
+    assert 60 <= clock[0] <= 80  # eskiden 20 dk beklerdi
