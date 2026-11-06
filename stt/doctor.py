@@ -85,6 +85,16 @@ def run_doctor(cfg, deep: bool = False) -> int:
 
     # CUDA
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+    hidden = ""
+    try:  # Kontrol monitörlü karta (3080) CUDA bağlamı açmasın (ekran kararması şikâyeti): yalnız boş kartlara bak
+        from .engines import gpu_info as _gi
+        _info = _gi()
+        free = [str(i) for i, g in sorted(_info.items()) if g.get("display") is False]
+        if free and len(free) < len(_info) and not os.environ.get("CUDA_VISIBLE_DEVICES"):
+            os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(free)
+            hidden = ",".join(free)
+    except Exception:  # noqa: BLE001
+        pass
     setup_cuda_dlls()
     try:
         import torch
@@ -119,7 +129,7 @@ def run_doctor(cfg, deep: bool = False) -> int:
             lines = []
         for ln in lines or ["?"]:
             add(OK, "nvidia-smi", ln)
-        cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+        cvd = None if hidden else os.environ.get("CUDA_VISIBLE_DEVICES")
         add(OK if not cvd else WARN, "CUDA_VISIBLE_DEVICES",
             "(boş - tüm kartlar görünür)" if not cvd else f"'{cvd}' -> yalnızca bu kart(lar) görünür; uygulama açılışta bunu kaldırır")
         try:
@@ -127,7 +137,8 @@ def run_doctor(cfg, deep: bool = False) -> int:
             ncuda = ctranslate2.get_cuda_device_count()
         except Exception:  # noqa: BLE001
             ncuda = -1
-        if lines and ncuda >= 0 and ncuda < len(lines):
+        expect = len(hidden.split(",")) if hidden else len(lines)  # monitörlü kart bilerek gizlendi
+        if lines and ncuda >= 0 and ncuda < expect:
             add(BAD, "GPU sayısı", f"nvidia-smi {len(lines)} kart görüyor ama CUDA {ncuda} kart görüyor. "
                 "Sürücüyü yeniden kurun / Aygıt Yöneticisi'nde 3080'i kontrol edin; "
                 "PowerShell: nvidia-smi -L ; echo $env:CUDA_VISIBLE_DEVICES")
@@ -145,6 +156,13 @@ def run_doctor(cfg, deep: bool = False) -> int:
                 add(OK, f"Kart {i}", f"{g['name']} ({mon}) -> {st}  [gpus={cfg.gpus}]")
         except Exception as e:  # noqa: BLE001
             add(WARN, "Kart seçimi", str(e)[:120])
+        try:  # monitör nereye bağlı: anakarttaki Intel çıkışı iki kartı da serbest bırakır
+            from .engines import igpu_advice, windows_adapters
+            adv = igpu_advice(windows_adapters(), gi)
+            if adv:
+                add(OK if adv[0] else WARN, "Monitör bağlantısı", adv[1])
+        except Exception as e:  # noqa: BLE001
+            add(WARN, "Monitör bağlantısı", str(e)[:120])
         try:  # ekran kararması / "HDMI sinyali yok": Windows olay günlüğündeki sürücü çökmeleri
             from .gpuguard import describe, display_events
             ev = display_events(14)

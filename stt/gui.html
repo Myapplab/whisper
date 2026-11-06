@@ -397,7 +397,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
       <div class="sec">Ekran kartı</div>
       <div class="field"><label for="sGpu">Ekran kartı kullanımı</label>
         <select id="sGpu"></select>
-        <span class="hint">Önerilen ayar monitörün bağlı olduğu kartı boş bırakır (ekran kararmaz, bilgisayar donmaz). "Yardımcı" seçilirse monitörlü kart, ana kart yetişemeyince metin çevirir ya da konuşmacı ayırır (hangisinde iş birikmişse; aynı anda biri). Değişiklik, sıradaki işler bitince uygulanır.</span></div>
+        <span class="hint">Önerilen ayar monitörün bağlı olduğu kartı boş bırakır (ekran kararmaz, bilgisayar donmaz). Monitörün bağlı olduğu karta iş vermek ekranı karartabilir (bir daha açılmayabilir). İki kartı da tam güçle kullanmak için monitör kablosunu anakarttaki (Intel) çıkışa takın: o zaman "Önerilen" iki kartı da kendiliğinden kullanır (Kontrol'de "Monitör bağlantısı" satırına bakın). Değişiklik, sıradaki işler bitince uygulanır.</span></div>
       <div class="field" id="sHelperRow"><label for="sHelperGb">Yardımcı kartta YouTube / tarayıcı için boş bırakılacak bellek (GB)</label>
         <input type="text" id="sHelperGb" inputmode="decimal" style="width:90px" class="txt">
         <span class="hint">Bu kadar bellek YouTube ve sekmelere kalır, geri kalanı ve kartın gücü metin çevirisine verilir. Birkaç YouTube + 10 kadar sekme için 2 GB yeterli; YouTube takılırsa artırın. Kaydedince hemen geçerli.</span></div>
@@ -995,7 +995,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     const cards = s.gpu_cards || [], mon = cards.filter(c => c.display), free = cards.filter(c => !c.display);
     if (cards.length > 1 || s.gpus === "yardim")
       g.append(el("option", { value: "yardim" }, (free.length && mon.length ? free.map(c => c.name).join(" + ") + " + " + mon.map(c => c.name).join(" + ") + " yardımcı"
-        : "Monitörlü kart yardımcı") + " (çok video için)"));
+        : "Monitörlü kart yardımcı") + (mon.length ? " — DİKKAT: monitörlü karta iş verir, ekran kararabilir" : " (çok video için)")));
     g.append(el("option", { value: "all" }, "Hepsi tam yükte: en hızlı (masaüstü takılabilir, ekran kararabilir)"));
     for (const c of s.gpu_cards || []) g.append(el("option", { value: c.id }, "Yalnızca " + c.name + " (" + c.gb + " GB" + (c.display ? ", monitör bağlı" : "") + ")"));
     if (![...g.options].some(o => o.value === s.gpus)) g.append(el("option", { value: s.gpus }, "Kart: " + s.gpus));

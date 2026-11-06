@@ -23,6 +23,7 @@ from .match import looks_like_presser, parse_match
 from .util import fmt_clock, keep_awake, log, text_hash
 from .workers import WorkerPool
 
+DIAR_MEM_MAX_WAIT_S = 600.0  # RAM yetmezse ayırma en çok bu kadar sırada tutulur (sonra işçi kendisi bekler/dener)
 PREP_AHEAD = 6       # en çok bu kadar video önden hazırlanır (indiriliyor + metni bitmemiş); kalanı "Sırada" bekler
 FPL_MEM_S = 1800     # FPL fikstür verisi bellekte en çok bu kadar tutulur (erteleme / skor için yeniden okunur)
 AUTO_SPECS = ("auto", "all", "hepsi", "tum", "tümü")
@@ -281,6 +282,9 @@ class Pipeline:
         self._loading_since: dict[str, float] = {}  # işçi -> model yüklemeye başladığı an (takılma denetimi)
         self._llm = None
         self._closing = False
+        self._dmem_at = 0.0          # ayırma için RAM denetimi (ana süreçte): son ölçüm zamanı
+        self._dmem_ok = True
+        self._dmem_since: float | None = None
 
     # ---------------------------------------------------------- başlatma
     def start(self):
@@ -322,6 +326,7 @@ class Pipeline:
             if any(i in ecfg["display_gpus"] for i in used):
                 log.info("Monitörün bağlı olduğu kart kullanılıyor: toplu boyut en fazla %d (bilgisayar akıcı kalsın).",
                          cfg.display_batch)
+                self._mark_helper()  # ekran koruması: monitörlü kart iş yapıyor (aralık kapanışta kapanır)
             if all(d == "cpu" for d in devices):
                 log.warning("CUDA GPU bulunamadı -> CPU (int8) ile çalışılacak (yavaş).")
             log.info("Model hazırlanıyor: %s", cfg.model)
@@ -985,6 +990,40 @@ class Pipeline:
         spec = getattr(self.pool, "_spec", {}) or {}
         return {n for n, d in spec.items() if d == ddev}
 
+    def _diar_mem_ok(self) -> bool:
+        """Sıradaki konuşmacı ayırmaya RAM yetiyor mu (ana süreçte, görev verilmeden ÖNCE; 5 sn'de bir ölçülür).
+        Eskiden yalnız ayırma işçisi içinde bekleniyordu (en çok 10 dk); görev başlamış sayıldığı için aynı karttaki
+        metin çevirisi de o süre boyunca duruyordu (3090 boşta). Artık RAM yetmezse ayırma sırada kalır, metin sürer.
+        Ölçüt işçidekiyle aynı (``Diarizer.wait_memory``); ``DIAR_MEM_MAX_WAIT_S`` sonra yine de verilir."""
+        now = time.time()
+        if now - self._dmem_at < 5.0:
+            return self._dmem_ok
+        self._dmem_at = now
+        t = next((t for t in self.dbacklog if (self.jobs.get(t["job"]) is not None
+                                              and self.jobs[t["job"]].status == "run")), None)
+        ok = True
+        if t is not None:
+            from .util import memory_status
+            m = memory_status()
+            if m:
+                job = self.jobs[t["job"]]
+                need = 2.5 + 1.5 * float(job.info.get("duration_s") or 3600) / 3600
+                ram = m["ram_free"] * max(10, min(100, int(self.cfg.ram_limit_pct or 70))) / 100
+                waited = now - (self._dmem_since or now)
+                ok = min(ram, m["commit_free"]) >= need or (ram >= need and m["commit_free"] >= 1.0 and waited >= 60)
+                if not ok and waited >= DIAR_MEM_MAX_WAIT_S:
+                    log.warning("Konuşmacı ayırma için bellek %d dk'dır yetmiyor; yine de deneniyor", waited // 60)
+                    ok = True
+                elif not ok and self._dmem_since is None:
+                    log.warning("Konuşmacı ayırma RAM bekliyor (~%.1f GB gerekli; boş RAM %.1f GB, sanal bellek %.1f GB): "
+                                "bu sırada ekran kartı metin çevirmeye devam ediyor", need, m["ram_free"], m["commit_free"])
+        if ok:
+            self._dmem_since = None
+        elif self._dmem_since is None:
+            self._dmem_since = now
+        self._dmem_ok = ok
+        return ok
+
     def _diar_turn(self) -> bool:
         """Sıradaki konuşmacı ayırmanın işinde metin çevirisi bitti mi? Öyleyse yeni metin görevi verilmez,
         ayırma araya girer (iş çabuk biter; metin işleri sonra devam eder)."""
@@ -999,7 +1038,8 @@ class Pipeline:
         with self.lock:
             main = set(self.pool.workers) if self.pool else set()
             shared = self._shared_gpu()
-            if shared and ("diar" in self.inflight or self.dqueued_n > 0 or self._diar_turn()):
+            dmem = self._diar_mem_ok() if self.dbacklog else True
+            if shared and ("diar" in self.inflight or self.dqueued_n > 0 or (self._diar_turn() and dmem)):
                 main -= shared  # kart konuşmacı ayırmada (ya da sırası geldi): metin görevi verilmez
             while len(self.idle & main) - self.queued_n > 0 and self.backlog:
                 t = self.backlog.popleft()
@@ -1019,7 +1059,7 @@ class Pipeline:
                         self.dbacklog.append(t)
             if self.dbacklog and self.dpool is None:
                 self._start_diar_pool()
-            didle = 1 if "diar" in self.idle else 0
+            didle = 1 if "diar" in self.idle and dmem else 0  # RAM yetmezse ayırma sırada (metin sürer)
             if shared and (self.queued_n > 0 or any(w in self.inflight for w in shared)
                            or (self.backlog and not self._diar_turn())):
                 didle = 0  # kartta metin çevirisi sürüyor: ayırma bekler
@@ -1367,6 +1407,8 @@ class Pipeline:
     def _mark_helper_closed(self) -> None:
         if self.hpool is None or self._w_on() or self._d_on():
             return
+        if any(int(d.split(":")[1]) in (self._ecfg.get("display_gpus") or []) for d in self.devices if d.startswith("cuda")):
+            return  # monitörlü kart ana kart olarak hâlâ çalışıyor
         from .gpuguard import mark_helper_closed
         mark_helper_closed(self.out_root / ".stt")
 
@@ -2084,12 +2126,11 @@ class Pipeline:
 
     def kill(self) -> None:
         """Uygulama kapanıyor: canlı kayıtları ve işçi süreçlerini HEMEN durdur (beklemeden)."""
-        if self.hpool is not None:  # uygulama düzgün kapandı: yardımcı kartın açık aralığı kapansın
-            try:
-                from .gpuguard import mark_helper_closed
-                mark_helper_closed(self.out_root / ".stt")
-            except Exception:  # noqa: BLE001
-                pass
+        try:  # düzgün kapanış: monitörlü kartın açık aralığı kapansın (ekran koruması)
+            from .gpuguard import mark_helper_closed
+            mark_helper_closed(self.out_root / ".stt")
+        except Exception:  # noqa: BLE001
+            pass
         for job in list(self.jobs.values()):
             if job.recorder is not None:
                 job.recorder.stop("uygulama kapandı")
@@ -2104,12 +2145,11 @@ class Pipeline:
 
     def close(self):
         self._closing = True  # sıra bekleyen hazırlık iş parçacıkları çıksın (komut satırı kapanışta asılı kalmasın)
-        if self.hpool is not None:  # düzgün kapanış: yardımcı kartın açık aralığı kapansın (ekran koruması)
-            try:
-                from .gpuguard import mark_helper_closed
-                mark_helper_closed(self.out_root / ".stt")
-            except Exception:  # noqa: BLE001
-                pass
+        try:  # düzgün kapanış: monitörlü kartın açık aralığı kapansın (ekran koruması)
+            from .gpuguard import mark_helper_closed
+            mark_helper_closed(self.out_root / ".stt")
+        except Exception:  # noqa: BLE001
+            pass
         self.prep.shutdown(wait=False, cancel_futures=True)
         self.fin.shutdown(wait=True)
         for pool in self._pools():

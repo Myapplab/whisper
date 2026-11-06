@@ -326,28 +326,34 @@ class App:
             if self._stop.wait(600):
                 return
 
-    def _display_guard(self, events: list | None = None) -> dict | None:
-        """Yardımcı kart (monitörlü 3080) açıkken ekran sürücüsü çöktüyse / bilgisayar kapandıysa yardımcıyı kapat.
-        Kullanıcıda iki kez ekran karardı ("HDMI sinyali yok"); sebep kesin değil, ama monitörlü karta yük ilk şüpheli."""
-        from .gpuguard import clear_mark, describe, display_events, fmt_time, helper_crash
-        if (self._cfg.gpus or "").lower() != "yardim":
+    def _display_guard(self, events: list | None = None, info: dict | None = None) -> dict | None:
+        """Monitörlü karta (3080) iş veren bir kart ayarında (yardımcı / hepsi / elle) ekran sürücüsü çöktüyse ya da
+        bilgisayar beklenmedik kapandıysa ayarı "Önerilen"e al (monitörlü karta iş verilmez). Kullanıcıda 1.9.13'te
+        yardımcıyla 5 kez üst üste ekran tamamen karardı ve açılmadı."""
+        from .engines import gpu_info
+        from .gpuguard import clear_mark, describe, display_card_used, display_events, fmt_time, helper_crash
+        if (self._cfg.gpus or "auto").lower() == "auto":
+            return None
+        info = info if info is not None else (self._gpus or gpu_info())
+        if not display_card_used(self._cfg.gpus, info):
             return None
         if events is None:
             events = display_events(14)
         hit = helper_crash(self._state_dir(), events)
         if not hit:
             return None
-        what = "ekran sürücüsü çöktü" if hit["kind"] == "driver" else "bilgisayar beklenmedik kapandı"
+        what = "ekran sürücüsü çöktü" if hit["kind"] == "driver" else "bilgisayar beklenmedik kapandı / dondu"
         save_settings({"gpus": "auto"})
         self._cfg = load_config()
         if self._pipe is not None:
             self._pipe.cfg = self._cfg
             self._pipe.disable_helper(what)
-        self._restart.set()  # işler bitince motor önerilen kart düzeniyle açılır
+        self._restart.set()  # işler bitince motor önerilen kart düzeniyle açılır (monitörlü karta iş yok)
         clear_mark(self._state_dir())
-        msg = (f"Yardımcı kart (monitörlü) kullanılırken {what} ({fmt_time(hit['t'])}). Güvenlik için yardımcı kapatıldı "
-               "(Ayarlar › Ekran kartı kullanımı: Önerilen). Ekran kartı hız aşırtması (MSI Afterburner) varsa Reset'e "
-               "basın. Ayrıntı: Kontrol. Olaylar: " + describe(events))
+        msg = (f"Monitörlü ekran kartı (3080) iş yaparken {what} ({fmt_time(hit['t'])}). Güvenlik için ekran kartı "
+               "kullanımı 'Önerilen'e alındı: monitörlü karta iş verilmeyecek. İki kartı da tam güçle ve ekran kararmadan "
+               "kullanmanın yolu monitör kablosunu anakarttaki (Intel) çıkışa takmak; ayrıntı Kontrol'de. MSI Afterburner'da "
+               "hız aşırtma varsa Reset'e basın. Olaylar: " + describe(events))
         log.warning("%s", msg)
         self._push({"type": "notice", "text": msg})
         return hit

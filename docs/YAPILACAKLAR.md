@@ -38,6 +38,19 @@ E.2 (C5) ve aşağıdaki K5 planı. **(1.9.5'ten kalan):** kullanıcı Güncelle
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
+- 1.9.15 (Claude; 548 test): kullanıcı: **"ekran tamamen kararıyor ve bir daha açılmıyor, 5 kez üst üste"** (3080
+  yardımcı moddayken; 1.9.13). Yapılanlar: (1) koruma işaret dosyası yoksa (1.9.13 işaret yazmıyordu) son 3 günün
+  çökmelerini sayar; "Hepsi" ve elle kart numarası da korunur (`gpuguard.display_card_used`); monitörlü kart ana kart
+  olarak kullanıldığında da aralık yazılır. (2) Kontrol monitörlü karta CUDA bağlamı açmıyor (CUDA_VISIBLE_DEVICES);
+  "Monitör bağlantısı" satırı: anakarttaki Intel çıkışı var mı / monitör nerede (`engines.igpu_advice`). **Kalıcı ve
+  stabil çözüm: monitör kablosu anakarttaki (Intel UHD 630) çıkışa** → iki NVIDIA kart da "monitör yok" olur,
+  "Önerilen" ikisini de tam güçle kullanır (3080'e metin, 3090'a metin + ayırma). i3-10100'de iGPU var (F değilse);
+  BIOS'ta kapalı olabilir. (3) TARAMA B-1: ayırmanın RAM beklemesi ana süreçte (`_diar_mem_ok`), 3090 bu sırada
+  metne devam eder. Kullanıcıya: Afterburner Reset, NVIDIA Denetim Masası "CUDA - Sysmem Fallback Policy: Prefer No
+  Sysmem Fallback", güç kaynağı kaç W, kararınca bilgisayar açık kalıyor mu. "Normal RAM kullanılabilir mi": model
+  hesabı RAM'de yapılırsa i3'te çok yavaş; RAM zaten darboğaz değil (24 GB'ın yarısı boş); ekran kartı belleği
+  dolunca RAM'e taşmak (sysmem fallback) yavaşlatır, kapalı tutulmalı. SIRADAKİ: monitör iGPU'ya alınınca iki serbest
+  kartta ikinci ayırma işçisi (şu an ayırma yalnız 3090'da; yardımcı mantığı yalnız "yardim" modunda).
 - 1.9.14 (Claude; kullanıcının 6 isteği; 542 test; iki araştırma ajanı + bağımsız inceleme (4 hata + 4 küçük, hepsi testle düzeltildi: sıra beklerken kopya video yeniden işleniyordu, canlı yayın uzun kuyrukta başlamıyordu, komut satırı kapanışta asılı kalıyordu, ekran koruması STT kapalıyken olan çökmeyi sayıyordu -> artık yalnız yardımcının açık olduğu aralıklar); rapor
   **`docs/TARAMA_2026-11-07.md`**): (1) oynatma listesinde işlenmemişlerin hepsi seçili (konu süzgeci yok);
   "manager's preview" basın toplantısı sayılır. (2) **Ekran kararması** (2 kez, "HDMI sinyali yok"): Kontrol'de

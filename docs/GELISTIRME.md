@@ -81,6 +81,12 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   mail.ru gömme / meta, bilinen oynatıcı olan og:video yt-dlp'ye. `Pipeline._wait_prep_turn`: en çok `PREP_AHEAD`
   (6) iş hazırlanmış / metni bitmemiş olabilir (metni bitip ayırma bekleyen sayılmaz). İlerleme olayında
   `diar_wait` / `started`; arayüz işçi "busy" olayından işin kartını günceller.
+- **1.9.15 ekran kararması (kullanıcıda 5 kez, açılmadı):** monitörlü karta CUDA yükü Windows'ta (WDDM) ekranı
+  karartabiliyor; kalıcı çözüm monitörü iGPU'ya almak (Kontrol "Monitör bağlantısı"). `gpuguard`: işaret dosyası
+  yoksa `LEGACY_DAYS` (3) günün çökmeleri sayılır; `clear_mark` boş dosya yazar; `display_card_used` yardım / all /
+  elle numara. `_display_guard` bu modlarda çökme görürse `gpus=auto`. Doctor monitörlü kartı CUDA'dan gizler.
+  `Pipeline._diar_mem_ok`: ayırma görevi RAM yetmiyorsa verilmez (5 sn'de bir ölçüm, en çok `DIAR_MEM_MAX_WAIT_S`
+  600 sn), `_diar_turn` metni durdurmaz; eskiden işçi içinde bekleyen ayırma 3090'ı boşta tutuyordu.
 - **Konuşmacı ayırma ayrı süreçte** (`Pipeline.dpool`, wid `diar`, ilk ayırma görevinde açılır, belleği en büyük
   kartta): aynı süreçte torch + CTranslate2 → `invalid device ordinal` ve 1.2.0'da `CUDNN_STATUS_EXECUTION_FAILED`
   + `MemoryError` görüldü. `Diarizer.run`: cuDNN hatasında cuDNN kapalı tekrar dener; işlemciye geçmez (1.6.2, `diar_cpu`).

@@ -109,12 +109,17 @@ def test_display_guard_turns_helper_off(tmp_path, monkeypatch):
             self.why = r
     app._pipe = P()
     app._state_dir = lambda: tmp_path
-    assert app._display_guard([]) is None and not saved                  # çökme yok
+    info = {0: {"name": "RTX 3080", "gb": 10, "display": True}, 1: {"name": "RTX 3090", "gb": 24, "display": False}}
     mark_helper_open(tmp_path)
-    hit = app._display_guard([{"t": int(time.time()) + 1, "kind": "driver", "id": 4101, "p": "Display", "m": ""}])
+    from stt.gpuguard import mark_helper_closed
+    mark_helper_closed(tmp_path)
+    assert app._display_guard([], info) is None and not saved            # çökme yok
+    mark_helper_open(tmp_path)
+    hit = app._display_guard([{"t": int(time.time()) + 1, "kind": "driver", "id": 4101, "p": "Display", "m": ""}], info)
     assert hit and saved["gpus"] == "auto" and app._pipe.why == "ekran sürücüsü çöktü"
     assert pushed and pushed[-1]["type"] == "notice" and "Afterburner" in pushed[-1]["text"]
-    assert not (tmp_path / "yardimci_acik.json").exists()
+    from stt.gpuguard import _read_windows
+    assert _read_windows(tmp_path) == [] and (tmp_path / "yardimci_acik.json").exists()   # yeni başlangıç
 
 
 def test_disable_helper_parks_and_never_reopens(tmp_path, monkeypatch):
@@ -563,3 +568,109 @@ def test_vk_article_not_collection():
     from stt.channel import is_collection_url
     assert not is_collection_url("https://vk.com/@arsenal-news")
     assert is_collection_url("https://vk.com/video/@arsenal")
+
+
+
+# ---------------------------------------------------------------- 1.9.15: 3080 kararması (5 kez üst üste)
+INFO2 = {0: {"name": "RTX 3080", "gb": 10, "display": True}, 1: {"name": "RTX 3090", "gb": 24, "display": False}}
+
+
+def test_guard_counts_legacy_crashes_without_marker(tmp_path):
+    """1.9.13 işaret yazmıyordu: dosya hiç yoksa son 3 gündeki çökmeler sayılır (kullanıcıda 5 kez kararma)."""
+    import time as _t
+
+    from stt.gpuguard import clear_mark, helper_crash
+    now = int(_t.time())
+    ev = [{"t": now - 3600, "kind": "reset"}, {"t": now - 10 * 86400, "kind": "driver"}]
+    assert helper_crash(tmp_path, ev)["t"] == now - 3600
+    assert helper_crash(tmp_path, [{"t": now - 10 * 86400, "kind": "driver"}]) is None
+    clear_mark(tmp_path)                                                   # kullanıcı modu yeniden seçti
+    assert helper_crash(tmp_path, ev) is None
+
+
+def test_display_card_used_modes():
+    from stt.gpuguard import display_card_used
+    assert display_card_used("yardim", INFO2) and display_card_used("all", INFO2) and display_card_used("0,1", INFO2)
+    assert not display_card_used("auto", INFO2) and not display_card_used("1", INFO2)
+    free = {0: {"name": "RTX 3080", "gb": 10, "display": False}, 1: {"name": "RTX 3090", "gb": 24, "display": False}}
+    assert not display_card_used("all", free)                              # monitör anakartta: iki kart da serbest
+
+
+def test_guard_also_protects_all_mode(tmp_path, monkeypatch):
+    import threading
+
+    import stt.gui as gui
+    saved = {}
+    monkeypatch.setattr(gui, "save_settings", lambda upd: saved.update(upd))
+    monkeypatch.setattr(gui, "load_config", lambda: Config(out_dir=tmp_path, gpus=saved.get("gpus", "all")))
+    app = gui.App.__new__(gui.App)
+    app._cfg = Config(out_dir=tmp_path, gpus="all")
+    app._restart = threading.Event()
+    app._push = lambda e: None
+    app._pipe = None
+    app._state_dir = lambda: tmp_path
+    hit = app._display_guard([{"t": int(time.time()) - 600, "kind": "reset", "id": 41, "p": "x", "m": ""}], INFO2)
+    assert hit and saved["gpus"] == "auto"
+
+
+def test_igpu_advice():
+    from stt.engines import igpu_advice
+    assert igpu_advice(None, INFO2) is None
+    ok, txt = igpu_advice([("Intel(R) UHD Graphics 630", True), ("NVIDIA GeForce RTX 3080", False),
+                           ("NVIDIA GeForce RTX 3090", False)],
+                          {0: {"name": "RTX 3080", "display": False}, 1: {"name": "RTX 3090", "display": False}})
+    assert ok and "iki NVIDIA" in txt
+    ok, txt = igpu_advice([("Intel(R) UHD Graphics 630", False), ("NVIDIA GeForce RTX 3080", True)], INFO2)
+    assert not ok and "anakarttaki" in txt and "RTX 3080" in txt
+    ok, txt = igpu_advice([("NVIDIA GeForce RTX 3080", True), ("NVIDIA GeForce RTX 3090", False)], INFO2)
+    assert not ok and "BIOS" in txt
+
+
+def test_low_ram_keeps_3090_transcribing(tmp_path, monkeypatch):
+    """TARAMA B-1: ayırma RAM beklerken (eskiden işçinin içinde, 10 dk'ya kadar) 3090'da metin de duruyordu."""
+    import stt.util as u
+    from test_stability import FakePool, _job, _pipe
+    p = _pipe(tmp_path, ("cuda:1",))
+    p.pool._spec = {"cuda:1": "cuda:1"}
+    job, tasks = _job(p, tmp_path, n=3)
+    # metni bitmiş başka bir işin ayırması sırada (normalde "ayırmanın sırası" der, metin bekler)
+    from stt.pipeline import Job
+    from stt.sources import Item
+    it = Item("url", "https://x/d", key="u_d")
+    jd = Job(it, tmp_path / "wd", status="run", info={"duration_s": 3600})
+    d = {"id": "u_d:d", "kind": "diarize", "job": "u_d"}
+    p.tasks[d["id"]] = d
+    jd.pending = {d["id"]}
+    p.jobs["u_d"] = jd
+    p.dbacklog.append(d)
+    p.dpool = FakePool(["diar"])
+    p.dpool.devices = ["cuda:1"]
+    p._on_msg({"type": "ready", "wid": "cuda:1"})
+    p._on_msg({"type": "ready", "wid": "diar"})
+    mem = {"ram_total": 24, "ram_free": 2.0, "commit_total": 30, "commit_free": 3.0}   # RAM az
+    monkeypatch.setattr(u, "memory_status", lambda: dict(mem))
+    p._dispatch()
+    assert [t["kind"] for t in p.pool.put_q] == ["transcribe"] and p.dpool.put_q == []   # metin sürdü
+    mem.update(ram_free=12.0, commit_free=20.0)                                       # tarayıcı kapandı
+    p._dmem_at = 0
+    p._on_msg({"type": "start", "wid": "cuda:1", "tid": p.pool.put_q[0]["id"]})
+    p._on_msg({"type": "done", "wid": "cuda:1", "tid": p.pool.put_q[0]["id"], "elapsed": 1.0,
+               "payload": {"segments": [], "language": "en"}})
+    p._dispatch()
+    assert p.dpool.put_q and p.dpool.put_q[0]["kind"] == "diarize"                     # sıra ayırmada
+
+
+def test_low_ram_diar_given_after_max_wait(tmp_path, monkeypatch):
+    import stt.pipeline as pl
+    import stt.util as u
+    from stt.pipeline import Job, Pipeline
+    from stt.sources import Item
+    p = Pipeline(Config(out_dir=tmp_path))
+    it = Item("url", "https://x/d", key="u_d")
+    p.jobs["u_d"] = Job(it, tmp_path / "wd", status="run", info={"duration_s": 600})
+    p.dbacklog.append({"id": "u_d:d", "kind": "diarize", "job": "u_d"})
+    monkeypatch.setattr(u, "memory_status", lambda: {"ram_total": 24, "ram_free": 1.0, "commit_total": 30, "commit_free": 1.0})
+    assert p._diar_mem_ok() is False
+    p._dmem_at = 0
+    p._dmem_since = time.time() - pl.DIAR_MEM_MAX_WAIT_S - 1
+    assert p._diar_mem_ok() is True                                                    # sonsuza dek beklemez

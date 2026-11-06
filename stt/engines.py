@@ -110,6 +110,51 @@ def windows_display_adapters() -> list[str] | None:
         return None
 
 
+def windows_adapters() -> list[tuple[str, bool]] | None:
+    """Windows: bütün görüntü bağdaştırıcıları (ad, masaüstüne bağlı mı). Anakarttaki Intel çıkışı var mı / monitör
+    ona mı bağlı görmek için. Windows değilse None."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class DD(ctypes.Structure):
+            _fields_ = [("cb", wintypes.DWORD), ("DeviceName", wintypes.WCHAR * 32),
+                        ("DeviceString", wintypes.WCHAR * 128), ("StateFlags", wintypes.DWORD),
+                        ("DeviceID", wintypes.WCHAR * 128), ("DeviceKey", wintypes.WCHAR * 128)]
+        seen: dict[str, bool] = {}
+        enum = ctypes.windll.user32.EnumDisplayDevicesW  # type: ignore[attr-defined]
+        for i in range(64):
+            d = DD()
+            d.cb = ctypes.sizeof(DD)
+            if not enum(None, i, ctypes.byref(d), 0):
+                break
+            seen[d.DeviceString] = seen.get(d.DeviceString, False) or bool(d.StateFlags & 0x1)
+        return list(seen.items())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def igpu_advice(adapters: list[tuple[str, bool]] | None, info: dict) -> tuple[bool, str] | None:
+    """Monitörün nereye bağlı olduğuna göre öneri: (sorun yok mu, metin). Bilinmiyorsa None.
+    Monitörlü ekran kartına ağır iş (CUDA) vermek Windows'ta ekranı karartabiliyor (kullanıcıda 5 kez, açılmadı);
+    monitör anakarttaki Intel çıkışındaysa iki NVIDIA kart da tam güçle ve güvenle çalışır."""
+    if adapters is None:
+        return None
+    intel = [(n, a) for n, a in adapters if "intel" in n.lower()]
+    nv_display = [g["name"] for g in (info or {}).values() if g.get("display")]
+    if intel and any(a for _, a in intel) and not nv_display:
+        return True, "Monitör anakartta (Intel): iki NVIDIA kart da serbest, ikisi de tam güçle kullanılır."
+    if intel:
+        return False, (f"Monitör {', '.join(nv_display) or 'NVIDIA kartına'} bağlı. Monitör kablosunu anakarttaki "
+                       "(arka paneldeki, ekran kartlarının ÜSTÜNDEKİ) HDMI/DisplayPort çıkışına takarsanız iki ekran kartı "
+                       "da tam güçle, ekran kararmadan çalışır.")
+    return False, ("Anakart görüntü çıkışı (Intel) görünmüyor: BIOS'ta kapalı olabilir ('iGPU Multi-Monitor' / "
+                   "'Primary Display: iGPU' açın) ya da işlemci 'F' modeli olabilir (i3-10100F'de yok). Monitör "
+                   "NVIDIA kartına bağlıyken o karta iş verilmemesi en güvenlisi (Ayarlar › Ekran kartı: Önerilen).")
+
+
 def _norm_gpu(name: str) -> str:
     n = name.lower()
     for p in ("nvidia ", "geforce ", "quadro "):

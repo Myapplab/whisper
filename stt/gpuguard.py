@@ -142,9 +142,18 @@ def mark_helper_closed(state_dir: Path) -> None:
         _write_windows(state_dir, wins)
 
 
+LEGACY_DAYS = 3  # işaret dosyası hiç yoksa (1.9.14 öncesi sürümle kullanıldı) son bu kadar gündeki çökmeler sayılır
+
+
 def helper_crash(state_dir: Path, events: list[dict]) -> dict | None:
-    """Yardımcı kart açıkken (bir aralığın içinde, 2 dk pay) olan son ekran sürücüsü çökmesi / beklenmedik kapanma.
-    Kapanışı yazılmamış aralık (bilgisayar o sırada kapandı) uygulamanın bir sonraki açılışına dek sayılır."""
+    """Monitörlü kart iş yaparken (bir aralığın içinde, 2 dk pay) olan son ekran sürücüsü çökmesi / beklenmedik
+    kapanma. Kapanışı yazılmamış aralık (bilgisayar o sırada kapandı) bir sonraki açılışa dek sayılır.
+    İşaret dosyası HİÇ yoksa (kullanıcı 1.9.13'te yardımcıyla 5 kez üst üste kararma yaşadı; o sürüm işaret yazmıyordu)
+    son ``LEGACY_DAYS`` gündeki çökmeler sayılır. Kullanıcı modu yeniden seçince (``clear_mark``) boş dosya yazılır:
+    eski çökmeler bir daha sayılmaz."""
+    if not _mark_path(state_dir).exists():
+        old = [e for e in events if e["t"] >= time.time() - LEGACY_DAYS * 86400]
+        return max(old, key=lambda e: e["t"]) if old else None
     wins = _read_windows(state_dir)
     if not wins:
         return None
@@ -153,7 +162,15 @@ def helper_crash(state_dir: Path, events: list[dict]) -> dict | None:
 
 
 def clear_mark(state_dir: Path) -> None:
-    try:
-        _mark_path(state_dir).unlink()
-    except OSError:
-        pass
+    """Yeni başlangıç: aralıklar silinir (dosya boş kalır; "dosya yok" kuralı bir daha işlemez)."""
+    _write_windows(state_dir, [])
+
+
+def display_card_used(gpus: str | None, info: dict) -> bool:
+    """Bu kart ayarı monitörün bağlı olduğu ekran kartına iş veriyor mu (yardımcı, hepsi, elle kart numarası)."""
+    from .pipeline import detect_devices, helper_devices
+    disp = {i for i, g in (info or {}).items() if g.get("display")}
+    if not disp:
+        return False
+    used = detect_devices(gpus or "auto", info) + helper_devices(gpus or "auto", info)
+    return any(d.startswith("cuda:") and int(d.split(":")[1]) in disp for d in used)
