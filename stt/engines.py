@@ -146,6 +146,14 @@ def igpu_advice(adapters: list[tuple[str, bool]] | None, info: dict) -> tuple[bo
     nv_display = [g["name"] for g in (info or {}).values() if g.get("display")]
     if intel and any(a for _, a in intel) and not nv_display:
         return True, "Monitör anakartta (Intel): iki NVIDIA kart da serbest, ikisi de tam güçle kullanılır."
+    if not intel and any("basic display" in n.lower() for n, _ in adapters):
+        # kullanıcıda (1.9.17): BIOS'ta "CPU Graphics" seçilince açılış logosu anakart çıkışında göründü, Windows'ta
+        # takıldı; aygıt "Microsoft Basic Display Adapter" = Intel çıkışı açık ama sürücüsü kurulu değil
+        return False, ("Anakart görüntü çıkışı açık ama Intel ekran sürücüsü kurulu değil (Microsoft Basic Display "
+                       "Adapter). Monitör NVIDIA kartındayken sürücüyü kurun: Ayarlar › Windows Update › Gelişmiş "
+                       "seçenekler › İsteğe bağlı güncelleştirmeler › Sürücü güncelleştirmeleri (Intel Display / UHD "
+                       "Graphics), yoksa intel.com 'Driver & Support Assistant'. Sonra bilgisayarı kapatıp kabloyu "
+                       "anakarttaki çıkışa takın.")
     if intel:
         return False, (f"Monitör {', '.join(nv_display) or 'NVIDIA kartına'} bağlı. Monitör kablosunu anakarttaki "
                        "(arka paneldeki, ekran kartlarının ÜSTÜNDEKİ) HDMI/DisplayPort çıkışına takarsanız iki ekran kartı "

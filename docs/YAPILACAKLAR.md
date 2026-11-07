@@ -38,6 +38,13 @@ E.2 (C5) ve aşağıdaki K5 planı. **(1.9.5'ten kalan):** kullanıcı Güncelle
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
+- 1.9.18 (Claude; 573 test): kullanıcıda işlemci i3-10100 (F değil, iGPU var). BIOS (ASUS TUF, Advanced › System Agent ›
+  Graphics Configuration) "iGPU Multi-Monitor" zaten Enabled'dı; Primary Display "CPU Graphics" yapıldı, kablo anakarta
+  takılınca açılış logosu göründü ama Windows "takıldı": aygıt "Microsoft Basic Display Adapter" = Intel sürücüsü yok.
+  Kablo 3080'e geri takılınca giriş ekranı geldi (Windows sağlam). `engines.igpu_advice` artık bu durumda "Intel
+  sürücüsü kurulu değil" diyor (eskiden "BIOS'ta kapalı olabilir"). SIRADAKİ: kullanıcı Intel sürücüsünü kursun
+  (Windows Update isteğe bağlı sürücüler / intel.com Driver & Support Assistant), sonra kablo anakarta → Ayarlar listesi.
+  Not: kullanıcı komutu PowerShell yerine Komut İstemi'nde (cmd) çalıştırdı; komut verirken "PowerShell'i açın" de.
 - 1.9.17 KULLANICIDA (ekran görüntüsü 2026-11-07): "Güvenli güç ayarını uygula" Windows'ta ÇALIŞTI (UAC + nvidia-smi -pl):
   3080 238 W (varsayılanı 340 W), 3090 245 W, saat 1600 MHz; Afterburner kapalı ✓; Önerilen ✓. Eksik tek adım: "Anakart
   görüntü çıkışı (Intel) görünmüyor" → BIOS'ta iGPU kapalı ya da işlemci i3-10100F. Kullanıcıya işlemci adı sorgusu ve

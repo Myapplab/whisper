@@ -323,3 +323,12 @@ def test_single_card_has_no_dual_warning():
     lay = pw.safe_layout(Config(), gi={0: {"name": "RTX 3090", "gb": 24.0, "display": True}}, cards=_cards(),
                          adapters=None, tools=[])
     assert not lay["ready"] and "Tek ekran kartı" in lay["summary"] and lay["n"] == 1
+
+
+def test_igpu_without_intel_driver():
+    """Kullanıcıda: BIOS'ta CPU Graphics açıldı, aygıt 'Microsoft Basic Display Adapter' (Intel sürücüsü yok); kablo
+    anakarta takılınca Windows açılışta takılmış göründü. Uygulama sürücüyü kurmayı söylemeli, BIOS'u değil."""
+    from stt.engines import igpu_advice
+    ok, txt = igpu_advice([("Microsoft Basic Display Adapter", False), ("NVIDIA GeForce RTX 3080", True),
+                           ("NVIDIA GeForce RTX 3090", False)], GI_MON)
+    assert not ok and "sürücüsü kurulu değil" in txt and "BIOS" not in txt
