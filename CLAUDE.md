@@ -30,7 +30,7 @@ pyannote konuşmacı ayırma). Amaç: Fantasy Premier League için veri seti (ta
 ## Yayınlama
 - Yeni sürüm = `stt/__init__.py` sürümünü artır + `main`'e push. Kullanıcıya "uygulamada Güncelle'ye basın" de;
   zip/exe/PowerShell gönderme. (`pyproject.toml` değişirse güncellemede pip çalışır; gereksiz değiştirme.)
-- Testler: `pip install pytest numpy jiwer && python -m pytest -q tests` (592 test, ~12 sn; arayüz betiği için node varsa sözdizimi testi de çalışır). Commit mesajında model adı yazma.
+- Testler: `pip install pytest numpy jiwer && python -m pytest -q tests` (597 test, ~12 sn; arayüz betiği için node varsa sözdizimi testi de çalışır). Commit mesajında model adı yazma.
 
 ## Haritası
 - `pipeline.py` kuyruk/işçi yönetimi, iptal (`cancel`, `cancel_all`), bitirme · `workers.py` işçi süreçleri ·

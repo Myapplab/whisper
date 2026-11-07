@@ -124,9 +124,9 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   (yeni görev yok), hedef-6'da biter; 15 dk'dan uzun sürerse en uzun molayla devam (iş sonsuza dek durmaz); ısı okunamazsa
   sabit 10 sn. (3) `_night_recycle`: `night_recycle_min` (90) dakikadır açık işçi boşta + kuyruğunda görev yokken
   `respawn(idle=True)` (yalnız tek işçili havuz; hata sayılmaz). (4) önden en çok 3 video (`NIGHT_PREP_AHEAD`). Canlı
-  yayın sürerken molalar uygulanmaz. Her modda: **disk koruması** `_disk_free_ok` (`min_free_gb` 8): diskte yer azsa
+  yayın sürerken molalar uygulanmaz. Her modda: **disk koruması** `_disk_free_ok` (`min_free_gb` 3; uyarı yarım saatte bir): diskte yer azsa
   `_wait_prep_turn` yeni indirmeyi bekletir, tek uyarı; eskiden disk dolunca kuyruğun kalanı tek tek başarısız oluyordu.
-  DENENMEDİ: Windows, gerçek kart (nvidia-smi ısısı, molanın ısıya etkisi, model yeniden yükleme süresi).
+  Bağımsız inceleme: ciddi hata yok; 5 küçük bulgu düzeltildi (ekran / güç koruması gece modu kapanınca kalkmıyor, tek okuma hatası soğuma molasını bitirmiyor (art arda 3), disk eşiği 3 GB, kuyruk bitince kutu tazelenir, ölçüm iş parçacığı açılamazsa kilitlenmez). DENENMEDİ: Windows, gerçek kart (nvidia-smi ısısı, molanın ısıya etkisi, model yeniden yükleme süresi).
 - **Konuşmacı ayırma ayrı süreçte** (`Pipeline.dpool`, wid `diar`, ilk ayırma görevinde açılır, belleği en büyük
   kartta): aynı süreçte torch + CTranslate2 → `invalid device ordinal` ve 1.2.0'da `CUDNN_STATUS_EXECUTION_FAILED`
   + `MemoryError` görüldü. `Diarizer.run`: cuDNN hatasında cuDNN kapalı tekrar dener; işlemciye geçmez (1.6.2, `diar_cpu`).

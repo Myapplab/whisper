@@ -41,7 +41,7 @@ class Config:
     night_mode: bool = False
     night_temp: int = 72                 # gece modunda hedef kart ısısı (°C; 60-83)
     night_recycle_min: float = 90.0      # gece modunda işçi süreçleri bu kadar dakikada bir yenilenir (0 = kapalı)
-    min_free_gb: float = 8.0             # diskte bundan az boş yer varsa yeni video indirilmez (bekler; 0 = kapalı)
+    min_free_gb: float = 3.0             # diskte bundan az boş yer varsa yeni video indirilmez (bekler; 0 = kapalı)
     low_priority: bool = True            # tanıma süreçleri düşük öncelikte (bilgisayar donmasın)
     isolate_gpu: bool = True             # her işçi yalnızca kendi kartını görür (monitörlü kartta CUDA bağlamı yok)
     ui_gpu: bool = False                 # arayüz (WebView2) ekran kartı hızlandırması; kapalı = ekran kararmasın
@@ -257,7 +257,7 @@ def normalize(cfg: Config) -> Config:
     cfg.night_recycle_min = _num(cfg.night_recycle_min, 90.0, 0.0, 1440.0)
     if 0 < cfg.night_recycle_min < 20:
         cfg.night_recycle_min = 20.0  # model yüklemesi ~30 sn: daha sık yenileme işi yavaşlatır
-    cfg.min_free_gb = _num(cfg.min_free_gb, 8.0, 0.0, 500.0)
+    cfg.min_free_gb = _num(cfg.min_free_gb, 3.0, 0.0, 500.0)
     clk = int(_num(cfg.gpu_max_clock, 1600, 0, 3000))
     cfg.gpu_max_clock = 0 if clk <= 0 else max(900, clk)
     for k in ("gemini_api_key", "anthropic_api_key", "openai_api_key", "hf_token", "api_token", "webhook_url",

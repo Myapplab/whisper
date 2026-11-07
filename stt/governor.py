@@ -20,6 +20,8 @@ from __future__ import annotations
 REST_MIN = 4.0        # gece modunda her görevden sonra en az bu kadar mola (sn)
 REST_MAX = 90.0       # en uzun mola (sn)
 REST_BLIND = 10.0     # ısı okunamıyorsa sabit mola (sn)
+BLIND_AFTER = 3       # ısı art arda bu kadar ölçümde okunamazsa "okunamıyor" sayılır (tek nvidia-smi zaman aşımı
+                      # soğuma molasını bitirmesin)
 HOT_OVER = 8          # hedef + bu kadar derece: soğuma molası
 COOL_UNDER = 6        # soğuma molası hedef - bu kadar dereceye inince biter
 PAUSE_MAX_S = 900.0   # soğuma molası en çok bu kadar (sonra en uzun molayla devam)
@@ -37,6 +39,7 @@ class Governor:
         self.paused_at: float | None = None
         self.temp: float | None = None
         self.forced = False      # soğuma molası çok uzadı: en uzun molayla devam ediliyor
+        self.misses = 0          # art arda okunamayan ölçüm
 
     @property
     def hot(self) -> int:
@@ -51,12 +54,17 @@ class Governor:
 
     def update(self, temp: float | None, now: float) -> str:
         """Yeni ısı ölçümü. Dönüş: günlüğe yazılacak durum değişikliği ("" = değişiklik yok)."""
-        self.temp = temp
         if temp is None:
+            self.misses += 1
+            if self.misses < BLIND_AFTER:
+                return ""        # bir kez okunamadı: son durum sürer
+            self.temp = None
             was = self.paused
             self.paused, self.paused_at, self.forced = False, None, False
             self.rest = REST_BLIND
             return "ısı okunamıyor: soğuma molası bitti, her görevden sonra sabit mola" if was else ""
+        self.misses = 0
+        self.temp = temp
         if self.paused:
             if temp <= self.cool:
                 self.paused, self.paused_at, self.forced = False, None, False

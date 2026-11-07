@@ -55,7 +55,10 @@ def test_governor_without_temperature_uses_fixed_rest():
     g = Governor(72)
     g.update(90, 0)
     assert g.holding()
-    g.update(None, 10)                      # nvidia-smi gitti: sonsuza dek beklemesin
+    g.update(None, 10)                      # tek okuma hatası: soğuma molası sürer
+    g.update(None, 30)
+    assert g.holding() and g.temp == 90
+    g.update(None, 50)                      # art arda 3: nvidia-smi gitti, sonsuza dek beklemesin
     assert not g.holding() and g.rest == G.REST_BLIND
     assert "okunamıyor" in g.note()
 
@@ -65,7 +68,7 @@ def test_config_night_bounds():
     assert c.night_temp == 60 and c.night_recycle_min == 20 and c.min_free_gb == 0
     c = normalize(Config(night_temp=99, night_recycle_min=0))
     assert c.night_temp == 83 and c.night_recycle_min == 0
-    assert Config().night_mode is False and Config().min_free_gb == 8.0
+    assert Config().night_mode is False and Config().min_free_gb == 3.0
 
 
 # ---------------------------------------------------------------- pipeline
@@ -309,3 +312,79 @@ def test_app_set_night_mode(tmp_path, monkeypatch):
     assert saved == {"night_mode": True} and r["night"]["on"] is True
     r = app.set_night_mode(False)
     assert r["night"]["on"] is False
+
+
+def test_governor_single_miss_keeps_state_and_good_read_resets_counter():
+    g = Governor(72)
+    g.update(80, 0)
+    g.update(None, 20)
+    g.update(None, 40)
+    g.update(75, 60)                        # okundu: sayaç sıfırlanır
+    g.update(None, 80)
+    g.update(None, 100)
+    assert g.holding()
+
+
+def test_display_guard_survives_night_off(tmp_path):
+    p, job, tasks = _pipe(tmp_path)
+    p.pool = FakePool(["cuda:0", "cuda:1"])
+    p.pool._spec = {"cuda:0": "cuda:0", "cuda:1": "cuda:1"}
+    p.pool.stop = lambda n, idle=False: None
+    p.devices = ["cuda:0", "cuda:1"]
+    p._ecfg = {"gpu_mem": {0: 10.0, 1: 24.0}, "display_gpus": [0]}
+    p._dispatch()
+    assert p._drop_wids == {"cuda:0"}
+    p.disable_helper("ekran sürücüsü çöktü")
+    p.cfg = Config(out_dir=tmp_path, night_mode=False, min_free_gb=0)
+    p._night_was = True
+    p._night_tick()
+    assert p._drop_wids == {"cuda:0"}       # ekran koruması gece modu kapanınca kalkmaz
+    p2, _, _ = _pipe(tmp_path / "b")
+    p2.pool = p.pool
+    p2.devices, p2._ecfg = p.devices, p._ecfg
+    p2._dispatch()
+    p2.limit_to_one("cuda:1", "güç sınırı kalktı")
+    p2.cfg = Config(out_dir=tmp_path, night_mode=False, min_free_gb=0)
+    p2._night_was = True
+    p2._night_tick()
+    assert p2._drop_wids == {"cuda:0"}
+
+
+def test_night_chip_refreshes_when_queue_ends(tmp_path):
+    p, job, tasks = _pipe(tmp_path)
+    p._pending_futs = 1
+    p.temps = [p.gov.hot + 2]
+    p._night_tick()
+    assert p.night_state()["paused"]
+    p._pending_futs = 0
+    job.status = "done"
+    n = len(p.events_seen)
+    p._night_tick()
+    ev = p.events_seen[n:]
+    assert ev and ev[-1]["type"] == "night" and ev[-1]["note"] == "açık · iş bekleniyor" and not ev[-1]["paused"]
+
+
+def test_night_probe_spawn_failure_does_not_block(tmp_path):
+    p, job, tasks = _pipe(tmp_path)
+    p._pending_futs = 1
+
+    def boom(fn):
+        raise RuntimeError("can't start new thread")
+    p._spawn = boom
+    p._night_tick()
+    assert p._gov_probing is False
+
+
+def test_disk_notice_repeats_every_half_hour(tmp_path, monkeypatch):
+    import shutil as sh
+    monkeypatch.setattr(sh, "disk_usage", lambda path: type("U", (), {"free": 1 * 2 ** 30})())
+    p = Pipeline(Config(out_dir=tmp_path, min_free_gb=3))
+    seen = []
+    p.events = seen.append
+    p._disk_free_ok()
+    p._disk_at = 0
+    p._disk_free_ok()
+    assert len(seen) == 1
+    p._disk_at, p._disk_warned_at = 0, time.time() - 1801
+    p._disk_free_ok()
+    assert len(seen) == 2

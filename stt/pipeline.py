@@ -297,12 +297,14 @@ class Pipeline:
         self._gov_probing = False
         self._night_was: bool | None = None
         self._night_drops: set[str] = set()    # gece modunda kapatılacak öbür ana kart işçileri
+        self._night_active = False             # son "night" olayında kuyrukta iş var mıydı
         self._born: dict[str, float] = {}      # işçi -> hazır olduğu an (gece modunda yenileme için)
         self._gi: dict = {}
         self._disk_lock = threading.Lock()
         self._disk_at = 0.0
         self._disk_ok = True
         self._disk_warned = False
+        self._disk_warned_at = 0.0
 
     # ---------------------------------------------------------- başlatma
     def start(self):
@@ -619,7 +621,8 @@ class Pipeline:
                 self._disk_ok = True
                 return True
             ok = free >= need
-            if not ok and not self._disk_warned:
+            if not ok and (not self._disk_warned or now - self._disk_warned_at >= 1800):  # yarım saatte bir hatırlat
+                self._disk_warned_at = now
                 msg = (f"Diskte yer azaldı ({free:.1f} GB boş; en az {need:.0f} GB olmalı): yeni video indirilmiyor, "
                        "çalışan işler bitiyor. Çıktı klasörünün olduğu diskte yer açın (Geri Dönüşüm Kutusu, eski "
                        "indirmeler); yer açılınca kuyruk kendiliğinden devam eder.")
@@ -1240,14 +1243,22 @@ class Pipeline:
         if not on:
             return
         now = time.time()
-        if not self.active():
+        active = self.active()
+        if active != self._night_active:  # kuyruk bitti / başladı: kutu eski ısıyı göstermesin
+            self._night_active = active
+            self._night_emit()
+        if not active:
             return
         if self._night_on():
             self._night_recycle(now)
         if not self._gov_probing and now - self._gov_at >= SAMPLE_S:
             self._gov_probing = True
             self._gov_at = now
-            self._spawn(self._night_probe)
+            try:
+                self._spawn(self._night_probe)
+            except Exception:  # noqa: BLE001  (iş parçacığı açılamadı: sonraki turda yeniden)
+                self._gov_probing = False
+                log.debug("ısı ölçümü başlatılamadı", exc_info=True)
 
     def _night_probe(self) -> None:
         """Çalışan kartın ısısını oku (nvidia-smi; ana süreçte CUDA açılmaz), mola süresini ayarla."""
@@ -1309,7 +1320,7 @@ class Pipeline:
         else:
             note = self.gov.note()
         return {"on": on, "note": note, "temp": self.gov.temp, "rest": round(self.gov.rest),
-                "paused": bool(on and self.gov.holding()), "card": card}
+                "paused": bool(on and self.gov.holding() and self._night_on() and self.active()), "card": card}
 
     def _night_emit(self) -> None:
         self.emit("night", **self.night_state())
@@ -1639,6 +1650,7 @@ class Pipeline:
             others = [w for w in spec if w not in self._drop_wids and w not in self.fatal]
             if not others:
                 self._drop_wids = set()  # tek kart monitörlü: kapatılırsa hiç işçi kalmaz (uyarı yeter)
+            self._night_drops -= self._drop_wids  # ekran koruması: gece modu kapanınca da kapalı kalsın
             for w in list(self._drop_wids):
                 if w in self.inflight:
                     self._drop_worker(w)
@@ -1664,6 +1676,7 @@ class Pipeline:
             if not any(str(d) == keep and w not in self.fatal for w, d in spec.items()):
                 drop = set()  # tutulacak kartta işçi yok: hepsini kapatmak işi durdurur
             self._drop_wids |= drop
+            self._night_drops -= drop  # güç koruması: gece modu kapanınca da kapalı kalsın
             self._drop_msg = "güç koruması: güç sınırı kalktı, bu kart kapatıldı"
             for w in list(drop):
                 if w in self.inflight:
