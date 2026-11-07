@@ -8,9 +8,9 @@ ManifestSupportedOS all
 !include "WinMessages.nsh"
 
 !define APPNAME "STT - Basın Odası"
-!define VERSION "1.4.0"
+!define VERSION "1.9.24"
 !define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\STT"
-!define STEPS 8
+!define STEPS 9
 
 Name "${APPNAME}"
 Caption "${APPNAME} ${VERSION} Kurulumu"
@@ -23,7 +23,7 @@ SetCompressor /SOLID lzma
 BrandingText "STT ${VERSION}"
 SetFont "Segoe UI" 9
 
-VIProductVersion "1.4.0.0"
+VIProductVersion "1.9.24.0"
 VIAddVersionKey /LANG=1055 "ProductName" "${APPNAME}"
 VIAddVersionKey /LANG=1055 "FileDescription" "${APPNAME} kurulumu"
 VIAddVersionKey /LANG=1055 "FileVersion" "${VERSION}"
@@ -97,7 +97,7 @@ FunctionEnd
   SendMessage $PBar ${PBM_SETPOS} $1 0
 !macroend
 
-; bir kurulum adımı: üstte "Adım N/8: ..." yazar, kur.ps1'i çalıştırır, hata olursa durur
+; bir kurulum adımı: üstte "Adım N/9: ..." yazar, kur.ps1'i çalıştırır, hata olursa durur
 !macro RunStep NUM PCT NAME LABEL
   SetDetailsPrint both
   DetailPrint " "
@@ -134,9 +134,11 @@ Section "STT" SecMain
   !insertmacro RunStep 3 10 venv   "Sanal ortam"
   !insertmacro RunStep 4 15 torch  "PyTorch + NVIDIA CUDA (~3 GB, birkaç dakika)"
   !insertmacro RunStep 5 50 libs   "Uygulama kütüphaneleri"
-  !insertmacro RunStep 6 65 tools  "ffmpeg ve deno"
-  !insertmacro RunStep 7 70 config "Ayarlar"
-  !insertmacro RunStep 8 72 model  "Whisper large-v3 modeli (~3 GB)"
+  ; paketteki kod derlendiği günkü sürüm: en son sürüme geç (eski exe yeni kurulumu eski koda döndürmesin)
+  !insertmacro RunStep 6 62 update "En son sürüm (GitHub)"
+  !insertmacro RunStep 7 65 tools  "ffmpeg ve deno"
+  !insertmacro RunStep 8 70 config "Ayarlar"
+  !insertmacro RunStep 9 72 model  "Whisper large-v3 modeli (~3 GB)"
   !insertmacro SetBar 98
 
   DetailPrint "Kısayollar oluşturuluyor"

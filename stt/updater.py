@@ -197,3 +197,25 @@ def relaunch() -> None:
     flags = 0x00000008 | 0x00000200 if sys.platform == "win32" else 0  # DETACHED_PROCESS | NEW_PROCESS_GROUP
     subprocess.Popen([sys.executable, "-m", "stt.gui"], cwd=str(TOOL_DIR), env=env, creationflags=flags,
                      close_fds=True)
+
+
+def main() -> int:
+    """`python -m stt.updater`: kurulum programı (kur.ps1 'update' adımı) bunu çalıştırır. Kurulum paketindeki kod
+    eskiyse en son sürüme geçilir; yoksa paketteki eski kod (ör. 1.1.0) yeni kurulumun üzerine yazılı kalıyordu."""
+    info = check()
+    if info["error"]:
+        print("Güncelleme denetlenemedi: " + info["error"], flush=True)
+        return 1
+    if not info["available"]:
+        print(f"Zaten en son sürüm: {__version__}", flush=True)
+        return 0
+    print(f"Yeni sürüm: {__version__} -> {info['latest']}", flush=True)
+    r = apply(lambda stage, text: print("   " + text, flush=True))
+    if not r.get("ok"):
+        print("Güncelleme yapılamadı: " + str(r.get("error")), flush=True)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

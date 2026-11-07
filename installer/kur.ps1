@@ -4,7 +4,7 @@
 param(
   [Parameter(Mandatory = $true)][string]$InstDir,
   [string]$DataDir = "",
-  [ValidateSet("all", "check", "python", "venv", "torch", "libs", "tools", "config", "model")][string]$Step = "all"
+  [ValidateSet("all", "check", "python", "venv", "torch", "libs", "update", "tools", "config", "model")][string]$Step = "all"
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -164,6 +164,20 @@ function Step-Libs {
   Say "   tamam."
 }
 
+# Kurulum paketindeki kod, paket derlendiği günkü sürümdür. Eski bir STT-Kurulum.exe tekrar çalıştırılınca
+# yeni kurulumun üzerine eski kodu yazıyordu (uygulama 1.1.0 görünümüne dönüyordu). Bu adım en son sürüme geçirir.
+# Ağ ya da GitHub hatası kurulumu durdurmaz: paketteki sürüm kalır, uygulamada Güncelle'ye basılır.
+function Step-Update {
+  if (Test-Path (Join-Path $InstDir ".git")) { Say "En son sürüm: geliştirici klasörü (git), atlandı."; return }
+  Say "En son sürüm GitHub'dan denetleniyor"
+  try {
+    Run $venv @("-m", "stt.updater") "Güncelleme"
+    Say "   tamam."
+  } catch {
+    Say "   UYARI: en son sürüm alınamadı; kurulum paketteki sürümle sürüyor. Uygulamada Güncelle'ye basın."
+  }
+}
+
 function Have-Tool([string]$n) {
   if (Get-Command $n -ErrorAction SilentlyContinue) { return $true }
   return [bool](Get-ChildItem -Path $tools -Recurse -Filter "$n.exe" -ErrorAction SilentlyContinue | Select-Object -First 1)
@@ -235,10 +249,11 @@ try {
     "venv"   { Step-Venv }
     "torch"  { Step-Torch }
     "libs"   { Step-Libs }
+    "update" { Step-Update }
     "tools"  { Step-Tools }
     "config" { Step-Config }
     "model"  { Step-Model }
-    "all"    { Step-Check; Step-Python; Step-Venv; Step-Torch; Step-Libs; Step-Tools; Step-Config; Step-Model; Say "Kurulum tamamlandı." }
+    "all"    { Step-Check; Step-Python; Step-Venv; Step-Torch; Step-Libs; Step-Update; Step-Tools; Step-Config; Step-Model; Say "Kurulum tamamlandı." }
   }
   exit 0
 } catch {

@@ -105,3 +105,28 @@ def test_zip_path_escape_rejected(tmp_path):
         z.writestr("../kotu.txt", "x")
     with pytest.raises(RuntimeError):
         updater._extract(buf.getvalue(), tmp_path)
+
+
+def test_main_updates_when_newer(monkeypatch, capsys):
+    """Kurulum (kur.ps1 'update' adımı) `python -m stt.updater` çalıştırır: paketteki eski kod en son sürüme geçer."""
+    calls = []
+    monkeypatch.setattr(updater, "latest_version", lambda: "99.0.0")
+    monkeypatch.setattr(updater, "apply", lambda progress=None, **kw: calls.append(1) or {"ok": True, "version": "99.0.0"})
+    assert updater.main() == 0 and calls == [1]
+    assert "99.0.0" in capsys.readouterr().out
+
+
+def test_main_skips_when_current(monkeypatch):
+    monkeypatch.setattr(updater, "latest_version", lambda: updater.__version__)
+    monkeypatch.setattr(updater, "apply", lambda *a, **kw: pytest.fail("güncel sürümde indirilmemeli"))
+    assert updater.main() == 0
+
+
+def test_main_reports_failure(monkeypatch, capsys):
+    def boom():
+        raise RuntimeError("ag yok")
+    monkeypatch.setattr(updater, "latest_version", boom)
+    assert updater.main() == 1 and "ag yok" in capsys.readouterr().out
+    monkeypatch.setattr(updater, "latest_version", lambda: "99.0.0")
+    monkeypatch.setattr(updater, "apply", lambda *a, **kw: {"ok": False, "error": "pip patladi"})
+    assert updater.main() == 1 and "pip patladi" in capsys.readouterr().out
