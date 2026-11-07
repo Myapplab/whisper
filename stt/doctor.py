@@ -169,12 +169,13 @@ def run_doctor(cfg, deep: bool = False) -> int:
             add(WARN, "Monitör bağlantısı", str(e)[:120])
         try:  # iki kart birlikte: güç + saat sınırı (bilgisayar yeniden başlamasın) ve hız aşırtma programı
             from .power import safe_layout
-            lay = safe_layout(cfg, gi=gi)
+            lay = safe_layout(cfg, gi=gi) if len(gi) >= 2 else {"items": [], "ready": True, "summary": "", "n": len(gi)}
             names = {"power": "Güç sınırı", "oc": "Hız aşırtma"}
             for it in lay["items"]:
                 if it["key"] in names and it["ok"] is not None:
                     add(OK if it["ok"] else WARN, names[it["key"]], it["text"])
-            add(OK if lay["ready"] else WARN, "İki kart düzeni", lay["summary"])
+            if lay["summary"]:
+                add(OK if lay["ready"] else WARN, "İki kart düzeni", lay["summary"])
         except Exception as e:  # noqa: BLE001
             add(WARN, "Güç sınırı", str(e)[:120])
         try:  # ekran kararması / "HDMI sinyali yok": Windows olay günlüğündeki sürücü çökmeleri

@@ -100,8 +100,17 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   açık): `Pipeline.start` → `power.restrict`: iki (ya da yardımcıyla birlikte) kart kullanılacak ve kullanılan bir kartın
   `power.limit`'i hedef+3 W'tan büyükse tek kart (monitörsüz, en büyük) + uyarı. Sınır okunamıyorsa (alan yok)
   kısıtlanmaz. Kontrol: "Güç sınırı", "Hız aşırtma" (açık Afterburner vb. `tasklist`), "İki kart düzeni".
-  `App._card_log_loop`: iş sürerken 5 dk'da bir `[kartlar]` ısı/güç/saat satırı, 88°C'de uyarı. DENENMEDİ: Windows,
-  gerçek nvidia-smi -pl/-lgc (GeForce'ta yönetici ister; web kaynakları çalıştığını söylüyor), schtasks /XML, UAC.
+  `App._card_log_loop`: iş sürerken dakikada bir `_power_guard` (sınır kalktıysa — uyku dönüşü, TDR, Afterburner —
+  önce `power.reapply` = `schtasks /Run`, izin sormadan: görevin `SecurityDescriptor`'ı Authenticated Users'a GRGX verir,
+  Microsoft "elevated task model"; olmazsa `Pipeline.limit_to_one`: öbür ana işçiler `_drop_wids` ile kapanır, görevdeki
+  işi sıraya döner, yardımcı kapanır), 5 dk'da bir `[kartlar]` ısı/güç/saat satırı, 88°C'de uyarı. `Pipeline.start` de
+  sınır yoksa önce görevi çalıştırır (`restrict_or_reapply`; hızlı başlatmada BootTrigger çalışmayabiliyor). Görevde
+  uyku dönüşü tetikleyicisi (Power-Troubleshooter 1). Bağımsız inceleme (9 bulgu, hepsi düzeltildi): yükseltilmiş satır
+  ShellExecuteEx'in ~2048 sınırına yaklaşıyordu → tek yönlendirme `( ... ) >"sonuç" 2>&1` + `/v:off` (`MAX_PARAMS`);
+  izin penceresi öne gelsin diye `hwnd`; eksik sonuç satırı / sınırı değişmeyen kart başarı sayılmıyor; geri almada
+  görev yoksa hata değil; nvidia-smi `GetSystemDirectoryW`'den; tek kartta kutu / Kontrol satırları gizli.
+  DENENMEDİ: Windows, gerçek nvidia-smi -pl/-lgc (GeForce'ta yönetici ister; web kaynakları çalıştığını söylüyor),
+  schtasks /XML + SDDL ile standart kullanıcının /Run'ı, UAC.
 - **Konuşmacı ayırma ayrı süreçte** (`Pipeline.dpool`, wid `diar`, ilk ayırma görevinde açılır, belleği en büyük
   kartta): aynı süreçte torch + CTranslate2 → `invalid device ordinal` ve 1.2.0'da `CUDNN_STATUS_EXECUTION_FAILED`
   + `MemoryError` görüldü. `Diarizer.run`: cuDNN hatasında cuDNN kapalı tekrar dener; işlemciye geçmez (1.6.2, `diar_cpu`).

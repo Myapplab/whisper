@@ -28,7 +28,12 @@ TASK = "STT Guvenli Guc"
 UUID_RE = re.compile(r"^GPU-[0-9a-fA-F-]{8,64}$")
 SLACK_W = 3.0  # sürücü sınırı tam sayıya yuvarlayabiliyor
 OC_TOOLS = ("msiafterburner", "afterburner", "precisionx", "precision x1", "gputweak", "evga precision", "thundermaster",
-            "aorus engine", "giga")
+            "aorusengine", "aorus engine")
+# görevi standart kullanıcı da başlatabilsin (Microsoft "elevated task model"): uygulama güç sınırı iş sürerken kalkarsa
+# (uyku dönüşü, sürücü sıfırlanması, Afterburner) izin sormadan yeniden uygular. Görevi değiştirmek yalnız yönetici / SYSTEM.
+TASK_SDDL = "D:(A;;FA;;;BA)(A;;FA;;;SY)(A;;GRGX;;;AU)"
+RESUME_QUERY = ("<QueryList><Query Id=\"0\" Path=\"System\"><Select Path=\"System\">*[System[Provider["
+                "@Name='Microsoft-Windows-Power-Troubleshooter'] and EventID=1]]</Select></Query></QueryList>")
 FIELDS = ("power.limit", "power.default_limit", "power.min_limit", "power.max_limit", "power.draw", "temperature.gpu",
           "clocks.gr")
 
@@ -151,9 +156,33 @@ def safe_exe(path: str | None) -> bool:
     if not path:
         return False
     p = os.path.normcase(os.path.abspath(path))
-    roots = [os.environ.get("SystemRoot") or r"C:\Windows", os.environ.get("ProgramFiles") or r"C:\Program Files",
-             os.environ.get("ProgramW6432") or r"C:\Program Files"]
+    roots = [system_dir(), os.environ.get("SystemRoot") or r"C:\Windows",
+             os.environ.get("ProgramFiles") or r"C:\Program Files", os.environ.get("ProgramW6432") or r"C:\Program Files"]
     return any(p.startswith(os.path.normcase(os.path.abspath(r)) + os.sep) for r in roots if r)
+
+
+def system_dir() -> str:
+    """Windows System32 (ortam değişkenine güvenmeden: GetSystemDirectoryW)."""
+    if os.name == "nt":
+        try:
+            import ctypes
+            buf = ctypes.create_unicode_buffer(260)
+            if ctypes.windll.kernel32.GetSystemDirectoryW(buf, 260):
+                return buf.value
+        except Exception:  # noqa: BLE001
+            pass
+    return os.path.join(os.environ.get("SystemRoot") or r"C:\Windows", "System32")
+
+
+def smi_path() -> str:
+    """nvidia-smi: önce System32'deki (DCH sürücüleri oraya koyar, sürücü güncellemesinde yeri değişmez), yoksa PATH'teki
+    (yalnız yönetici yazabilen bir yerdeyse)."""
+    import shutil
+    fixed = os.path.join(system_dir(), "nvidia-smi.exe")
+    if os.name == "nt" and os.path.isfile(fixed):
+        return fixed
+    p = shutil.which("nvidia-smi") or ""
+    return p if safe_exe(p) else ""
 
 
 def _q(s: str) -> str:
@@ -192,10 +221,13 @@ def task_xml(smi: str, cmds: list[tuple[str, str]], cmd_exe: str) -> str:
     return ('<?xml version="1.0" encoding="UTF-16"?>\n'
             '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">\n'
             '  <RegistrationInfo><Description>STT: ekran kartlari icin guc ve saat siniri (bilgisayar yeniden '
-            'baslamasin). Kaldirmak icin: STT Ayarlar &gt; Ekran karti &gt; Geri al.</Description></RegistrationInfo>\n'
+            'baslamasin). Kaldirmak icin: STT Ayarlar &gt; Ekran karti &gt; Geri al.</Description>'
+            f'<SecurityDescriptor>{TASK_SDDL}</SecurityDescriptor></RegistrationInfo>\n'
             '  <Triggers>\n'
             '    <BootTrigger><Enabled>true</Enabled><Delay>PT1M</Delay></BootTrigger>\n'
             '    <LogonTrigger><Enabled>true</Enabled></LogonTrigger>\n'
+            f'    <EventTrigger><Enabled>true</Enabled><Subscription>{escape(RESUME_QUERY)}</Subscription>'
+            '<Delay>PT20S</Delay></EventTrigger>\n'
             '  </Triggers>\n'
             '  <Principals><Principal id="Author"><UserId>S-1-5-18</UserId><RunLevel>HighestAvailable</RunLevel>'
             '</Principal></Principals>\n'
@@ -214,12 +246,11 @@ def task_xml(smi: str, cmds: list[tuple[str, str]], cmd_exe: str) -> str:
 
 def elevated_line(smi: str, cmds: list[tuple[str, str]], res: str, tail: list[tuple[str, str]]) -> str:
     """cmd.exe /s /c "..." içi: her komutun sonucu sonuç dosyasına 'STT_OK anahtar' / 'STT_FAIL anahtar'.
-    tail: (anahtar, tam komut) — schtasks gibi nvidia-smi dışı komutlar."""
-    r = _q(res)
-    parts = [f'(type nul >{r})']
-    for key, cmd in [(k, f"{_q(smi)} {a}") for k, a in cmds] + list(tail):
-        parts.append(f"({cmd} >>{r} 2>&1 && (echo STT_OK {key})>>{r} || (echo STT_FAIL {key})>>{r})")
-    return " & ".join(parts)
+    tail: (anahtar, tam komut) — schtasks gibi nvidia-smi dışı komutlar. Dosyaya tek yönlendirme: ShellExecuteEx
+    ~2048 karakterden uzun satırı kesiyor (inceleme: yol her komutta 3 kez geçince 2 kartta ~1900 karakterdi)."""
+    parts = [f"({cmd} && echo STT_OK {key}|| echo STT_FAIL {key})"
+             for key, cmd in [(k, f"{_q(smi)} {a}") for k, a in cmds] + list(tail)]
+    return "(" + " & ".join(parts) + f") >{_q(res)} 2>&1"
 
 
 def parse_result(text: str) -> dict:
@@ -264,6 +295,10 @@ def run_elevated(params: str, timeout: float = 300.0) -> int:
     sei.lpFile = os.path.join(os.environ.get("SystemRoot") or r"C:\Windows", "System32", "cmd.exe")
     sei.lpParameters = params
     sei.nShow = 0  # SW_HIDE
+    try:  # pencere verilmezse izin penceresi öne gelmeyip görev çubuğunda yanıp sönebiliyor
+        sei.hwnd = ctypes.windll.user32.GetForegroundWindow()
+    except Exception:  # noqa: BLE001
+        pass
     shell32 = ctypes.WinDLL("shell32", use_last_error=True)
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
     shell32.ShellExecuteExW.argtypes = [ctypes.POINTER(SEI)]
@@ -285,19 +320,51 @@ def run_elevated(params: str, timeout: float = 300.0) -> int:
 
 
 def _bad_path(p: str) -> bool:
-    return any(ch in p for ch in '%"^\r\n')  # cmd satırında güvenle tırnaklanamaz
+    return any(ch in p for ch in '%"^!\r\n')  # cmd satırında güvenle tırnaklanamaz
+
+
+MAX_PARAMS = 1900  # ShellExecuteEx satır sınırı (~2048) altında kal
+
+
+def reapply(timeout: float = 20.0) -> bool:
+    """Kayıtlı görevi izin sormadan çalıştır (görev standart kullanıcıya 'başlat' izni verir). Görev yoksa / izin yoksa
+    False. Sonucu sınırı yeniden okuyarak anlayın (görev arka planda birkaç saniye sürer)."""
+    if os.name != "nt":
+        return False
+    try:
+        r = subprocess.run([os.path.join(system_dir(), "schtasks.exe"), "/Run", "/TN", TASK], capture_output=True,
+                           text=True, errors="replace", timeout=timeout, **popen_kw())
+    except Exception:  # noqa: BLE001
+        return False
+    if r.returncode != 0:
+        log.info("[güç] görev çalıştırılamadı: %s", (r.stderr or r.stdout or "").strip()[:200])
+        return False
+    log.info("[güç] güç sınırı kalkmıştı: görev yeniden çalıştırıldı")
+    return True
+
+
+def restrict_or_reapply(devices: list[str], helpers: list[str], gi: dict, cfg, cards: dict | None = None,
+                        wait_s: float = 8.0) -> tuple[list, list, str, dict]:
+    """``restrict``; sınır yoksa önce kayıtlı görevi çalıştırıp (hızlı başlatma / uyku / Afterburner sınırı silmiş
+    olabilir) yeniden dener. Dönüş: (devices, helpers, sebep, kartlar)."""
+    cards = query() if cards is None else cards
+    d, h, why = restrict(devices, helpers, gi, cfg, cards)
+    if why and reapply():
+        time.sleep(wait_s)
+        cards = query() or cards
+        d, h, why = restrict(devices, helpers, gi, cfg, cards)
+    return d, h, why, cards
 
 
 def apply(cfg, undo: bool = False, runner=None, cards: dict | None = None) -> dict:
     """Güç + saat sınırını şimdi uygula ve her açılışta uygulayan görevi kaydet (undo: varsayılana dön, görevi sil).
     Dönüş: {"ok", "error", "status"}. runner: testler için run_elevated yerine."""
-    import shutil
     if os.name != "nt" and runner is None:
         return {"ok": False, "error": "Yalnız Windows'ta yapılabilir."}
-    smi = shutil.which("nvidia-smi") or ""
-    if not safe_exe(smi):
-        return {"ok": False, "error": "nvidia-smi bulunamadı (ya da beklenmedik bir klasörde: " + (smi or "yok")
-                + "). NVIDIA sürücüsünü yeniden kurun."}
+    smi = smi_path()
+    if not smi:
+        return {"ok": False, "error": "nvidia-smi bulunamadı (ya da beklenmedik bir klasörde). NVIDIA sürücüsünü "
+                "yeniden kurun."}
     cards = query() if cards is None else cards
     if not cards:
         return {"ok": False, "error": "Ekran kartları okunamadı (nvidia-smi)."}
@@ -309,9 +376,9 @@ def apply(cfg, undo: bool = False, runner=None, cards: dict | None = None) -> di
     res, xml = str(wd / "guvenli_guc_sonuc.txt"), str(wd / "guvenli_guc_gorev.xml")
     if _bad_path(res) or _bad_path(smi):
         return {"ok": False, "error": "Klasör adında desteklenmeyen karakter var: " + res}
-    sysroot = os.environ.get("SystemRoot") or r"C:\Windows"
-    cmd_exe = os.path.join(sysroot, "System32", "cmd.exe")
-    schtasks = _q(os.path.join(sysroot, "System32", "schtasks.exe"))
+    sysdir = system_dir()
+    cmd_exe = os.path.join(sysdir, "cmd.exe")
+    schtasks = _q(os.path.join(sysdir, "schtasks.exe"))
     if undo:
         cmds = undo_plan(cards)
         tail = [("task", f'{schtasks} /Delete /TN {_q(TASK)} /F')]
@@ -329,7 +396,9 @@ def apply(cfg, undo: bool = False, runner=None, cards: dict | None = None) -> di
         Path(res).unlink()
     except OSError:
         pass
-    params = "/d /s /c " + _q(elevated_line(smi, cmds, res, tail))
+    params = "/d /v:off /s /c " + _q(elevated_line(smi, cmds, res, tail))
+    if len(params) > MAX_PARAMS:
+        return {"ok": False, "error": f"Komut satırı çok uzun ({len(params)} karakter; kart sayısı / klasör yolu)."}
     log.info("[güç] %s: %s", "geri alınıyor" if undo else "uygulanıyor", "; ".join(a for _, a in cmds))
     code = (runner or run_elevated)(params)
     if code == 1223:
@@ -341,19 +410,29 @@ def apply(cfg, undo: bool = False, runner=None, cards: dict | None = None) -> di
     if not out["ok"] and not out["fail"]:
         return {"ok": False, "error": f"Komutlar çalışmadı (çıkış kodu {code})."}
     time.sleep(0.5)
-    st = status(cfg) if runner is None else status(cfg, cards)
-    pl_fail = [k for k in out["fail"] if k.startswith("pl@")]
+    st = status(cfg)  # yeniden oku: komut "başarılı" deyip sınırı değiştirmemiş olabilir
+    keys = [k for k, _ in cmds] + ["task"]
+    missing = [k for k in keys if k not in out["ok"] and k not in out["fail"]]  # yarıda kaldı / zaman aşımı
+    pl_fail = [k for k in out["fail"] if k.startswith("pl@") or k.startswith("rgc@")] + \
+        [k for k in missing if k != "task" and not k.startswith("lgc@")]
     msgs = []
     if pl_fail:
-        msgs.append("güç sınırı konamadı: " + ", ".join(pl_fail))
-    if any(k.startswith("lgc@") for k in out["fail"]):
+        msgs.append("güç sınırı " + ("kaldırılamadı" if undo else "konamadı") + ": " + ", ".join(pl_fail))
+    if any(k.startswith("lgc@") for k in out["fail"] + missing):
         msgs.append("saat sınırı desteklenmedi (yalnız güç sınırı geçerli)")
-    if "task" in out["fail"]:
-        msgs.append("her açılışta uygulayan görev " + ("silinemedi" if undo else "kaydedilemedi"))
-    log.info("[güç] sonuç: tamam=%s hata=%s %s", out["ok"], out["fail"], out["out"][:300])
-    ok = not pl_fail and "task" not in out["fail"]
-    return {"ok": ok, "error": "; ".join(msgs) + (f" ({out['out'][:200]})" if msgs and out["out"] else ""),
-            "warn": "; ".join(msgs) if ok else "", "status": st}
+    task_bad = "task" in out["fail"] or "task" in missing
+    if task_bad and not undo:  # geri almada görev hiç kaydedilmemiş olabilir: sorun değil
+        msgs.append("her açılışta uygulayan görev kaydedilemedi")
+    if not undo and not pl_fail and st["supported"] and st["applied"] is False:
+        msgs.append("komut başarılı göründü ama kartların sınırı değişmedi")
+        pl_fail = ["status"]
+    log.info("[güç] sonuç: tamam=%s hata=%s eksik=%s %s", out["ok"], out["fail"], missing, out["out"][:300])
+    ok = not pl_fail and not (task_bad and not undo)
+    err = "; ".join(msgs) + (f" ({out['out'][:200]})" if msgs and out["out"] else "")
+    if not ok and not undo and pl_fail:
+        err += (". Olmazsa aynı işi MSI Afterburner'da yapabilirsiniz: Reset, Power Limit %" + str(cfg.gpu_power_pct)
+                + " ya da altı, Save, 'Apply at system startup' açık (uygulama bunu da kabul eder).")
+    return {"ok": ok, "error": err, "warn": "; ".join(msgs) if ok else "", "status": st}
 
 
 # ------------------------------------------------------------------ kontrol listesi (Ayarlar / Kontrol)
@@ -400,9 +479,11 @@ def safe_layout(cfg, gi: dict | None = None, cards: dict | None = None, adapters
     ready = all(i["ok"] for i in items if i["key"] in ("monitor", "power", "mode")) and len(free) >= 2
     if ready:
         summary = "Hazır: " + " + ".join(free) + " birlikte, güvenli güçle çalışır; monitör anakartta, ekran kararmaz."
-    elif len(gi) >= 2 and len(free) < 2:
-        summary = ("Şu an tek kart çalışır (monitör bir NVIDIA kartına bağlı). İkisinin birlikte çalışması için önce 1. "
-                   "adım: monitör kablosu anakarttaki çıkışa.")
+    elif len(gi) < 2:
+        summary = "Tek ekran kartı var: iki kart düzeni gerekmez (güç sınırı yine de yeniden başlamaları önler)."
+    elif len(free) < 2:
+        summary = ("Monitör bir NVIDIA kartına bağlıyken iki kart güvenle birlikte çalışamaz (monitörlü karta yük ekranı "
+                   "karartıyordu). Önce 1. adım: monitör kablosu anakarttaki çıkışa.")
     else:
         summary = "Eksik adımlar var (✗)."
-    return {"items": items, "ready": ready, "summary": summary, "cards": st["cards"]}
+    return {"items": items, "ready": ready, "summary": summary, "cards": st["cards"], "n": len(gi)}

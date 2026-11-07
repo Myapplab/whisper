@@ -38,12 +38,12 @@ E.2 (C5) ve aşağıdaki K5 planı. **(1.9.5'ten kalan):** kullanıcı Güncelle
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
-- 1.9.17 (Claude; 568 test): kullanıcı: **"iki GPU'nun çalıştığı ama bilgisayarda hiçbir problem çıkmayacağı ve ekranın
+- 1.9.17 (Claude; 572 test; bağımsız inceleme 9 bulgu, hepsi düzeltildi): kullanıcı: **"iki GPU'nun çalıştığı ama bilgisayarda hiçbir problem çıkmayacağı ve ekranın
   kararmayacağı bir düzen kur"**. Yapılan (`stt/power.py`, ayrıntı GELISTIRME "1.9.17"): Ayarlar > Ekran kartı >
   **"İki kart güvenli düzen"** listesi (monitör anakartta mı / güç sınırı / açık Afterburner / kart ayarı Önerilen mi)
   + **"Güvenli güç ayarını uygula"**: tek Windows izniyle iki karta güç sınırı (%70: 3090 245 W, 3080 224 W) + saat
   sınırı 1600 MHz, her açılışta "STT Guvenli Guc" görevi yeniden uygular; "Geri al" kaldırır. Güç sınırı yokken iki kart
-  birlikte çalıştırılmaz (yalnız 3090, uyarı; `safe_dual`). İş sürerken 5 dk'da bir günlükte `[kartlar]` ısı/güç satırı.
+  birlikte çalıştırılmaz (yalnız 3090, uyarı; `safe_dual`). Sınır iş sürerken kalkarsa (uyku, sürücü sıfırlanması, Afterburner) görev izinsiz yeniden çalıştırılır, olmazsa tek karta inilir. İş sürerken 5 dk'da bir günlükte `[kartlar]` ısı/güç satırı.
   Kontrol'de "Güç sınırı", "Hız aşırtma", "İki kart düzeni" satırları. Ekran kararmasının çözümü yine monitör kablosunun
   anakarttaki (Intel) çıkışa takılması (yazılımla monitörlü karta güvenli yük verilemez). DENENMEDİ: Windows, UAC,
   nvidia-smi -pl/-lgc, schtasks /XML. KULLANICIDAN: monitör kablosu anakarta → Afterburner Reset+Save → Güncelle →

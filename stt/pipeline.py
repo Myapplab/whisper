@@ -316,12 +316,11 @@ class Pipeline:
                 self.helper_devices = helper_devices(cfg.gpus, gi)
                 # iki kart birlikte yalnız güvenli güç ayarıyla (bilgisayar yeniden başlıyordu; stt/power.py)
                 try:
-                    from .power import card_line, query, restrict
-                    cards = query()
+                    from .power import card_line, restrict_or_reapply
+                    devices, self.helper_devices, why, cards = restrict_or_reapply(devices, self.helper_devices, gi, cfg)
                     for i, c in sorted(cards.items()):
                         log.info("[güç] cuda:%d %s, sınır %s W (varsayılan %s W)", i, card_line(c),
                                  f"{c['limit']:.0f}" if c.get("limit") else "?", f"{c['default']:.0f}" if c.get("default") else "?")
-                    devices, self.helper_devices, why = restrict(devices, self.helper_devices, gi, cfg, cards)
                 except Exception:  # noqa: BLE001
                     log.debug("güç sınırı okunamadı", exc_info=True)
                     why = ""
@@ -1418,6 +1417,7 @@ class Pipeline:
         with self.lock:
             self.helper_disabled = reason or "kapatıldı"
             self._helper_stop_all()
+            self._drop_msg = ""  # ekran koruması iletisi
             disp = set(self._ecfg.get("display_gpus") or [])
             spec = getattr(self.pool, "_spec", {}) or {}
             self._drop_wids = {w for w, d in spec.items() if str(d).startswith("cuda:") and int(str(d).split(":")[1]) in disp}
@@ -1428,11 +1428,38 @@ class Pipeline:
                 if w in self.inflight:
                     self._drop_worker(w)
 
+    def cards_in_use(self) -> tuple[list[str], list[str]]:
+        """(ana kartlar, yardımcı kartlar) şu an iş alabilen: kapatılmış işçilerin kartı sayılmaz."""
+        spec = getattr(self.pool, "_spec", {}) or {}
+        main = sorted({str(d) for w, d in spec.items() if str(d).startswith("cuda:") and w not in self.fatal
+                       and w not in self._drop_wids}) if spec else [d for d in self.devices if d.startswith("cuda:")]
+        helpers = [] if self.helper_disabled else list(self.helper_devices)
+        return main, helpers
+
+    def limit_to_one(self, keep: str, reason: str) -> None:
+        """Güç sınırı iş sürerken kalktı ve geri konamadı (uyku dönüşü, sürücü sıfırlanması, Afterburner): ``keep``
+        dışındaki ana kart işçileri kapatılır (görevdeki hemen, görevi öbür karta döner; boştaki ilk görevinde),
+        yardımcı kart kapatılır. Motor işler bitince yeniden açılınca kart seçimi baştan yapılır."""
+        with self.lock:
+            if self.helper_devices and not self.helper_disabled:
+                self.helper_disabled = reason
+                self._helper_stop_all()
+            spec = getattr(self.pool, "_spec", {}) or {}
+            drop = {w for w, d in spec.items() if str(d).startswith("cuda:") and str(d) != keep and w not in self.fatal}
+            if not any(str(d) == keep and w not in self.fatal for w, d in spec.items()):
+                drop = set()  # tutulacak kartta işçi yok: hepsini kapatmak işi durdurur
+            self._drop_wids |= drop
+            self._drop_msg = "güç koruması: güç sınırı kalktı, bu kart kapatıldı"
+            for w in list(drop):
+                if w in self.inflight:
+                    self._drop_worker(w)
+
     def _drop_worker(self, wid: str) -> None:
         """Görevdeki (kuyruk kilidini tutmayan) monitörlü kart işçisini kapat; görevi geri sıraya koy, yeniden açma."""
         self._drop_wids.discard(wid)
         self.fatal.add(wid)
-        self.worker_errors[wid] = "ekran koruması: monitörlü kart kapatıldı"
+        msg = getattr(self, "_drop_msg", "") or "ekran koruması: monitörlü kart kapatıldı"
+        self.worker_errors[wid] = msg
         cur = self.inflight.pop(wid, None)
         self.idle.discard(wid)
         if self.pool is not None:
@@ -1443,8 +1470,8 @@ class Pipeline:
             if task and job and job.status == "run":
                 with self.lock:
                     (self.dbacklog if task["kind"] == "diarize" else self.backlog).appendleft(task)
-        log.warning("[%s] ekran koruması: monitörlü karttaki işçi kapatıldı, görevi öbür karta kaldı", wid)
-        self.emit("worker", wid=wid, state="error", error="Ekran koruması: monitörlü kart kapatıldı")
+        log.warning("[%s] %s; görevi öbür karta kaldı", wid, msg)
+        self.emit("worker", wid=wid, state="error", error=msg[:1].upper() + msg[1:])
 
     def _helper_stop_all(self) -> None:
         note = "kapatıldı: " + self.helper_disabled

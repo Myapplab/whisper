@@ -439,7 +439,8 @@ class App:
                 "lang": c.lang or "auto", "diarize": bool(c.diarize), "fpl_auto": bool(c.fpl_auto),
                 "ui_diarize": c.ui_diarize,
                 "gpus": g if g in ("auto", "all", "yardim") else str(c.gpus), "gpu_cards": cards,
-                "helper_reserve_gb": c.helper_reserve_gb,
+                "helper_reserve_gb": c.helper_reserve_gb, "gpu_power_pct": c.gpu_power_pct,
+                "gpu_max_clock": c.gpu_max_clock,
                 "browser_capture": bool(c.browser_capture), "ui_gpu": bool(c.ui_gpu),
                 "llm_provider": c.llm_provider or "none", "llm_model": c.llm_model or "",
                 "gemini_key_set": bool(llm.key("gemini")), "anthropic_key_set": bool(llm.key("claude")),
@@ -973,13 +974,14 @@ class App:
         """'Güvenli güç ayarını uygula' (undo: 'Geri al'): Windows yönetici izni sorar; güç + saat sınırı şimdi uygulanır ve
         her açılışta uygulayan görev kaydedilir. Uygulayınca kart ayarı 'Önerilen' olur; motor işler bitince yeniden açılır
         (iki kart birlikte çalışabilir hâle gelir)."""
-        if getattr(self, "_safe_busy", False):
+        if not self._SAFE_LOCK.acquire(blocking=False):
             return {"ok": False, "error": "Zaten uygulanıyor."}
-        self._safe_busy = True
         try:
             from .power import apply
             r = apply(self._cfg, undo=bool(undo))
             if r.get("ok") and not undo and (self._cfg.gpus or "auto").lower() != "auto":
+                r["warn"] = ((r.get("warn") or "") + "; " if r.get("warn") else "") + \
+                    "ekran kartı kullanımı 'Önerilen'e alındı (monitörlü karta iş verilmez)"
                 save_settings({"gpus": "auto"})
                 self._cfg = load_config()
                 if self._pipe is not None:
@@ -990,20 +992,51 @@ class App:
             st = self.safe_status()
             return {**{k: v for k, v in r.items() if k != "status"}, "layout": st, "settings": self.get_settings()}
         finally:
-            self._safe_busy = False
+            self._SAFE_LOCK.release()
+
+    _SAFE_LOCK = threading.Lock()
+
+    def _power_guard(self, cards: dict) -> str:
+        """İki kart birlikte çalışırken güç sınırı kalktıysa (uyku dönüşü, sürücü sıfırlanması, Afterburner): önce kayıtlı
+        görevi izin sormadan yeniden çalıştır; olmazsa tek karta in. Dönüş: yapılan iş için ileti (yoksa "")."""
+        from .power import query, reapply, restrict
+        pipe = self._pipe
+        if pipe is None or not getattr(self._cfg, "safe_dual", True):
+            return ""
+        main, helpers = pipe.cards_in_use()
+        gi = self._gpus or {}
+        d, _h, why = restrict(main, helpers, gi, self._cfg, cards)
+        if not why:
+            return ""
+        if reapply():
+            time.sleep(8)
+            d, _h, why = restrict(main, helpers, gi, self._cfg, query() or cards)
+            if not why:
+                return ""
+        msg = ("İş sürerken ekran kartlarının güç sınırı kalktı (uyku dönüşü, sürücü sıfırlanması ya da hız aşırtma "
+               "programı) ve geri konamadı. Bilgisayar yeniden başlamasın diye şimdilik tek kart çalışıyor. "
+               "Ayarlar › Ekran kartı › 'Güvenli güç ayarını uygula'ya yeniden basın.")
+        pipe.limit_to_one(d[0], "güç sınırı kalktı")
+        log.warning("%s", msg)
+        self._push({"type": "notice", "text": msg})
+        return msg
 
     def _card_log_loop(self) -> None:
-        """İş sürerken 5 dk'da bir kartların ısısı / gücü günlüğe (bilgisayar yeniden başlarsa son satır neyin yükte
-        olduğunu gösterir). 88°C üstünde uyarı."""
+        """İş sürerken dakikada bir güç sınırı denetimi (``_power_guard``), 5 dk'da bir kartların ısısı / gücü günlüğe
+        (bilgisayar yeniden başlarsa son satır neyin yükte olduğunu gösterir). 88°C üstünde uyarı."""
         from .power import card_line, query
         warned: set = set()
-        while not self._stop.wait(300):
+        n = 0
+        while not self._stop.wait(60):
             try:
                 if self._pipe is None or not self._pipe.active():
                     continue
+                n += 1
                 cards = query()
-                if cards:
+                if cards and n % 5 == 0:
                     log.info("[kartlar] %s", " | ".join(f"cuda:{i} {card_line(c)}" for i, c in sorted(cards.items())))
+                if cards:
+                    self._power_guard(cards)
                 for i, c in cards.items():
                     hot = (c.get("temp") or 0) >= 88
                     if hot and i not in warned:

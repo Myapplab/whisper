@@ -85,16 +85,34 @@ def test_task_xml_valid():
     args = ex[0].find("t:Arguments", ns).text
     assert args.startswith('/d /s /c ""C:\\Windows\\System32\\nvidia-smi.exe" -i ') and args.count(" & ") == 3
     assert f"-i {U1} -lgc 210,1600" in args
+    # standart kullanıcı görevi başlatabilir (iş sürerken sınır kalkınca izinsiz yeniden uygulama), uyku dönüşünde de çalışır
+    assert root.find("t:RegistrationInfo/t:SecurityDescriptor", ns).text == pw.TASK_SDDL
+    sub = root.find("t:Triggers/t:EventTrigger/t:Subscription", ns).text
+    assert "Power-Troubleshooter" in sub and ET.fromstring(sub).tag == "QueryList"
 
 
 def test_elevated_line_has_no_handle_redirect():
     """cmd'de '0>>' girdi tanıtıcısı sayılır: 'echo STT_OK pl:0>>dosya' sonucu yazmaz."""
     line = pw.elevated_line(r"C:\W\nvidia-smi.exe", pw.plan(_cards(), 70, 1600), r"C:\U\a b\r.txt",
                             [("task", '"C:\\W\\schtasks.exe" /Create /TN "STT Guvenli Guc" /XML "x.xml" /F')])
-    assert not re.search(r"\d>>", line)
+    assert not re.search(r"\d>", line.replace("2>&1", ""))
     for k in ("pl@0", "pl@1", "lgc@0", "lgc@1", "task"):
-        assert f"(echo STT_OK {k})>>" in line and f"(echo STT_FAIL {k})>>" in line
-    assert line.startswith('(type nul >"C:\\U\\a b\\r.txt")')
+        assert f"&& echo STT_OK {k}|| echo STT_FAIL {k})" in line
+    assert line.endswith(') >"C:\\U\\a b\\r.txt" 2>&1') and line.count("r.txt") == 1   # tek yönlendirme
+    assert line.count("(") == line.count(")")
+
+
+def test_params_short_enough_for_shellexecute(tmp_path, monkeypatch):
+    """İnceleme: ShellExecuteEx ~2048 karakterden uzun satırı kesiyor; uzun kullanıcı adında bile altında kalsın."""
+    res = _apply_env(tmp_path / ("K" * 40) / "AppData" / "Local", monkeypatch)
+    seen = {}
+
+    def runner(params):
+        seen["p"] = params
+        return 1223
+    pw.apply(Config(), runner=runner, cards=_cards())
+    assert seen["p"].startswith("/d /v:off /s /c ") and len(seen["p"]) < 1300, len(seen["p"])
+    assert res.parent.is_dir()
 
 
 def test_parse_result():
@@ -108,6 +126,7 @@ def _apply_env(tmp_path, monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda n: r"C:\Windows\System32\nvidia-smi.exe")
     monkeypatch.setattr(pw, "safe_exe", lambda p: True)
     monkeypatch.setattr(pw.time, "sleep", lambda s: None)
+    monkeypatch.setattr(pw, "query", lambda: _cards(224, 245))          # uygulamadan sonra okunan sınır
     return tmp_path / "stt" / "guvenli_guc_sonuc.txt"
 
 
@@ -121,7 +140,7 @@ def test_apply_success_and_partial(tmp_path, monkeypatch):
         return 0
     r = pw.apply(Config(), runner=runner, cards=_cards())
     assert r["ok"] and "saat sınırı desteklenmedi" in r["warn"]
-    assert seen["p"].startswith('/d /s /c "(type nul >') and "/XML" in seen["p"]
+    assert seen["p"].startswith('/d /v:off /s /c "((') and "/XML" in seen["p"]
     xml = (tmp_path / "stt" / "guvenli_guc_gorev.xml").read_text(encoding="utf-16")
     assert "-pl 245" in xml and "S-1-5-18" in xml
 
@@ -129,7 +148,17 @@ def test_apply_success_and_partial(tmp_path, monkeypatch):
         res.write_text("STT_FAIL pl@0\nSTT_OK pl@1\nSTT_OK task\n")
         return 1
     r = pw.apply(Config(), runner=bad, cards=_cards())
-    assert not r["ok"] and "pl@0" in r["error"]
+    assert not r["ok"] and "pl@0" in r["error"] and "Afterburner" in r["error"]
+
+    def half(params):                                                    # yarıda kaldı (zaman aşımı)
+        res.write_text("STT_OK pl@0\n")
+        return 259
+    r = pw.apply(Config(), runner=half, cards=_cards())
+    assert not r["ok"] and "pl@1" in r["error"] and "görev" in r["error"]
+
+    monkeypatch.setattr(pw, "query", lambda: _cards())                   # "başarılı" ama sınır değişmemiş
+    r = pw.apply(Config(), runner=runner, cards=_cards())
+    assert not r["ok"] and "değişmedi" in r["error"]
 
 
 def test_apply_uac_declined_and_undo(tmp_path, monkeypatch):
@@ -142,9 +171,10 @@ def test_apply_uac_declined_and_undo(tmp_path, monkeypatch):
 
     def runner(params):
         seen["p"] = params
-        res.write_text("STT_OK pl@0\nSTT_OK rgc@0\nSTT_OK pl@1\nSTT_OK rgc@1\nSTT_OK task\n")
+        res.write_text("STT_OK pl@0\nSTT_OK rgc@0\nSTT_OK pl@1\nSTT_OK rgc@1\nSTT_FAIL task\n")
         return 0
     r = pw.apply(Config(), undo=True, runner=runner, cards=_cards())
+    # görev hiç kaydedilmemişti (Afterburner sınırı koymuştu): silinemedi = sorun değil
     assert r["ok"] and "/Delete" in seen["p"] and "-rgc" in seen["p"] and "-pl 350" in seen["p"]
 
 
@@ -231,3 +261,65 @@ def test_safe_apply_switches_to_recommended(tmp_path, monkeypatch):
     monkeypatch.setattr(pw, "apply", lambda cfg, undo=False: {"ok": False, "error": "x"})
     app._restart.clear()
     assert not app.safe_apply(False)["ok"] and not app._restart.is_set()
+
+
+def test_restrict_or_reapply_runs_task_first(monkeypatch):
+    """Hızlı başlatma / uyku / Afterburner sınırı silmiş olabilir: önce kayıtlı görev izinsiz çalıştırılır."""
+    monkeypatch.setattr(pw.time, "sleep", lambda s: None)
+    monkeypatch.setattr(pw, "query", lambda: _cards(224, 245))
+    monkeypatch.setattr(pw, "reapply", lambda: True)
+    d, h, why, cards = pw.restrict_or_reapply(["cuda:0", "cuda:1"], [], GI_FREE, Config(), _cards())
+    assert d == ["cuda:0", "cuda:1"] and not why and cards[1]["limit"] == 245
+    monkeypatch.setattr(pw, "reapply", lambda: False)                    # görev yok: tek kart
+    d, h, why, cards = pw.restrict_or_reapply(["cuda:0", "cuda:1"], [], GI_FREE, Config(), _cards())
+    assert d == ["cuda:1"] and why
+
+
+def test_power_guard_during_work(tmp_path, monkeypatch):
+    """İş sürerken sınır kalkarsa (uyku dönüşü / sürücü sıfırlanması): görev izinsiz yeniden çalışır, olmazsa tek kart."""
+    import threading
+
+    import stt.gui as gui
+    from stt.pipeline import Pipeline
+
+    class Pool:
+        def __init__(self):
+            self._spec = {"cuda:0": "cuda:0", "cuda:1": "cuda:1"}
+            self.stopped = []
+
+        def stop(self, w):
+            self.stopped.append(w)
+    pipe = Pipeline(Config(out_dir=tmp_path))
+    pipe.pool = Pool()
+    pipe.devices = ["cuda:0", "cuda:1"]
+    pipe.inflight = {"cuda:0": ("t1", 0.0)}
+    pipe.tasks = {"t1": {"id": "t1", "kind": "transcribe", "job": "j"}}
+    app = gui.App.__new__(gui.App)
+    app._cfg = Config(out_dir=tmp_path)
+    app._pipe = pipe
+    app._gpus = dict(GI_FREE)
+    pushed = []
+    app._push = pushed.append
+    monkeypatch.setattr(gui.time, "sleep", lambda s: None)
+    # sınır yerinde: hiçbir şey yapılmaz
+    assert app._power_guard(_cards(224, 245)) == "" and not pipe._drop_wids
+    # kalktı, görev yeniden uyguladı: tek karta inilmez
+    monkeypatch.setattr(pw, "reapply", lambda: True)
+    monkeypatch.setattr(pw, "query", lambda: _cards(224, 245))
+    assert app._power_guard(_cards()) == "" and not pipe.fatal
+    # kalktı, geri konamadı: 3080 işçisi (görevdeydi) kapatılır, görev sıraya döner, 3090 kalır
+    monkeypatch.setattr(pw, "reapply", lambda: False)
+    monkeypatch.setattr(pw, "query", lambda: _cards())
+    assert app._power_guard(_cards())
+    assert pipe.fatal == {"cuda:0"} and pipe.pool.stopped == ["cuda:0"] and pushed[-1]["type"] == "notice"
+    assert pipe.cards_in_use() == (["cuda:1"], [])
+    assert app._power_guard(_cards()) == ""                           # bir kez: artık tek kart
+    pipe.prep.shutdown(wait=False)
+    pipe.fin.shutdown(wait=False)
+    del threading
+
+
+def test_single_card_has_no_dual_warning():
+    lay = pw.safe_layout(Config(), gi={0: {"name": "RTX 3090", "gb": 24.0, "display": True}}, cards=_cards(),
+                         adapters=None, tools=[])
+    assert not lay["ready"] and "Tek ekran kartı" in lay["summary"] and lay["n"] == 1

@@ -405,7 +405,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
       <div class="field" id="sSafe"><label>İki kart güvenli düzen (iki kart birlikte, bilgisayar yeniden başlamadan, ekran kararmadan)</label>
         <div id="sSafeList" class="safe-list hint">Denetleniyor…</div>
         <div class="row"><button class="btn small" id="sSafeApply" type="button">Güvenli güç ayarını uygula</button><button class="btn small" id="sSafeUndo" type="button">Geri al</button><span class="hint" id="sSafeOut"></span></div>
-        <span class="hint">Üç adım: 1) monitör kablosu anakarttaki (Intel) çıkışa — ekran kartları ekran çizmez, kararma biter; 2) bu düğme: iki karta güç sınırı (%70) ve saat sınırı (1600 MHz) konur, bilgisayarı yeniden başlatan güç sıçramaları kesilir; Windows bir kez izin sorar, sonra her açılışta kendiliğinden uygulanır; 3) MSI Afterburner'da Reset + Save. Güç ayarı yokken iki kart birlikte çalıştırılmaz (yalnız 3090).</span></div>
+        <span class="hint">Üç adım: 1) monitör kablosu anakarttaki (Intel) çıkışa — ekran kartları ekran çizmez, kararma biter; 2) bu düğme: iki karta güç sınırı (<span id="sSafePct">%70</span>) ve saat sınırı (<span id="sSafeClk">1600 MHz</span>) konur, bilgisayarı yeniden başlatan güç sıçramaları kesilir; Windows bir kez izin sorar, sonra her açılışta kendiliğinden uygulanır; 3) MSI Afterburner'da Reset + Save. Güç ayarı yokken iki kart birlikte çalıştırılmaz (yalnız 3090).</span></div>
       <label class="toggle"><input type="checkbox" id="sUiGpu"><span>Arayüzde ekran kartı hızlandırması<small>Kapalı önerilir (açılışta ekranın kararıp gelmesini önler). Değişiklik yeniden açılışta geçerli.</small></span></label>
       <div class="sec">Yapay zekâ (isteğe bağlı)</div>
       <div class="field"><label for="sLlm">Sağlayıcı</label>
@@ -1006,6 +1006,8 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     if (![...g.options].some(o => o.value === s.gpus)) g.append(el("option", { value: s.gpus }, "Kart: " + s.gpus));
     g.value = s.gpus || "auto";
     $("#sHelperGb").value = s.helper_reserve_gb ?? 2; $("#sHelperRow").hidden = g.value !== "yardim";
+    $("#sSafe").hidden = cards.length < 2;  // tek kartta iki kart düzeni yok
+    $("#sSafePct").textContent = "%" + (s.gpu_power_pct ?? 70); $("#sSafeClk").textContent = s.gpu_max_clock ? s.gpu_max_clock + " MHz" : "yok";
     $("#sOut").value = s.out_dir || ""; $("#sFpl").value = s.fpl_repo || ""; $("#sCookie").value = s.cookies_browser || "auto";
     $("#sCookieFile").value = s.cookies_file || ""; $("#sBrowser").checked = !!s.browser_capture; $("#sUiGpu").checked = !!s.ui_gpu;
     $("#sDiarEng").value = s.diar_engine || "pyannote"; $("#sDiarAgc").value = s.diar_agc || "auto";
@@ -1050,7 +1052,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
       const r = await call("safe_apply", undo);
       if (!r) { $("#sSafeOut").textContent = ""; return; }
       $("#sSafeOut").textContent = r.ok ? (undo ? "Geri alındı." : "Uygulandı ✓" + (r.warn ? " (" + r.warn + ")" : "") + " Sıradaki işler bitince kartlar yeniden seçilir.") : "Olmadı: " + r.error;
-      if (r.settings) { const keep = $("#sSafeOut").textContent; fillSettings(r.settings); $("#sSafeOut").textContent = keep; }
+      if (r.settings) { state.settings = r.settings; $("#sGpu").value = r.settings.gpus || "auto"; $("#sHelperRow").hidden = $("#sGpu").value !== "yardim"; }  // kaydedilmemiş öbür alanlar kalsın
       showSafe(r.layout);
     } finally { $("#sSafeApply").disabled = $("#sSafeUndo").disabled = false; }
   }
