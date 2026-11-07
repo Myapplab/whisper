@@ -61,6 +61,11 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   `CUDA_DEVICE_ORDER=PCI_BUS_ID` (cuda:0 = 3080, cuda:1 = 3090, nvidia-smi sırası).
 - İki model aynı anda yüklenince `mkl_malloc: failed to allocate memory` (RAM) → modeller sırayla
   yükleniyor (`WorkerPool.load_lock`), işçiler torch import etmiyor.
+- **Güncelleme yolu (çalıştığı doğrulandı, 1.2.1):** setup.exe'yi SAC engelliyor, sohbetten gönderilen dosya
+  kullanıcının bilgisayarına inmiyor. Repo herkese açık: PowerShell tek satırı
+  `github.com/Myapplab/whisper/archive/refs/heads/<dal>.zip`'i indirip `stt\*`'ı `C:\stt\stt`'ye ve
+  kök dosyaları `C:\stt`'ye kopyalar (önce `C:\stt\` altındaki pythonw/python süreçleri kapatılır).
+  Yeni bağımlılık eklenmediyse bu yeterli (`-e .` kurulumu). Komut başarıyı yalnızca gerçekten bitince yazmalı.
 - HF token kullanıcının ortam değişkeninde (`HF_TOKEN`) — **repoya asla yazma** (`stt.toml` .gitignore'da).
 
 ## Bilinen sınırlar / yapılacaklar
