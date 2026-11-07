@@ -540,7 +540,7 @@ class Pipeline:
                 self.inflight.pop(wid, None)
                 self._requeue(wid, tid, "işçi takıldı")
                 self.idle.discard(wid)
-                self.emit("worker", wid=wid, state="loading")
+                self.emit("worker", wid=wid, state="restarting")
         main_alive: set = set()
         for pool in self._pools():
             alive = set(pool.alive())
@@ -558,7 +558,7 @@ class Pipeline:
                     self.restarts[wid] = self.restarts.get(wid, 0) + 1
                     log.warning("[%s] işçi yeniden başlatılıyor (%d/3)", wid, self.restarts[wid])
                     pool.respawn(wid)
-                    self.emit("worker", wid=wid, state="loading")
+                    self.emit("worker", wid=wid, state="restarting")
                     alive.add(wid)
             if pool is self.pool:
                 main_alive = alive
