@@ -531,3 +531,25 @@ def test_full_power_rgc_failure_is_only_warning(tmp_path, monkeypatch):
         return 0
     r = pw.apply(Config(gpu_power_pct=100, gpu_max_clock=0), runner=runner, cards=_cards())
     assert r["ok"] and "saat sınırı" in r["warn"]
+
+
+def test_afterburner_ack(tmp_path, monkeypatch):
+    """Kullanıcı: Afterburner'da her şey sıfırlandı ama satır hâlâ kırmızı (uygulama yalnız programın açık olduğunu görür)."""
+    import stt.gui as gui
+    import stt.power as pw
+    from test_v1917 import GI_FREE as GF, _cards
+    ad = [("Intel(R) UHD Graphics 630", True), ("NVIDIA GeForce RTX 3080", False), ("NVIDIA GeForce RTX 3090", False)]
+    oc = lambda cfg: [i for i in pw.safe_layout(cfg, gi=GF, cards=_cards(224, 245), adapters=ad,  # noqa: E731
+                                                tools=["MSIAfterburner.exe"])["items"] if i["key"] == "oc"][0]
+    assert oc(Config())["ok"] is False and oc(Config())["ack"] is False and "Reset + Save yaptım" in oc(Config())["text"]
+    assert oc(Config(oc_ack="msiafterburner.exe"))["ok"] is True
+    assert oc(Config(oc_ack="precisionx1.exe"))["ok"] is False          # başka program açıldıysa onay geçmez
+    saved = {}
+    monkeypatch.setattr(gui, "save_settings", lambda d: saved.update(d))
+    monkeypatch.setattr(gui, "load_config", lambda: Config(out_dir=tmp_path, **({"oc_ack": saved["oc_ack"]} if saved.get("oc_ack") else {})))
+    monkeypatch.setattr(pw, "oc_tools", lambda: ["MSIAfterburner.exe"])
+    monkeypatch.setattr(gui.App, "safe_status", lambda self: {"ack": self._cfg.oc_ack})
+    app = gui.App.__new__(gui.App)
+    app._cfg, app._pipe = Config(out_dir=tmp_path), None
+    assert app.oc_ack(True) == {"ack": "msiafterburner.exe"}
+    assert app.oc_ack(False) == {"ack": None} and saved["oc_ack"] == ""

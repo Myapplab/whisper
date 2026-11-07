@@ -38,6 +38,11 @@ E.2 (C5) ve aşağıdaki K5 planı. **(1.9.5'ten kalan):** kullanıcı Güncelle
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
+- 1.9.22 (Claude; 638 test): kullanıcı ekranı (1.9.21 çalışıyor: üstte "RTX 3090" + "RTX 3080 yardımcı · metin/ayırma"
+  = esnek düzen açıldı, "Esnek güç açık", güvenli düzen listesi ✓ monitör Intel'de, ✓ güç 238/245 W). Soru: "MSI'da
+  hepsi resetlendi ama satır hâlâ kırmızı". Sebep: uygulama Afterburner'ın içindeki ayarı okuyamaz, yalnız açık olduğunu
+  görür. Artık satırda "Reset + Save yaptım" düğmesi (`App.oc_ack`, `cfg.oc_ack` = açık programların adı; başka program
+  açılırsa onay geçmez; "Onayı kaldır"). Şeritte esnek kart "esnek · metin / ayırma" yazar. Windows'ta denenmedi.
 - 1.9.21 (Claude; kullanıcının 2 isteği; 637 test; bağımsız inceleme 9 hata buldu, hepsi testle düzeltildi — GELISTIRME "1.9.21"): (1) **Kanalın tamamında arama:** "Kanal · liste" > "Ne
   arıyorsunuz?" (takım / kişi / konu, virgülle). Kullanıcı önce "verdiğim takımın erkek A takımının bütün basın
   toplantıları" dedi, sonra "yalnız basın toplantısı değil, her şey: kanaldaki bütün ilgili videolar". Aranan yazılınca

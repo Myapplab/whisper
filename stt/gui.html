@@ -725,7 +725,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
       const idle = d.helper ? "boşta" : diarBusy && d.task !== "diarize" ? "metin bitti · konuşmacı ayırma sürüyor" : "boşta";
       const label = d.state === "loading" ? "yeniden başlatılıyor…" : d.state === "busy" ? (d.task === "diarize" ? "konuşmacı ayırıyor · " : "çeviriyor · ") + (d.title || "") : d.state === "error" ? "hata" : d.state === "idle" ? idle : d.state === "paused" ? (/^kapalı/.test(d.note || "") ? d.note : "bekliyor · " + (d.note || "")) : "yükleniyor…";
       g.append(el("div", { class: "gpu " + (d.state || ""), title: d.error || d.note || (d.helper ? "Yardımcı kart: yalnız ana kart yetişemeyince, düşük yükle çalışır; oyun / başka program kartı kullanınca bekler" : "") }, el("i", { class: "dot" }),
-        el("b", {}, d.name || wid), d.helper ? el("span", { class: "mono", title: "Yardımcı kart (Ayarlar › Ekran kartı kullanımı). Kart aynı anda tek iş yapar: metin ya da konuşmacı ayırma" }, d.diar ? "yardımcı · ayırma" : "yardımcı · metin") : d.display ? el("span", { class: "mono", title: "Monitör bu karta bağlı: düşük yükle çalışır" }, "monitör") : null, d.gb ? el("span", { class: "mono" }, d.gb + " GB") : null, el("span", { class: "what" }, label)));
+        el("b", {}, d.name || wid), d.helper ? el("span", { class: "mono", title: d.flex ? "Esnek ikinci kart: iş nerede birikmişse metin ya da konuşmacı ayırma; bilgisayar kullanılınca bekler. Kart aynı anda tek iş yapar." : "Yardımcı kart (Ayarlar › Ekran kartı kullanımı). Kart aynı anda tek iş yapar: metin ya da konuşmacı ayırma" }, (d.flex ? "esnek" : "yardımcı") + (d.diar ? " · ayırma" : " · metin")) : d.display ? el("span", { class: "mono", title: "Monitör bu karta bağlı: düşük yükle çalışır" }, "monitör") : null, d.gb ? el("span", { class: "mono" }, d.gb + " GB") : null, el("span", { class: "what" }, label)));
     }
   }
 
@@ -1091,7 +1091,10 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     if (!r) { box.textContent = ""; return; }
     if (!r.ok && r.error) { box.textContent = "Denetlenemedi: " + r.error; return; }
     const mark = v => v === true ? "✓" : v === false ? "✗" : "?";
-    box.replaceChildren(...(r.items || []).map(i => el("div", { class: "safe-item " + (i.ok === true ? "ok" : i.ok === false ? "bad" : "unk") }, mark(i.ok) + " " + i.text)),
+    const ackBtn = i => i.key === "oc" && "ack" in i ? el("button", { class: "linkbtn", type: "button", onclick: async () => {
+      if (!i.ack && !confirm("MSI Afterburner'da Reset'e, sonra Save'e bastınız mı? ('Apply overclocking at system startup' kapalı olmalı.)")) return;
+      showSafe(await call("oc_ack", !i.ack)); } }, i.ack ? " Onayı kaldır" : " Reset + Save yaptım") : null;
+    box.replaceChildren(...(r.items || []).map(i => el("div", { class: "safe-item " + (i.ok === true ? "ok" : i.ok === false ? "bad" : "unk") }, mark(i.ok) + " " + i.text, ackBtn(i))),
       el("div", { class: "safe-sum" }, r.summary || ""));
     const pw = (r.items || []).find(i => i.key === "power");
     $("#sSafeUndo").hidden = !(pw && pw.ok === true);

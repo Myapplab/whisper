@@ -122,6 +122,11 @@ def restrict(devices: list[str], helpers: list[str], gi: dict, cfg, cards: dict 
     return [keep], [], why
 
 
+def oc_ack_key(tools: list[str]) -> str:
+    """Onay anahtarı: açık hız aşırtma programlarının adları (küçük harf, sıralı)."""
+    return ",".join(sorted({t.strip().lower() for t in tools if t and t.strip()}))
+
+
 def card_line(c: dict) -> str:
     """Günlük için: 'RTX 3090 64°C 238/245 W 1590 MHz'."""
     parts = [c.get("name") or f"kart {c.get('index')}"]
@@ -480,10 +485,16 @@ def safe_layout(cfg, gi: dict | None = None, cards: dict | None = None, adapters
     t = oc_tools() if tools is ... else tools
     if t is None:
         items.append({"key": "oc", "ok": None, "text": "Hız aşırtma programı denetlenemedi."})
+    elif t and oc_ack_key(t) == (getattr(cfg, "oc_ack", None) or ""):
+        items.append({"key": "oc", "ok": True, "ack": True, "text": f"{', '.join(t)} açık; Reset + Save yaptığınızı "
+                      "onayladınız. (Uygulama Afterburner'ın içindeki ayarı göremez; yeniden hız aşırtma yaparsanız "
+                      "'Onayı kaldır'a basın.)"})
     elif t:
-        items.append({"key": "oc", "ok": False, "text": f"Açık hız aşırtma programı: {', '.join(t)}. İçinde Reset'e, sonra "
-                      "Save'e basın; ayarlardan 'Apply overclocking at system startup' (başlangıçta uygula) kapalı olsun. "
-                      "Çekirdek / bellek hız aşırtması (+143 / +1441) ekran kartı hatası ve yeniden başlama yapar."})
+        items.append({"key": "oc", "ok": False, "ack": False, "text": f"Açık hız aşırtma programı: {', '.join(t)}. İçinde "
+                      "Reset'e, sonra Save'e basın; ayarlardan 'Apply overclocking at system startup' (başlangıçta uygula) "
+                      "kapalı olsun. Çekirdek / bellek hız aşırtması (+143 / +1441) ekran kartı hatası ve yeniden başlama "
+                      "yapar. Uygulama Afterburner'ın içini göremez, yalnız açık olduğunu görür: Reset + Save yaptıysanız "
+                      "'Reset + Save yaptım'a basın (ya da Afterburner'ı kapatın)."})
     else:
         items.append({"key": "oc", "ok": True, "text": "Açık hız aşırtma programı yok."})
     mode = (cfg.gpus or "auto").strip().lower()

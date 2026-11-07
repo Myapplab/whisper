@@ -39,6 +39,9 @@ class Config:
     # ayırmaya (iş nerede birikmişse) geçer; başka programlar işlemciyi / RAM'i kullanınca iş kademeli yavaşlar, onlar
     # bırakınca tam güce döner. Kapalı = eski düzen (iki kart da yalnız tam metin, yavaşlama yok).
     gpu_flex: bool = True
+    # açık hız aşırtma programı (MSI Afterburner) için kullanıcının "Reset + Save yaptım" onayı (program adları; uygulama
+    # Afterburner'ın içindeki ayarı okuyamaz, yalnız açık olduğunu görür). Başka bir program açılırsa onay geçmez.
+    oc_ack: str | None = None
     # gece modu (1.9.19, stt/governor.py): uzun kuyruk için yavaş ama dengeli. Tek kart, monitörlü karta / yardımcıya iş
     # yok, her görevden sonra ısıya göre mola (kart night_temp çevresinde), çok ısınırsa soğuma molası, işçiler
     # night_recycle_min dakikada bir boştayken yenilenir (bellek birikmesin), önden en çok 3 video hazırlanır.

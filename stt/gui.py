@@ -256,11 +256,13 @@ class App:
                     used.add(i)
                     g = gi.get(i, {"name": d, "gb": 0})
                     note = self._pipe._h_note.get(d) or ""  # baştan kapalı: iş fazlası çıkınca açılır
+                    flex = bool(getattr(self._pipe, "_flex_card", False))
                     devs.append({"wid": d, "name": g["name"], "gb": round(g["gb"]), "display": bool(g.get("display")),
-                                 "helper": True, "state": "paused" if note else None, "note": note})
+                                 "helper": True, "flex": flex, "state": "paused" if note else None, "note": note})
                     dnote = self._pipe._h_note.get("diar2") or ""  # aynı kartta konuşmacı ayırma (tek iş tutar)
                     devs.append({"wid": "diar2", "name": g["name"], "gb": round(g["gb"]), "display": bool(g.get("display")),
-                                 "helper": True, "diar": True, "state": "paused" if dnote else None, "note": dnote})
+                                 "helper": True, "flex": flex, "diar": True, "state": "paused" if dnote else None,
+                                 "note": dnote})
                 spare = [{"name": g["name"], "gb": round(g["gb"]), "display": bool(g.get("display"))}
                          for i, g in sorted(gi.items()) if i not in used and self._pipe.devices
                          and self._pipe.devices[0] != "api"]
@@ -1018,6 +1020,18 @@ class App:
         except Exception as e:  # noqa: BLE001
             log.debug("güvenli düzen okunamadı", exc_info=True)
             return {"ok": False, "error": f"{type(e).__name__}: {e}", "items": [], "summary": ""}
+
+    def oc_ack(self, on: bool) -> dict:
+        """'Reset + Save yaptım' (on) / 'Onayı kaldır': Afterburner açık kalsa da hız aşırtma satırı ✓ olsun. Uygulama
+        Afterburner'ın içindeki ayarı okuyamaz; onay şu an açık olan programlar için geçerli."""
+        from .power import oc_ack_key, oc_tools
+        tools = oc_tools() or []
+        save_settings({"oc_ack": oc_ack_key(tools) if on and tools else ""})
+        self._cfg = load_config()
+        if self._pipe is not None:
+            self._pipe.cfg = self._cfg
+        log.info("Hız aşırtma onayı %s (%s)", "verildi" if on else "kaldırıldı", ", ".join(tools) or "program yok")
+        return self.safe_status()
 
     def safe_apply(self, undo: bool = False) -> dict:
         """'Güç ayarını uygula' (undo: 'Geri al'): Windows yönetici izni sorar; güç + saat sınırı şimdi uygulanır ve
