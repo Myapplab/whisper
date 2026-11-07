@@ -111,6 +111,31 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   görev yoksa hata değil; nvidia-smi `GetSystemDirectoryW`'den; tek kartta kutu / Kontrol satırları gizli.
   DENENMEDİ: Windows, gerçek nvidia-smi -pl/-lgc (GeForce'ta yönetici ister; web kaynakları çalıştığını söylüyor),
   schtasks /XML + SDDL ile standart kullanıcının /Run'ı, UAC.
+- **1.9.21 kanalın tamamında arama + esnek güç:** (1) Kullanıcı: "YouTube kanal linki versem, verdiğim takımın (erkek A
+  takımı) bütün basın toplantıları bulunsun, seçili gelsin" + "yalnız basın toplantısı değil, her şey: kanaldaki bütün ilgili
+  videolar". "Kanal · liste"de **"Ne arıyorsunuz?"** alanı (takım, kişi ya da konu; virgülle): YouTube kanalında kendiliğinden
+  `channel.find_in_channel` (eskiden "basın toplantısı bulucu (deneme)"): aranan her kelime (takımsa bu sezonki hocası da) +
+  konu sözcükleri kanal içi aramada (`/search?query=`), adı uyan oynatma listeleri, `/videos` + `/streams`; en çok
+  `MAX_TARGETS` (24) istek. Tarafsız kanalda konu sözcükleri tek başına aranmaz (yalnız kulübün kendi kanalında).
+  Seçim `select(search=, channel=)`: konuya VE arananlardan birine uymalı. Takım (`_team_canon`, takma adlar dahil):
+  `MEN_ONLY_EXCLUDE` (kadın, altyaş, akademi, efsaneler, e-spor, basketbol hariç); konu "Basın toplantısı"ysa yalnız o
+  takımın kendi toplantısı (`team_video(own=True)`: `parse_match` sahibi; "Maresca previews Arsenal" Arsenal'in değil; kulüp
+  kanalında her video o kulübün; "A vs B | Post-match" hoca adı yoksa iki takıma da), başka konularda başlıkta takım ya da
+  bu sezonki hocası geçmesi yeter; basın sözcüğü olmayan başlıklar `looks_like_presser` + `_NOT_PRESSER_RE` ile. Takım
+  değilse başlıkta kelime başı eşleşme ("Arteta" → "Arteta's"). Uyanlar listenin başında, koleksiyon adı
+  "<aranan> - <konu>" (farklı kanallardan aynı takım tek koleksiyonda). Takip de aranan kelimeyle süzer. Komut satırı:
+  `stt kanal <link> --ara Arsenal`. (2) Kullanıcı: "monitör Intel'de, iki GPU boş: ikisi de max çalışsın ama tarayıcıya
+  güç yetsin, başka şeyler yük alınca azalt sonra çoğalt". **Esnek güç** (`cfg.gpu_flex`, varsayılan açık; kart şeridinde
+  düğme + Ayarlar): (a) "Önerilen"de tam iki NVIDIA kart ve ikisi de monitörsüzse (`pipeline.flex_pair`) büyük kart (3090)
+  ana, ikincisi (3080) yardımcı düzeniyle "esnek ikinci kart": iş nerede birikmişse metin ya da konuşmacı ayırma (darboğaz
+  ayırmaydı; eskiden 3080 yalnız metin çeviriyordu), başka programlar belleği isterse geri çekilir; ayrılan bellek en çok
+  `FLEX_RESERVE_GB` 1 GB (tarayıcı Intel'le çizer). Güç sınırı yoksa yine tek kart (`power.restrict`). (b) `stt/flex.py`:
+  10 sn'de bir başka programların işlemci payı (sistem dolu - uygulamanın bütün süreç ağacı: Windows Toolhelp32 +
+  GetProcessTimes, Linux /proc) ve boş RAM; kademe 1 (başkaları ≥%35 ya da RAM < 2 GB, 2 ardışık ölçüm): ikinci karta yeni
+  iş yok, önden 2 video; kademe 2 (≥%60): ana kart her görevden sonra 8 sn dinlenir; sakin (<%20, RAM ≥ 3.5 GB) 60 sn
+  kalınca bir kademe iner. Gece modu açıkken devre dışı (onun molası var). (c) Ayarlar > **Güç düzeni**: Güvenli (%70,
+  1600 MHz, varsayılan) / Dengeli (%85, 1800) / Tam (%100, saat sınırı yok; `plan` artık `-rgc` ile eski kilidi kaldırır);
+  "Güç ayarını uygula"ya yeniden basılmalı. Windows'ta / gerçek kartlarda DENENMEDİ (ölçüm eşikleri tahmin).
 - **1.9.20 monitör Intel'e geçiş:** kullanıcı Intel sürücüsünü kurdu (Ayarlar'da artık Intel adı görünüyor) ama liste hâlâ "Monitör RTX 3080 bağlı" diyordu. `igpu_advice` artık üç durumu ayırır: Intel kurulu ama masaüstünde değil (= kablo hâlâ NVIDIA'da; "sürücü ✓, kalan tek adım kablo"), Intel masaüstünde + NVIDIA da (ikinci monitör/TV/kablo), yalnız Intel (✓). `mark_display`: Windows masaüstünü Intel çiziyorsa listede olmayan NVIDIA kart, nvidia-smi "Enabled" dese de boş sayılır (eskiden korunuyordu; kablo anakarttayken 3080 hiç kullanılmayabilirdi). Windows'ta denenmedi.
 - **1.9.19 gece modu (`stt/governor.py`, `cfg.night_mode`):** kullanıcı "uyurken 200+ video, bilgisayar çökmesin, GPU
   az harcasın, yavaş ama stabil, Afterburner gibi ama uygulama kendi ayarlasın" dedi. Fan eğrisi / hız aşırtma yazılımdan

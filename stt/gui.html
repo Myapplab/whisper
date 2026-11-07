@@ -50,6 +50,7 @@ header{display:flex;align-items:center;gap:12px 18px;padding:10px 18px;backgroun
 .gpu .what{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .gpu.night{cursor:pointer;font:inherit;color:inherit;margin-left:8px;flex:none}.gpu.night b{white-space:nowrap}.gpu.night:hover{border-color:var(--accent)}
 .gpu.night.on .dot{background:#6366f1;box-shadow:0 0 0 3px rgba(99,102,241,.2)}.gpu.night.on.paused .dot{background:var(--warn)}
+.gpu.night.flex.on .dot{background:var(--ok, #16a34a);box-shadow:0 0 0 3px rgba(22,163,74,.2)}.gpu.night.flex.on.paused .dot{background:var(--warn)}
 .spacer{flex:1}
 .btn{border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:7px 12px}
 .btn:hover{background:var(--panel-2)}
@@ -241,6 +242,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
   </div>
   <div class="gpus" id="gpus"><div class="gpu"><i class="dot"></i><span class="what">Motor başlatılıyor…</span></div></div>
   <button class="gpu night" id="night" type="button" aria-pressed="false"><i class="dot"></i><b>Gece modu</b><span class="what">kapalı</span></button>
+  <button class="gpu night flex" id="flex" type="button" aria-pressed="false"><i class="dot"></i><b>Esnek güç</b><span class="what">…</span></button>
   <div class="spacer"></div>
   <div class="views" id="views" role="group" aria-label="Görünüm">
     <button type="button" data-v="new" aria-pressed="false">Yeni iş</button>
@@ -282,6 +284,9 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
       <div class="mode" id="m-channel" hidden>
         <div class="field"><label for="chUrl">Kanal ya da oynatma listesi linki</label>
           <input class="txt" id="chUrl" spellcheck="false" placeholder="https://www.youtube.com/@Arsenal  ·  …/playlist?list=…"></div>
+        <div class="field"><label for="chSearch">Ne arıyorsunuz? Takım, kişi ya da konu (isteğe bağlı; virgülle birden çok)</label>
+          <input class="txt" id="chSearch" spellcheck="false" placeholder="ör. Arsenal  ·  Arteta  ·  Saka, Ødegaard  ·  transfer">
+          <span class="hint">Yazarsanız kanalın tamamı taranır (yalnız son videolar değil) ve ilgili videolar seçili gelir. Takım adı yazılırsa yalnız A takımı (kadın / altyaş / akademi hariç); konu “Basın toplantısı” ise yalnız o takımın toplantıları. Her şey için konuyu “Hepsi” yapın.</span></div>
         <div class="field"><span class="lbl">Konu</span>
           <div class="seg" id="chTopic" role="group" aria-label="Konu">
             <button type="button" data-v="basin" aria-pressed="true">Basın toplantısı</button>
@@ -293,7 +298,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
         <div class="field"><label for="chExcl">Başlıkta geçerse alma</label>
           <input class="txt" id="chExcl" placeholder="ör. women, u21, academy"></div>
         <div class="row"><label class="n hint">En fazla <input type="number" id="chMax" min="5" max="5000" value="200" style="width:80px" class="txt"> video</label></div>
-        <label class="toggle"><input type="checkbox" id="chFind"><span>Kanalın tamamında basın toplantılarını ara (deneme)<small>Yalnız son videolara değil: kanal içi arama ve adında basın toplantısı geçen oynatma listeleri taranır. Daha yavaş; yalnız YouTube kanal linkinde.</small></span></label>
+        <label class="toggle"><input type="checkbox" id="chFind"><span>Kanalın tamamında ara<small>Yalnız son videolara değil: kanal içi arama, konuya / arananlara uyan oynatma listeleri ve son videolar taranır. Aranan yazılınca kendiliğinden açık. Daha yavaş (1-3 dakika); yalnız YouTube kanal linkinde.</small></span></label>
         <label class="toggle" id="chAiRow"><input type="checkbox" id="chAi"><span>Yapay zekâ ile seç<small>Başlıkları konuya göre yapay zekâ süzer (Ayarlar'da anahtar gerekir)</small></span></label>
         <button class="btn" id="btnList" type="button" hidden>Yeniden listele</button>
         <div class="hint" id="chInfo"></div>
@@ -407,8 +412,12 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
         <span class="hint">Bu kadar bellek YouTube ve sekmelere kalır, geri kalanı ve kartın gücü metin çevirisine verilir. Birkaç YouTube + 10 kadar sekme için 2 GB yeterli; YouTube takılırsa artırın. Kaydedince hemen geçerli.</span></div>
       <div class="field" id="sSafe"><label>İki kart güvenli düzen (iki kart birlikte, bilgisayar yeniden başlamadan, ekran kararmadan)</label>
         <div id="sSafeList" class="safe-list hint">Denetleniyor…</div>
-        <div class="row"><button class="btn small" id="sSafeApply" type="button">Güvenli güç ayarını uygula</button><button class="btn small" id="sSafeUndo" type="button">Geri al</button><span class="hint" id="sSafeOut"></span></div>
+        <div class="row"><button class="btn small" id="sSafeApply" type="button">Güç ayarını uygula</button><button class="btn small" id="sSafeUndo" type="button">Geri al</button><span class="hint" id="sSafeOut"></span></div>
         <span class="hint">Üç adım: 1) monitör kablosu anakarttaki (Intel) çıkışa — ekran kartları ekran çizmez, kararma biter; 2) bu düğme: iki karta güç sınırı (<span id="sSafePct">%70</span>) ve saat sınırı (<span id="sSafeClk">1600 MHz</span>) konur, bilgisayarı yeniden başlatan güç sıçramaları kesilir; Windows bir kez izin sorar, sonra her açılışta kendiliğinden uygulanır; 3) MSI Afterburner'da Reset + Save. Güç ayarı yokken iki kart birlikte çalıştırılmaz (yalnız 3090).</span></div>
+      <label class="toggle"><input type="checkbox" id="sFlex"><span>Esnek güç: tam güç, bilgisayarı kullanınca yavaşla<small>Kartlar tam güçte çalışır. Tarayıcı, oyun ya da başka programlar işlemciyi / RAM'i kullanmaya başlayınca iş kademeli yavaşlar (önce ikinci kart yeni iş almaz, gerekirse ana kart her işten sonra kısa dinlenir); onlar bırakınca 1-2 dakikada tam güce döner. Monitör anakarttayken (iki NVIDIA kart da boş) ikinci kart iş nerede birikmişse ona geçer: metin ya da konuşmacı ayırma. Kapalı: kartlar sürekli tam yükte (eski düzen).</small></span></label>
+      <div class="field"><label for="sPower">Güç düzeni (iki kart birlikte)</label>
+        <select id="sPower"><option value="guvenli">Güvenli: %70 güç, en çok 1600 MHz (önerilen; yeniden başlamalar kesilir)</option><option value="dengeli">Dengeli: %85 güç, en çok 1800 MHz (~%5-8 daha hızlı)</option><option value="tam">Tam güç: kartların kendi gücü, saat sınırı yok (yeniden başlama riski)</option><option value="ozel" hidden>Özel (stt.toml)</option></select>
+        <span class="hint">Seçip Kaydet'e, sonra yukarıdaki “Güç ayarını uygula”ya basın (Windows bir kez izin sorar). Bilgisayarınız yalnız 3090 yükteyken bile yeniden başlıyordu; “Tam güç”te yeniden başlarsa “Güvenli”ye dönün. Uygulanan güç seçilenden yüksekse iki kart birlikte çalıştırılmaz.</span></div>
       <label class="toggle"><input type="checkbox" id="sNight"><span>Gece modu: yavaş ama dengeli (uzun kuyruk, ör. gece 200+ video)<small>Yalnız bir kart çalışır (monitörlü karta / yardımcıya iş yok); kart her işten sonra ısısına göre dinlenir, hedef ısının üstüne çıkınca mola uzar, çok ısınınca soğuyana dek bekler; işçiler 90 dk'da bir yenilenir; diskte yer azalınca indirme durur. Kaydedince hemen geçerli (üstteki "Gece modu" düğmesi de aynı).</small></span></label>
       <div class="field"><label for="sNightTemp">Gece modunda hedef kart ısısı (°C)</label>
         <input type="text" id="sNightTemp" inputmode="numeric" style="width:90px" class="txt">
@@ -581,11 +590,13 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     for (const x of $("#chTopic").children) x.setAttribute("aria-pressed", String(x === b));
   });
   const chOpts = () => ({ topic: state.chTopic, custom: $("#chWords").value, exclude: $("#chExcl").value,
-    limit: parseInt($("#chMax").value, 10) || 200, ai: $("#chAi").checked, find: $("#chFind").checked });
-  $("#chUrl").addEventListener("input", () => { state.ch = null; $("#chList").hidden = true; $("#chActs").hidden = true; $("#btnList").hidden = true; $("#chInfo").textContent = ""; setMode("channel"); });
+    limit: parseInt($("#chMax").value, 10) || 200, ai: $("#chAi").checked, find: $("#chFind").checked, search: $("#chSearch").value });
+  const chReset = () => { state.ch = null; $("#chList").hidden = true; $("#chActs").hidden = true; $("#btnList").hidden = true; $("#chInfo").textContent = ""; setMode("channel"); };
+  $("#chUrl").addEventListener("input", chReset);
+  $("#chSearch").addEventListener("input", () => { if ($("#chSearch").value.trim()) $("#chFind").checked = true; chReset(); });
   async function listChannel() {
     const u = $("#chUrl").value.trim(); if (!u) { toast("Kanal ya da oynatma listesi linkini girin."); return; }
-    $("#btnList").disabled = $("#btnStart").disabled = true; $("#chInfo").textContent = "Listeleniyor… (büyük kanallarda 1-2 dakika)";
+    $("#btnList").disabled = $("#btnStart").disabled = true; $("#chInfo").textContent = $("#chFind").checked || $("#chSearch").value.trim() ? "Kanalın tamamı taranıyor… (1-3 dakika)" : "Listeleniyor… (büyük kanallarda 1-2 dakika)";
     const r = await call("list_channel", u, chOpts());
     $("#btnList").disabled = $("#btnStart").disabled = false;
     if (!r || !r.ok) { $("#chInfo").textContent = (r && r.error) || "Listelenemedi."; return; }
@@ -595,7 +606,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
   function renderChannel() {
     const r = state.ch, l = $("#chList"); l.replaceChildren();
     const done = r.items.filter(e => e.done).length;
-    $("#chInfo").textContent = (r.channel || r.title || "") + ": " + r.items.length + " video" + (r.playlist ? " (oynatma listesi: işlenmemişlerin hepsi seçildi)" : ", konuya uyan " + r.matched) + (done ? " — " + done + " tanesi daha önce işlendi" : "") + (r.ai ? " — yapay zekâ seçti" : "") + (r.finder ? " — kanal tarandı: " + Object.entries(r.sources || {}).map(([k, v]) => k + " " + v).join(", ") : "");
+    $("#chInfo").textContent = (r.channel || r.title || "") + ": " + r.items.length + " video" + (r.playlist ? " (oynatma listesi: işlenmemişlerin hepsi seçildi)" : r.search ? ", “" + r.search + "” ile ilgili " + r.matched + " (seçili, listenin başında)" : ", konuya uyan " + r.matched) + (done ? " — " + done + " tanesi daha önce işlendi" : "") + (r.ai ? " — yapay zekâ seçti" : "") + (r.finder ? " — kanal tarandı: " + Object.entries(r.sources || {}).map(([k, v]) => k + " " + v).join(", ") : "");
     for (const e of r.items) {
       const cb = el("input", { type: "checkbox" }); cb.checked = state.chSel.has(e.url);
       cb.onchange = () => { cb.checked ? state.chSel.add(e.url) : state.chSel.delete(e.url); setMode("channel"); };
@@ -724,9 +735,24 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     b.classList.toggle("on", !!n.on); b.classList.toggle("paused", !!n.paused); b.setAttribute("aria-pressed", String(!!n.on));
     const what = n.on ? [n.card, n.note || "açık"].filter(Boolean).join(" · ") : "kapalı";
     b.replaceChildren(el("i", { class: "dot" }), el("b", {}, "Gece modu"), el("span", { class: "what" }, what));
+    renderFlex();
     b.title = n.on ? "Açık: yalnız bir kart çalışır; kart her işten sonra ısısına göre dinlenir, çok ısınınca soğuyana dek bekler; işçiler düzenli yenilenir; diskte yer azalınca indirme durur. Kapatmak için tıklayın."
       : "Kapalı. Uzun kuyruk için (ör. gece 200+ video) tıklayın: yavaş ama dengeli; ekran kartı az ısınır, bilgisayar yorulmaz. Kuyruk sürerken de açılabilir.";
   }
+  function renderFlex() {
+    const f = (state.night || {}).flex || {}, b = $("#flex");
+    b.classList.toggle("on", !!f.on); b.classList.toggle("paused", !!(f.on && f.level)); b.setAttribute("aria-pressed", String(!!f.on));
+    b.replaceChildren(el("i", { class: "dot" }), el("b", {}, "Esnek güç"), el("span", { class: "what" }, f.on ? (f.note || "açık") : "kapalı"));
+    b.title = f.on ? "Açık: kartlar tam güçte çalışır; tarayıcı, oyun ya da başka programlar işlemciyi / RAM'i kullanmaya başlayınca iş kademeli yavaşlar (önce ikinci kart bekler, sonra ana kart her işten sonra dinlenir), onlar bırakınca 1-2 dakikada tam güce döner." + (f.card2 ? " İkinci kart iş nerede birikmişse ona geçer: metin ya da konuşmacı ayırma." : "") + " Kapatmak için tıklayın."
+      : "Kapalı: kartlar başka programlara bakmadan tam yükte çalışır. Açmak için tıklayın.";
+  }
+  $("#flex").onclick = async () => {
+    const on = !((state.night || {}).flex || {}).on;
+    const r = await call("set_flex", on);
+    if (!r) return;
+    state.night = r.night; renderNight(); $("#sFlex").checked = on;
+    toast(on ? "Esnek güç açık: tam güç, bilgisayarı kullanınca kendiliğinden yavaşlar, sonra yine hızlanır." : "Esnek güç kapalı: kartlar sürekli tam yükte.");
+  };
   $("#night").onclick = async () => {
     const on = !(state.night || {}).on;
     const r = await call("set_night_mode", on);
@@ -1032,6 +1058,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     $("#sHelperGb").value = s.helper_reserve_gb ?? 2; $("#sHelperRow").hidden = g.value !== "yardim";
     $("#sSafe").hidden = cards.length < 2;  // tek kartta iki kart düzeni yok
     $("#sNight").checked = !!s.night_mode; $("#sNightTemp").value = s.night_temp ?? 72;
+    $("#sFlex").checked = s.gpu_flex !== false; $("#sPower").value = s.power_profile || "guvenli";
     $("#sSafePct").textContent = "%" + (s.gpu_power_pct ?? 70); $("#sSafeClk").textContent = s.gpu_max_clock ? s.gpu_max_clock + " MHz" : "yok";
     $("#sOut").value = s.out_dir || ""; $("#sFpl").value = s.fpl_repo || ""; $("#sCookie").value = s.cookies_browser || "auto";
     $("#sCookieFile").value = s.cookies_file || ""; $("#sBrowser").checked = !!s.browser_capture; $("#sUiGpu").checked = !!s.ui_gpu;
@@ -1119,7 +1146,8 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
   // keepOpen: pencere açık kalsın (anahtar denemesi / silme); clear: stt.toml'dan silinecek anahtarlar
   async function saveSettings(keepOpen, clear) {
     const s = await call("save_settings", { out_dir: $("#sOut").value, hf_token: $("#sHf").value, fpl_repo: $("#sFpl").value, cookies_browser: $("#sCookie").value, gpus: $("#sGpu").value, helper_reserve_gb: $("#sHelperGb").value,
-      night_mode: $("#sNight").checked, night_temp: $("#sNightTemp").value,
+      night_mode: $("#sNight").checked, night_temp: $("#sNightTemp").value, gpu_flex: $("#sFlex").checked,
+      power_profile: $("#sPower").value === "ozel" ? "" : $("#sPower").value,
       cookies_file: $("#sCookieFile").value, browser_capture: $("#sBrowser").checked, ui_gpu: $("#sUiGpu").checked,
       llm_provider: $("#sLlm").value, llm_model: $("#sLlmModel").value, llm_budget_usd: $("#sBudget").value, gemini_api_key: $("#sGemKey").value,
       anthropic_api_key: $("#sClaKey").value, openai_api_key: $("#sOaiKey").value, llm_news: $("#sLlmNews").checked, llm_qa: $("#sLlmQa").checked,

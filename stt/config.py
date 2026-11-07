@@ -35,6 +35,10 @@ class Config:
     safe_dual: bool = True               # sınır uygulanmamışsa tek kart (Ayarlar > Ekran kartı > Güvenli güç ayarı)
     gpu_power_pct: int = 70              # güç sınırı: kartın varsayılan gücünün yüzdesi (50-100)
     gpu_max_clock: int = 1600            # en yüksek çekirdek saati (MHz; boost sıçramalarını keser). 0 = sınır yok
+    # esnek tam güç (1.9.21, stt/flex.py): "Önerilen"de iki kart da monitörsüzse ikinci kart metin ya da konuşmacı
+    # ayırmaya (iş nerede birikmişse) geçer; başka programlar işlemciyi / RAM'i kullanınca iş kademeli yavaşlar, onlar
+    # bırakınca tam güce döner. Kapalı = eski düzen (iki kart da yalnız tam metin, yavaşlama yok).
+    gpu_flex: bool = True
     # gece modu (1.9.19, stt/governor.py): uzun kuyruk için yavaş ama dengeli. Tek kart, monitörlü karta / yardımcıya iş
     # yok, her görevden sonra ısıya göre mola (kart night_temp çevresinde), çok ısınırsa soğuma molası, işçiler
     # night_recycle_min dakikada bir boştayken yenilenir (bellek birikmesin), önden en çok 3 video hazırlanır.

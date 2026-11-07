@@ -151,12 +151,14 @@ def run_doctor(cfg, deep: bool = False) -> int:
             from .engines import gpu_info
             from .pipeline import detect_devices, helper_devices
             gi = gpu_info()
-            used = detect_devices(cfg.gpus, gi)
-            helpers = helper_devices(cfg.gpus, gi) if all(d.startswith("cuda") for d in used) else []
+            flex = bool(getattr(cfg, "gpu_flex", True))
+            used = detect_devices(cfg.gpus, gi, flex=flex)
+            helpers = helper_devices(cfg.gpus, gi, flex=flex) if all(d.startswith("cuda") for d in used) else []
             for i, g in sorted(gi.items()):
                 mon = "monitör bağlı" if g.get("display") else "monitör yok" if g.get("display") is False else "?"
                 st = "KULLANILACAK" if f"cuda:{i}" in used else \
-                    "YARDIMCI (düşük yük, başka program kullanırken bekler)" if f"cuda:{i}" in helpers else "boş bırakılacak"
+                    ("ESNEK (metin ya da konuşmacı ayırma; başka programlar kullanınca bekler)" if g.get("display") is False
+                     else "YARDIMCI (düşük yük, başka program kullanırken bekler)") if f"cuda:{i}" in helpers else "boş bırakılacak"
                 add(OK, f"Kart {i}", f"{g['name']} ({mon}) -> {st}  [gpus={cfg.gpus}]")
         except Exception as e:  # noqa: BLE001
             add(WARN, "Kart seçimi", str(e)[:120])

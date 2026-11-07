@@ -251,16 +251,20 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--konu", default="basin", help="basin (basın toplantısı) | roportaj | hepsi")
         p.add_argument("--kelime", help="ek anahtar kelimeler, virgülle")
         p.add_argument("--haric", help="başlıkta geçerse alma (ör. women,u21)")
+        p.add_argument("--ara", help="aranan takım / kişi / konu (virgülle); YouTube kanalının tamamı taranır")
         p.add_argument("--en-fazla", dest="limit", type=int, default=None, help="en fazla kaç video listelensin")
         p.add_argument("--sadece-liste", dest="only_list", action="store_true", help="yalnızca listele, işleme")
         _common(p)
         a = p.parse_args(argv[1:])
         setup_logging(a.verbose)
         cfg = _apply(cfg, a)
-        from .channel import list_videos, select
+        from .channel import channel_root, find_in_channel, is_playlist_url, list_videos, select
         from .sources import Item
-        data = list_videos(a.link, cfg, limit=a.limit)
-        items = select(data["items"], a.konu, a.kelime, a.haric)
+        if a.ara and channel_root(a.link) and not is_playlist_url(a.link):
+            data = find_in_channel(a.link, cfg, limit=a.limit, search=a.ara, topic=a.konu)
+        else:
+            data = list_videos(a.link, cfg, limit=a.limit)
+        items = select(data["items"], a.konu, a.kelime, a.haric, search=a.ara, channel=data.get("channel") or "")
         hit = [e for e in items if e["match"]]
         for e in items:
             print(f"{'✓' if e['match'] else ' '} {e.get('date') or '          '}  {e['title'][:90]}")
@@ -268,7 +272,7 @@ def main(argv: list[str] | None = None) -> int:
         if a.only_list or not hit:
             return 0
         from .channel import collection_name
-        name = collection_name(data.get("channel") or data.get("title") or "kanal", a.konu, a.kelime)
+        name = collection_name(data.get("channel") or data.get("title") or "kanal", a.konu, a.kelime, a.ara)
         its = []
         for e in hit:
             it = Item("url", e["url"], title=e["title"])

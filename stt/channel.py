@@ -32,9 +32,15 @@ TOPICS = {
 TOPIC_LABELS = {"basin": "basın toplantıları", "roportaj": "röportajlar", "hepsi": "tümü"}
 
 
-def collection_name(channel: str, topic: str | None, custom: str | None = None) -> str:
-    """Koleksiyon klasörü adı (GUI ve komut satırı aynı adı kullansın): '<kanal> - <konu>'."""
+def collection_name(channel: str, topic: str | None, custom: str | None = None, search: str | None = None) -> str:
+    """Koleksiyon klasörü adı (GUI ve komut satırı aynı adı kullansın): '<kanal> - <konu>'.
+    Aranan varsa '<aranan> - <konu>' (ör. 'Arsenal - basın toplantıları'): farklı kanallardan bulunan aynı takımın
+    videoları tek koleksiyonda toplanır."""
     label = TOPIC_LABELS.get((topic or "").lower()) or (custom or "").strip()
+    terms = _words(search)
+    if terms:
+        head = ", ".join(_team_canon(t) or t for t in terms)
+        return f"{head} - {label}" if label and (topic or "").lower() != "hepsi" else head
     return f"{channel} - {label}".strip(" -") if label else channel
 
 
@@ -174,8 +180,13 @@ def list_videos(url: str, cfg, limit: int | None = None) -> dict:
     return {"title": re.sub(r"\s+-\s+(Videos|Live|Videolar)$", "", title), "channel": channel, "items": items}
 
 
-# ------------------------------------------------------------------ kanalda basın toplantısı bulucu (deneme)
+# ------------------------------------------------------------------ kanalın tamamında arama (takım / kişi / konu)
 PRESSER_QUERIES = ("press conference", "pre-match", "post-match", "manager's preview", "presser")
+TOPIC_QUERIES = {"basin": PRESSER_QUERIES, "roportaj": ("interview", "reaction"), "hepsi": ()}
+# aranan kelimeye eklenen sorgular ("Arsenal press conference", "Mikel Arteta pre-match")
+TERM_QUERIES = {"basin": ("press conference", "pre-match", "post-match", "presser"), "roportaj": ("interview",),
+                "hepsi": ("",)}
+MAX_TARGETS = 24  # bir taramada en çok bu kadar arama / liste (aşırı istek olmasın: YouTube engelleyebilir)
 
 
 def channel_root(url: str) -> str | None:
@@ -188,36 +199,72 @@ def channel_root(url: str) -> str | None:
     return f"https://www.youtube.com{m.group(1)}" if m else None
 
 
-def find_pressers(url: str, cfg, limit: int | None = None, queries=PRESSER_QUERIES) -> dict:
-    """DENEME: kanalın tamamında basın toplantılarını bul. Normal listeleme kanalın son ``channel_max`` videosuna
-    bakar; bu ise (1) kanal içi YouTube aramasını (her sorgu ayrı, ``/search?query=``) ve (2) adında basın toplantısı
-    geçen oynatma listelerini tarar, sonuçları birleştirir. Konu süzgeci (``select``) sonra yine uygulanır.
-    Döner: list_videos ile aynı biçim + 'sources' (nereden kaç video geldi)."""
+def _term_names(term: str) -> list[str]:
+    """Kanal içi aramada kullanılacak adlar: yazılan + (takımsa) kanonik ad ve bu sezonki hocası."""
+    from .match import PL_MANAGERS
+    names = [term.strip()]
+    canon = _team_canon(term)
+    if canon:
+        names.append(canon)
+        names += [m for m, t in PL_MANAGERS.items() if t == canon]
+    out: list[str] = []
+    for n in names:
+        if n and _norm(n) not in {_norm(x) for x in out}:
+            out.append(n)
+    return out
+
+
+def find_in_channel(url: str, cfg, limit: int | None = None, search: str | None = None, topic: str | None = "basin") -> dict:
+    """Kanalın TAMAMINDA ara (normal listeleme yalnız son ``channel_max`` videoya bakar). Taranan: (1) kanal içi YouTube
+    araması (``/search?query=``): aranan her kelime (takımsa hocası da) + konu sözcükleri ("Arsenal press conference"),
+    aranan yoksa yalnız konu sözcükleri; (2) adı konuya ya da arananlara uyan oynatma listeleri; (3) son videolar ve canlı
+    yayınlar (``/videos`` + ``/streams``). Sonuçlar birleştirilir (tekrar yok); hangilerinin uyduğuna ``select`` karar
+    verir. Döner: list_videos ile aynı biçim + 'sources' (nereden kaç yeni video geldi)."""
     from concurrent.futures import ThreadPoolExecutor
     from urllib.parse import quote
 
     from .fetch import ytdlp_info
     base = channel_root(url)
     if not base:
-        raise RuntimeError("Basın toplantısı bulucu yalnız YouTube kanal linkinde çalışır (ör. youtube.com/@Arsenal)")
+        raise RuntimeError("Kanalın tamamında arama yalnız YouTube kanal linkinde çalışır (ör. youtube.com/@Arsenal)")
     limit = int(limit or cfg.channel_max)
+    topic = (topic or "basin").lower()
+    if topic not in TOPIC_QUERIES:
+        topic = "hepsi"
+    terms = _words(search)
 
     def flat(u, n):
         try:
             return ytdlp_info(u, cfg.cookies_browser, flat=True, extra={"playlistend": n}), None
         except Exception as e:  # noqa: BLE001
             return None, str(e)[:200]
-    targets = [(f"arama: {q}", f"{base}/search?query={quote(q)}") for q in queries]
-    info, _ = flat(base + "/playlists", 300)
-    kws = _prep(TOPICS["basin"])
-    for e in (info or {}).get("entries") or []:
+    pinfo, _ = flat(base + "/playlists", 300)
+    chan = (pinfo or {}).get("channel") or (pinfo or {}).get("uploader") or ""
+    queries: list[str] = []
+    for term in terms:
+        for name in _term_names(term):
+            queries += [f"{name} {q}".strip() for q in TERM_QUERIES[topic]]
+    from .match import club_of_channel
+    own = bool(chan) and any(_team_canon(t) and club_of_channel(chan) == _team_canon(t) for t in terms)
+    if not terms or own:  # kulübün kendi kanalı: başlıkta takım adı yazmayabilir ("MANAGER'S PREVIEW: Pep on Wolves")
+        queries += list(TOPIC_QUERIES[topic])
+    seen_q: set[str] = set()
+    targets = []
+    for q in queries:
+        if _norm(q) not in seen_q:
+            seen_q.add(_norm(q))
+            targets.append((f"arama: {q}", f"{base}/search?query={quote(q)}"))
+    kws = _prep(list(TOPICS.get(topic, ())) + terms)
+    lists = []
+    for e in (pinfo or {}).get("entries") or []:
         title, purl = (e or {}).get("title") or "", (e or {}).get("url") or ""
-        if purl and _hit(f" {_norm(title)} ", kws):
-            targets.append((f"liste: {title}", purl))
-    targets = targets[:16]  # aşırı istek olmasın (YouTube engelleyebilir)
+        if purl and kws and _hit(f" {_norm(title)} ", kws):
+            lists.append((f"liste: {title}", purl))
+    tabs = [(f"son videolar ({tab.rsplit('/', 1)[-1]})", tab) for tab in _youtube_tabs(base)]
+    targets = (tabs + targets[:MAX_TARGETS - len(tabs) - min(len(lists), 6)] + lists)[:MAX_TARGETS]
     with ThreadPoolExecutor(max_workers=3) as ex:
         results = list(ex.map(lambda t: flat(t[1], limit), targets))
-    title, channel, items, seen, sources, errors = "", "", [], set(), {}, []
+    channel, items, seen, sources, errors = chan, [], set(), {}, []
     for (label, _u), (inf, err) in zip(targets, results):
         if inf is None:
             errors.append(f"{label}: {err}")
@@ -232,11 +279,75 @@ def find_pressers(url: str, cfg, limit: int | None = None, queries=PRESSER_QUERI
                 n += 1
         sources[label] = n
     if not items and errors:
-        raise RuntimeError("Basın toplantısı aranamadı: " + " | ".join(errors[:3]))
+        raise RuntimeError("Kanalda aranamadı: " + " | ".join(errors[:3]))
     items.sort(key=lambda e: e.get("date") or "", reverse=True)
-    log.info("Basın toplantısı bulucu (%s): %d video; %s", base, len(items),
+    log.info("Kanalda arama (%s; aranan %s; konu %s): %d video; %s", base, ", ".join(terms) or "-", topic, len(items),
              ", ".join(f"{k}={v}" for k, v in sources.items()))
     return {"title": channel or base, "channel": channel, "items": items, "sources": sources}
+
+
+def find_pressers(url: str, cfg, limit: int | None = None) -> dict:
+    """Kanalın tamamında basın toplantıları (aranan kelime yok)."""
+    return find_in_channel(url, cfg, limit, None, "basin")
+
+
+# ------------------------------------------------------------------ aranan: takım / kişi / konu
+# Takım arandığında yalnız A takımı (erkek): kadın takımı, altyaş, akademi, efsaneler, e-spor, basketbol videoları alınmaz
+MEN_ONLY_EXCLUDE = re.compile(
+    r"(?<![a-z0-9])(?:wom[ae]n\w*|wsl|wfc|ladies|girls|lionesses|kadin\w*|bayan\w*|femenin\w*|feminin\w*|frauen\w*|"
+    r"femminile|u ?(?:1[4-9]|2[0-3])s?|under ?(?:1[4-9]|2[0-3])|academy|akademi\w*|youth|pl2|reserves?|legends?|"
+    r"futsal|e ?sports?|efootball|basketball|basketbol|nba)(?![a-z0-9])")
+
+
+def _team_canon(term: str | None) -> str | None:
+    """Yazılan bir takım adı mı (takma adlar dahil: "Man City", "Spurs", "Gunners")? Kanonik adı döner."""
+    from .match import _ALIAS_MAP, _alias_norm
+    return _ALIAS_MAP.get(_alias_norm(term or "")) if (term or "").strip() else None
+
+
+def team_video(title: str, channel: str, team: str, date: str | None = None, own: bool = False) -> bool:
+    """Video ``team`` ile ilgili mi? own=True (basın toplantısı): toplantı o takımın mı (konuşan o takımın hocası /
+    oyuncusu; "Maresca previews Arsenal" Arsenal'in değil). own=False: başlıkta takım ya da bu sezonki hocası geçiyor.
+    Takımın kendi kanalındaki (kanal adı yalnız kulüp adı: "Arsenal", "Liverpool FC") her video o takımındır."""
+    from .match import _joined, _team_hits, club_of_channel, find_manager, find_teams, manager_team, parse_match
+    club = club_of_channel(channel or "")
+    if club == team:
+        return True
+    teams = find_teams(title)
+    mgr = find_manager(title, teams)
+    mt = manager_team(mgr, date) if mgr else None
+    if not own:
+        return team in teams or mt == team
+    if club:
+        return False  # başka kulübün kanalı: toplantı o kulübün
+    d8 = (date or "").replace("-", "")
+    if parse_match({"title": title, "channel": "", "upload_date": d8})["team"] == team:
+        return True
+    if mt is None and team in teams[:2]:  # "Arsenal vs Chelsea | Post-match press conference": hangisi belli değil
+        t, hits = _team_hits(title)
+        return _joined(t, hits)
+    return False
+
+
+def _presser_like(title: str, channel: str) -> bool:
+    """Başlıkta basın toplantısı sözcüğü yoksa: bilinen hoca adı ya da (kulüp kanalında) tanınan rakip; özet, antrenman,
+    canlı yayın vb. hariç (match.looks_like_presser)."""
+    from .match import _NOT_PRESSER_RE, _norm as mnorm, looks_like_presser, parse_match
+    info = {"title": title, "channel": channel}
+    return looks_like_presser(info, parse_match(info)) and not _NOT_PRESSER_RE.search(mnorm(title))
+
+
+def term_match(e: dict, term: str, topic: str | None, channel: str = "") -> bool:
+    """Tek aranan kelime bu videoya uyuyor mu? Takımsa ``team_video`` (+ yalnız A takımı); değilse başlıkta geçiyor mu
+    (kelime başı: "Arteta" -> "Arteta's" de)."""
+    title = e.get("title") or ""
+    canon = _team_canon(term)
+    if canon:
+        if MEN_ONLY_EXCLUDE.search(_norm(title)):
+            return False
+        return team_video(title, e.get("channel") or channel, canon, e.get("date") or None,
+                          own=(topic or "").lower() == "basin")
+    return _hit(f" {_norm(title)} ", _prep([term]))
 
 
 def keywords_for(topic: str | None, custom: str | None = None) -> list[str]:
@@ -259,14 +370,25 @@ def match_title(title: str, keywords: list[str], exclude: list[str] | None = Non
 
 
 def select(items: list[dict], topic: str | None, custom: str | None = None, exclude: str | None = None,
-           llm=None, llm_topic: str | None = None) -> list[dict]:
-    """Her öğeye 'match' alanı ekler ve döner. llm verilirse anahtar kelime yerine yapay zekâ seçer."""
+           llm=None, llm_topic: str | None = None, search: str | None = None, channel: str = "") -> list[dict]:
+    """Her öğeye 'match' alanı ekler ve döner. llm verilirse anahtar kelime yerine yapay zekâ seçer.
+    search: aranan takım / kişi / konu (virgülle birden çok; biri uyması yeter). Verilirse video hem konuya hem
+    arananlardan birine uymalı ("Arsenal" + Basın toplantısı = Arsenal'in basın toplantıları)."""
     kws = _prep(keywords_for(topic, custom))   # kelimeler bir kez sadeleştirilir (1000 başlıkta hızlı)
     exc = _prep(_words(exclude))
+    terms = _words(search)
+    team_terms = any(_team_canon(t) for t in terms)
+    basin = (topic or "").lower() == "basin"
     for e in items:
         t = f" {_norm(e['title'])} "
         e["excluded"] = _hit(t, exc)
-        e["match"] = not e["excluded"] and (not kws or _hit(t, kws))
+        ok = not e["excluded"] and (not kws or _hit(t, kws))
+        if not ok and not e["excluded"] and basin and team_terms:
+            # takımın kanalı / tarafsız kanal: "MANAGER'S PREVIEW" yok ama "Arteta on Saka's fitness", "X previews Chelsea"
+            ok = _presser_like(e["title"], e.get("channel") or channel)
+        if ok and terms:
+            ok = any(term_match(e, term, topic, channel) for term in terms)
+        e["match"] = ok
     if llm is not None and llm_topic:
         try:
             from .llm import filter_titles
@@ -300,11 +422,11 @@ class Follows:
         atomic_write_text(self.path, json.dumps(rows, ensure_ascii=False, indent=1))
 
     def add(self, url: str, name: str, topic: str, custom: str = "", exclude: str = "", opts: dict | None = None,
-            seen: list[str] | None = None) -> dict:
+            seen: list[str] | None = None, search: str = "") -> dict:
         with self._lock:
             rows = [r for r in self.all() if r["url"] != url]
             row = {"id": uuid.uuid4().hex[:8], "url": url, "name": name or url, "topic": topic, "custom": custom,
-                   "exclude": exclude, "opts": opts or {}, "seen": list(seen or [])[-2000:], "last": 0, "added": time.time(),
+                   "exclude": exclude, "search": search, "opts": opts or {}, "seen": list(seen or [])[-2000:], "last": 0, "added": time.time(),
                    "found": 0}
             rows.append(row)
             self._save(rows)
@@ -331,7 +453,9 @@ def check_follow(row: dict, cfg, llm=None, limit: int = 30) -> list[dict]:
     """Takip edilen kanaldaki yeni ve konuya uyan videolar (görülenler hariç)."""
     data = list_videos(row["url"], cfg, limit=limit)
     items = select(data["items"], row.get("topic"), row.get("custom"), row.get("exclude"),
-                   llm=llm if (row.get("opts") or {}).get("ai") else None, llm_topic=row.get("custom") or row.get("topic"))
+                   llm=llm if (row.get("opts") or {}).get("ai") else None,
+                   llm_topic=" ".join(x for x in (row.get("search"), row.get("custom") or row.get("topic")) if x),
+                   search=row.get("search"), channel=data.get("channel") or "")
     seen = set(row.get("seen") or [])
     return [e for e in items if e["match"] and (e.get("id") or e["url"]) not in seen and not e.get("live")]
 

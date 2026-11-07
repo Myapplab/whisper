@@ -343,7 +343,7 @@ class App:
         reset_busy_marks(self._state_dir())
         msg = (f"STT çalışırken bilgisayar {len(hits)} kez yeniden başladı (son: {fmt_time(hits[-1]['t'])}; sebep: "
                f"{restart_reason(hits)}). Bu bir donanım kararsızlığıdır: 1) MSI Afterburner'da Reset'e, sonra Save'e basın "
-               "(hız aşırtma kapansın); 2) Ayarlar › Ekran kartı › 'Güvenli güç ayarını uygula' (güç + saat sınırı, her "
+               "(hız aşırtma kapansın); 2) Ayarlar › Ekran kartı › 'Güç ayarını uygula' (güç + saat sınırı, her "
                "açılışta kendiliğinden); 3) güç kaynağı iki ekran kartına yetmiyor olabilir. Düzelene dek uzun kuyruk "
                "başlatmayın.")
         log.warning("%s", msg)
@@ -433,6 +433,7 @@ class App:
         cards = [{"id": str(i), "name": v["name"], "gb": round(v["gb"]), "display": bool(v.get("display"))}
                  for i, v in sorted(gi.items())]
         llm = self.llm()
+        from .power import profile_of
         return {"out_dir": str(Path(c.out_dir).resolve()), "hf_token_set": bool(c.hf_token),
                 "fpl_repo": str(c.fpl_repo or ""), "fpl_ok": bool(c.fpl_repo and (Path(c.fpl_repo) / "presser.py").is_file()),
                 "cookies_browser": c.cookies_browser or "none", "cookies_file": c.cookies_file or "",
@@ -441,6 +442,7 @@ class App:
                 "gpus": g if g in ("auto", "all", "yardim") else str(c.gpus), "gpu_cards": cards,
                 "helper_reserve_gb": c.helper_reserve_gb, "gpu_power_pct": c.gpu_power_pct,
                 "gpu_max_clock": c.gpu_max_clock, "night_mode": bool(c.night_mode), "night_temp": c.night_temp,
+                "gpu_flex": bool(getattr(c, "gpu_flex", True)), "power_profile": profile_of(c.gpu_power_pct, c.gpu_max_clock),
                 "browser_capture": bool(c.browser_capture), "ui_gpu": bool(c.ui_gpu),
                 "llm_provider": c.llm_provider or "none", "llm_model": c.llm_model or "",
                 "gemini_key_set": bool(llm.key("gemini")), "anthropic_key_set": bool(llm.key("claude")),
@@ -468,7 +470,8 @@ class App:
             upd["cookies_file"] = (s.get("cookies_file") or "").replace("\\", "/")
         if s.get("cookies_browser"):
             upd["cookies_browser"] = s["cookies_browser"]
-        for k in ("diarize", "ui_diarize", "fpl_auto", "browser_capture", "ui_gpu", "llm_news", "llm_qa", "night_mode"):
+        for k in ("diarize", "ui_diarize", "fpl_auto", "browser_capture", "ui_gpu", "llm_news", "llm_qa", "night_mode",
+                  "gpu_flex"):
             if k in s:
                 upd[k] = bool(s[k])
         if s.get("lang"):
@@ -487,6 +490,9 @@ class App:
                     upd[k] = typ(str(s[k]).replace(",", ".")) if typ is float else typ(s[k])  # "2,5" de olur
                 except (TypeError, ValueError):
                     pass
+        from .power import POWER_PROFILES
+        if str(s.get("power_profile") or "") in POWER_PROFILES:  # Ayarlar > Ekran kartı > güç düzeni
+            upd["gpu_power_pct"], upd["gpu_max_clock"] = POWER_PROFILES[str(s["power_profile"])]
         if s.get("diar_engine") in ("pyannote", "diarizen"):
             upd["diar_engine"] = s["diar_engine"]
         if s.get("diar_agc") in ("auto", "on", "off"):  # auto = stt.toml'dan çıkar (metin tanımadaki agc izlenir)
@@ -500,7 +506,8 @@ class App:
             except Exception:  # noqa: BLE001
                 pass
         save_settings(upd)
-        old = (str(self._cfg.out_dir), self._cfg.hf_token, self._cfg.gpus, self._cfg.diar_engine, self._cfg.diar_agc)
+        old = (str(self._cfg.out_dir), self._cfg.hf_token, self._cfg.gpus, self._cfg.diar_engine, self._cfg.diar_agc,
+               self._cfg.gpu_flex)
         old_port = self._cfg.api_port
         self._cfg = load_config()
         self._llm = None
@@ -509,7 +516,7 @@ class App:
             self._pipe.cfg = self._cfg
             self._pipe._llm = None
         if (str(self._cfg.out_dir), self._cfg.hf_token, self._cfg.gpus, self._cfg.diar_engine,
-                self._cfg.diar_agc) != old:
+                self._cfg.diar_agc, self._cfg.gpu_flex) != old:
             self._restart.set()  # işler bitince motor yeni ayarlarla açılır
         if self._cfg.api_port != old_port:
             self._start_api()
@@ -694,29 +701,35 @@ class App:
 
     # ---------------------------------------------------------- kanal / oynatma listesi
     def list_channel(self, url: str, opts: dict) -> dict:
-        from .channel import TOPIC_LABELS, collection_name, find_pressers, is_playlist_url, list_videos, select
+        from .channel import (TOPIC_LABELS, _words, channel_root, collection_name, find_in_channel, is_playlist_url,
+                              list_videos, select)
         url = (url or "").strip()
         if not url:
             return {"ok": False, "error": "Kanal ya da oynatma listesi linki girin."}
-        finder = bool(opts.get("find")) and not is_playlist_url(url)
+        search = ", ".join(_words(opts.get("search")))
+        topic = opts.get("topic") or "basin"
+        playlist = is_playlist_url(url)
+        # aranan yazıldıysa YouTube kanalının tamamı taranır (yalnız son videolar değil); kutu işaretliyse her zaman
+        finder = not playlist and (bool(opts.get("find")) or bool(search and channel_root(url)))
+        limit = int(opts.get("limit") or self._cfg.channel_max)
         try:
-            if finder:  # deneme: kanalın tamamında arama + basın toplantısı listeleri
-                data = find_pressers(url, self._cfg, limit=int(opts.get("limit") or self._cfg.channel_max))
+            if finder:
+                data = find_in_channel(url, self._cfg, limit=limit, search=search, topic=topic)
             else:
-                data = list_videos(url, self._cfg, limit=int(opts.get("limit") or self._cfg.channel_max))
+                data = list_videos(url, self._cfg, limit=limit)
         except Exception as e:  # noqa: BLE001
             from .fetch import explain_error
             return {"ok": False, "error": explain_error(str(e))}
-        topic = opts.get("topic") or "basin"
-        playlist = is_playlist_url(url)
         use_ai = bool(opts.get("ai")) and not playlist and self.llm().available()  # liste zaten kullanıcının seçimi
         # oynatma listesi kullanıcının seçtiği videolardır: konu süzgeci yok (yalnız "geçerse alma" ve özel kelimeler);
         # işlenmemişlerin hepsi seçili gelir (eskiden "MANAGER'S PREVIEW" gibi başlıklar tek tek işaretleniyordu)
         sel_topic = "hepsi" if playlist else topic
+        label = "" if topic == "hepsi" else TOPIC_LABELS.get(topic, "")
         items = select(data["items"], sel_topic, opts.get("custom"), opts.get("exclude"),
                        llm=self.llm() if use_ai else None,
-                       llm_topic=opts.get("custom") or ("" if topic == "hepsi" else TOPIC_LABELS.get(topic, "")))
-        coll = collection_name(data.get("channel") or data.get("title") or url, topic, opts.get("custom"))
+                       llm_topic=" ".join(x for x in (search, opts.get("custom") or label) if x),
+                       search=search, channel=data.get("channel") or "")
+        coll = collection_name(data.get("channel") or data.get("title") or url, topic, opts.get("custom"), search)
         try:
             from .sources import Item
             done = self._state().done_keys([Item("url", e["url"]).compute_key() for e in items])
@@ -724,9 +737,11 @@ class App:
                 e["done"] = Item("url", e["url"]).compute_key() in done
         except Exception:  # noqa: BLE001
             log.debug("işlenmiş videolar okunamadı", exc_info=True)
+        if search:  # aranana uyanlar önce (binlerce videoluk kanalda uyanlar listenin dibinde kalmasın)
+            items.sort(key=lambda e: not e.get("match"))
         return {"ok": True, "title": data.get("title"), "channel": data.get("channel"), "items": items,
                 "matched": sum(1 for e in items if e.get("match")), "collection": coll, "ai": use_ai,
-                "playlist": playlist, "finder": finder, "sources": data.get("sources") or {}}
+                "playlist": playlist, "finder": finder, "search": search, "sources": data.get("sources") or {}}
 
     def start_selected(self, urls: list[str], opts: dict) -> dict:
         msg = self._busy_msg()
@@ -748,7 +763,7 @@ class App:
 
     def follow_list(self) -> list[dict]:
         try:
-            return [{k: r.get(k) for k in ("id", "url", "name", "topic", "custom", "last", "found")}
+            return [{k: r.get(k) for k in ("id", "url", "name", "topic", "custom", "search", "last", "found")}
                     for r in self._follows().all()]
         except Exception:  # noqa: BLE001
             return []
@@ -760,8 +775,9 @@ class App:
             return res
         seen = [] if opts.get("backfill") else [e.get("id") or e["url"] for e in res["items"]]
         keep = {k: opts.get(k) for k in ("lang", "diarize", "speaker_mode", "speakers", "news", "ai", "fpl_auto")}
+        from .channel import _words
         row = self._follows().add(url, res.get("collection") or opts.get("collection") or url, opts.get("topic") or "basin", opts.get("custom") or "",
-                                  opts.get("exclude") or "", keep, seen)
+                                  opts.get("exclude") or "", keep, seen, search=", ".join(_words(opts.get("search"))))
         if opts.get("backfill"):
             self.start_selected([e["url"] for e in res["items"] if e.get("match") and not e.get("done")],
                                 {**keep, "collection": row["name"]})
@@ -967,7 +983,20 @@ class App:
                 return self._pipe.night_state()
             except Exception:  # noqa: BLE001
                 log.debug("gece modu durumu okunamadı", exc_info=True)
-        return {"on": bool(self._cfg.night_mode), "note": ""}
+        return {"on": bool(self._cfg.night_mode), "note": "",
+                "flex": {"on": bool(self._cfg.gpu_flex), "level": 0, "note": "" if self._cfg.gpu_flex else "kapalı"}}
+
+    def set_flex(self, on: bool) -> dict:
+        """Kart şeridindeki "Esnek güç" düğmesi: yavaşlama hemen; iki kartın düzeni sıradaki işler bitince."""
+        save_settings({"gpu_flex": bool(on)})
+        self._cfg = load_config()
+        if self._pipe is not None:
+            self._pipe.cfg = self._cfg
+            self._pipe._llm = None
+            if self._pipe._flex_card != bool(on and getattr(self._pipe, "_flex_card_possible", False)):
+                self._restart.set()
+        log.info("Esnek güç %s (arayüzden)", "açıldı" if self._cfg.gpu_flex else "kapatıldı")
+        return {"ok": True, "night": self._night_state()}
 
     def set_night_mode(self, on: bool) -> dict:
         """Kart şeridindeki "Gece modu" düğmesi: hemen geçerli (motor yeniden açılmaz; kuyruk sürerken de)."""
@@ -990,7 +1019,7 @@ class App:
             return {"ok": False, "error": f"{type(e).__name__}: {e}", "items": [], "summary": ""}
 
     def safe_apply(self, undo: bool = False) -> dict:
-        """'Güvenli güç ayarını uygula' (undo: 'Geri al'): Windows yönetici izni sorar; güç + saat sınırı şimdi uygulanır ve
+        """'Güç ayarını uygula' (undo: 'Geri al'): Windows yönetici izni sorar; güç + saat sınırı şimdi uygulanır ve
         her açılışta uygulayan görev kaydedilir. Uygulayınca kart ayarı 'Önerilen' olur; motor işler bitince yeniden açılır
         (iki kart birlikte çalışabilir hâle gelir)."""
         if not self._SAFE_LOCK.acquire(blocking=False):
@@ -1034,7 +1063,7 @@ class App:
                 return ""
         msg = ("İş sürerken ekran kartlarının güç sınırı kalktı (uyku dönüşü, sürücü sıfırlanması ya da hız aşırtma "
                "programı) ve geri konamadı. Bilgisayar yeniden başlamasın diye şimdilik tek kart çalışıyor. "
-               "Ayarlar › Ekran kartı › 'Güvenli güç ayarını uygula'ya yeniden basın.")
+               "Ayarlar › Ekran kartı › 'Güç ayarını uygula'ya yeniden basın.")
         pipe.limit_to_one(d[0], "güç sınırı kalktı")
         log.warning("%s", msg)
         self._push({"type": "notice", "text": msg})
@@ -1061,7 +1090,7 @@ class App:
                     if hot and i not in warned:
                         warned.add(i)
                         msg = (f"{c['name']} çok ısındı ({c['temp']:.0f}°C). Kasanın havalandırmasına bakın; Ayarlar › "
-                               "Ekran kartı › 'Güvenli güç ayarını uygula' kartı serinletir.")
+                               "Ekran kartı › 'Güç ayarını uygula' kartı serinletir.")
                         log.warning("%s", msg)
                         self._push({"type": "notice", "text": msg})
                     elif not hot and (c.get("temp") or 0) < 80:

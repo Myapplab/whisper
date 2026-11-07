@@ -14,6 +14,8 @@ from pathlib import Path
 from .audio import plan_chunks
 from .config import Config, diar_agc_on
 from .governor import NIGHT_PREP_AHEAD, SAMPLE_S, Governor
+from .flex import NOTE_L1 as FLEX_NOTE, PREP_AHEAD_L1 as FLEX_PREP_AHEAD, REST_L2 as FLEX_REST_S
+from .flex import SAMPLE_S as FLEX_SAMPLE_S, Flex
 from .fetch import Cancelled, DRMProtected, FetchError, LiveStream, SkipItem, is_transient, prepare_audio  # noqa: F401
 from .merge import apply_labels, assign_speakers, label_speakers, label_speakers_all, merge_chunks
 from .outputs import to_txt, write_all
@@ -43,6 +45,7 @@ HELPER_DIAR_GB = 3.0      # konuşmacı ayırma işçisinin kartta kapladığı 
 HELPER_DIAR_WAIT_S = 15.0  # ayırma işi bu kadar sn ana işçide beklemedikçe yardımcıda ayırma açılmaz (açılış anı)
 HELPER_SWITCH_S = 20.0    # yardımcı kart bu kadar sn işsiz kalırsa öbür işe (metin <-> konuşmacı ayırma) geçer
 NIGHT_NOTE = "kapalı · gece modu (tek kart)"
+FLEX_RESERVE_GB = 1.0      # esnek ikinci kartta (monitörsüz) başka programlara bırakılan bellek: tarayıcı Intel'le çizer
 DISK_CHECK_S = 30.0       # diskteki boş yer en çok bu kadar sn'de bir ölçülür
 
 
@@ -177,10 +180,24 @@ def item_fpl(item: Item, cfg: Config) -> tuple[int, str] | None:
     return None
 
 
-def detect_devices(spec: str, info: dict | None = None) -> list[str]:
+def flex_pair(info: dict | None) -> tuple[int, int] | None:
+    """Esnek tam güç (1.9.21): tam iki NVIDIA kart ve ikisinde de monitör yok (monitör anakartta; biliniyor) ->
+    (ana kart, esnek ikinci kart). Ana kart (belleği büyük, 3090) metin + konuşmacı ayırma; ikinci kart (3080) iş
+    nerede birikmişse ona geçer (metin ya da konuşmacı ayırma; darboğaz çoğu zaman ayırma) ve başka programlar belleği
+    / işlemciyi isteyince geri çekilir (yardımcı kart düzeni). Eskiden ikinci kart yalnız metin çeviriyordu."""
+    if not info or len(info) != 2 or any(g.get("display") is not False for g in info.values()):
+        return None
+    a, b = sorted(info, key=lambda i: (-(info[i].get("gb") or 0), i))
+    return a, b
+
+
+def detect_devices(spec: str, info: dict | None = None, flex: bool = False) -> list[str]:
     """spec: "auto" (monitörsüz kart(lar)) | "yardim" (ana kartlar = auto; yardımcılar `helper_devices`) |
-    "all" | "0,1" | "cuda:0" | "cpu" | "cpu,cpu" (test)."""
+    "all" | "0,1" | "cuda:0" | "cpu" | "cpu,cpu" (test). flex: "auto"da iki boş kart varsa ana kart yalnız büyük kart
+    (ikincisi esnek: ``helper_devices``)."""
     spec = (spec or "auto").strip().lower()
+    if spec == "auto" and flex and flex_pair(info):  # "yardim" değil: orada ikinci kart monitörlü yardımcıdır
+        return [f"cuda:{flex_pair(info)[0]}"]
     if spec in HELPER_SPECS:
         spec = "auto"
     if spec not in AUTO_SPECS:
@@ -201,10 +218,14 @@ def detect_devices(spec: str, info: dict | None = None) -> list[str]:
     return [f"cuda:{i}" for i in choose_gpus(n, info or {}, "auto" if spec == "auto" else "all")]
 
 
-def helper_devices(spec: str, info: dict | None) -> list[str]:
+def helper_devices(spec: str, info: dict | None, flex: bool = False) -> list[str]:
     """"yardim" modunda ana kartların (auto) dışında kalan kartlar: yalnız ana kart yetişemeyince metin çevirir.
-    Kart bilgisi yoksa (nvidia-smi yok) ya da tek kart varsa yardımcı yok (monitörlü karta körlemesine gidilmez)."""
-    if (spec or "").strip().lower() not in HELPER_SPECS or not info or len(info) < 2:
+    Kart bilgisi yoksa (nvidia-smi yok) ya da tek kart varsa yardımcı yok (monitörlü karta körlemesine gidilmez).
+    flex: "auto"da iki boş kart varsa ikinci kart esnek (``flex_pair``)."""
+    s = (spec or "").strip().lower()
+    if s == "auto" and flex and flex_pair(info):
+        return [f"cuda:{flex_pair(info)[1]}"]
+    if s not in HELPER_SPECS or not info or len(info) < 2:
         return []
     from .engines import choose_gpus
     main = set(choose_gpus(len(info), info, "auto"))
@@ -290,6 +311,14 @@ class Pipeline:
         self._dmem_since: float | None = None
         self._dmem_forced = False    # bekleme sınırı doldu: ayırma görevi verilene dek RAM'e bakılmaz
         self._drop_wids: set[str] = set()  # ekran koruması: ilk görevinde kapatılacak (monitörlü kart) ana işçiler
+        # esnek tam güç (stt/flex.py): başka programlar işlemciyi / RAM'i kullanınca kademeli yavaşla, sonra hızlan
+        self.flex = Flex()
+        self._flex_sampler = None
+        self._flex_at = 0.0
+        self._flex_probing = False
+        self._flex_rest_until = 0.0            # kademe 2: bu zamana dek ana karta yeni görev verilmez
+        self._flex_card = False                # ikinci kart "esnek" düzende (monitörsüz; yardımcı düzeniyle)
+        self._flex_card_possible = False       # iki kart monitörsüz ve "Önerilen": esnek düzen açılabilir
         # gece modu (stt/governor.py): ısıya göre görev arası mola, soğuma molası, işçi yenileme, tek kart
         self.gov = Governor(cfg.night_temp)
         self._rest_until = 0.0                 # bu zamana dek ekran kartına yeni görev verilmez (gece modu molası)
@@ -329,10 +358,12 @@ class Pipeline:
             from .engines import gpu_info
             gi = gpu_info()
             self._gi = gi
-            devices = detect_devices(cfg.gpus, gi)
+            flex = bool(getattr(cfg, "gpu_flex", True))
+            self._flex_card_possible = (cfg.gpus or "auto").strip().lower() == "auto" and flex_pair(gi) is not None
+            devices = detect_devices(cfg.gpus, gi, flex=flex)
             self.devices = devices
             if all(d.startswith("cuda") for d in devices):
-                self.helper_devices = helper_devices(cfg.gpus, gi)
+                self.helper_devices = helper_devices(cfg.gpus, gi, flex=flex)
                 # iki kart birlikte yalnız güvenli güç ayarıyla (bilgisayar yeniden başlıyordu; stt/power.py)
                 try:
                     from .power import card_line, restrict_or_reapply
@@ -347,6 +378,8 @@ class Pipeline:
                     self.devices = devices
                     log.warning("%s", why)
                     self.emit("notice", text=why)
+                # ikinci kart esnek düzende mi (güç sınırı yüzünden düştüyse değil)
+                self._flex_card = bool(self.helper_devices) and self._flex_card_possible and flex
             ecfg["gpu_mem"] = {i: g["gb"] for i, g in gi.items()}
             ecfg["display_gpus"] = [i for i, g in gi.items() if g.get("display")]
             ecfg["display_batch"] = cfg.display_batch
@@ -355,8 +388,9 @@ class Pipeline:
             helpers = {int(d.split(":")[1]) for d in self.helper_devices}
             for i, g in sorted(gi.items()):
                 mon = " [monitör bağlı]" if g.get("display") else ""
-                state = "kullanılıyor" if i in used else "YARDIMCI (ana kart yetişemeyince, düşük yükle)" \
-                    if i in helpers else "BOŞ bırakıldı (masaüstü/tarayıcı için)"
+                state = "kullanılıyor" if i in used else ("ESNEK İKİNCİ KART (metin ya da konuşmacı ayırma, iş nerede "
+                    "birikmişse; başka programlar isteyince geri çekilir)" if self._flex_card else
+                    "YARDIMCI (ana kart yetişemeyince, düşük yükle)") if i in helpers else "BOŞ bırakıldı (masaüstü/tarayıcı için)"
                 log.info("cuda:%d = %s (%.0f GB)%s -> %s", i, g["name"], g["gb"], mon, state)
             if any(i in ecfg["display_gpus"] for i in used):
                 log.info("Monitörün bağlı olduğu kart kullanılıyor: toplu boyut en fazla %d (bilgisayar akıcı kalsın).",
@@ -374,10 +408,10 @@ class Pipeline:
                     gb = (gi.get(int(d.split(":")[1])) or {}).get("gb")
                     self._h_cap[d] = cfg.batch_size if cfg.batch_size >= 1 else auto_batch_size("cuda", gb)
                     self._h_cap_max[d] = self._h_cap[d]
-                log.info("Yardımcı kart: YouTube / tarayıcı için %.1f GB boş bırakılır, kalan bellek bu işe verilir "
+                log.info("%s: başka programlar için %.1f GB boş bırakılır, kalan bellek bu işe verilir "
                          "(toplu boyut ona göre, en çok %s); en düşük işlemci önceliği. Kart aynı anda tek iş yapar: metin ya da "
-                         "(3090 yetişemeyince) konuşmacı ayırma.",
-                         cfg.helper_reserve_gb, "/".join(str(v) for v in self._h_cap.values()))
+                         "(3090 yetişemeyince) konuşmacı ayırma.", "Esnek ikinci kart" if self._flex_card else "Yardımcı kart",
+                         self._reserve(), "/".join(str(v) for v in self._h_cap.values()))
                 # modeller iki havuzda da SIRAYLA yüklensin (ortak kilit: aynı anda iki 3 GB yükleme RAM'i tüketiyordu)
                 self.hpool = WorkerPool(self.helper_devices, {**ecfg, "helper": True},
                                         load_lock=getattr(self.pool, "load_lock", None))
@@ -601,6 +635,8 @@ class Pipeline:
 
     def _pending_ahead_ok(self) -> bool:
         limit = NIGHT_PREP_AHEAD if getattr(self.cfg, "night_mode", False) else PREP_AHEAD
+        if self._flex_level() >= 1:
+            limit = min(limit, FLEX_PREP_AHEAD)  # bilgisayar kullanılıyor: indirme / ffmpeg işlemciyi doldurmasın
         return self._prep_ahead() < limit
 
     def _disk_free_ok(self) -> bool:
@@ -1116,6 +1152,10 @@ class Pipeline:
             if night:
                 self._night_single()
             hold = self._night_on() and self._night_hold()  # gece modu: görev arası mola / soğuma molası
+            self._flex_tick()
+            flex = self._flex_level()
+            if flex >= 2 and time.time() < self._flex_rest_until:
+                hold = True  # esnek kademe 2: ana kart görev arası dinleniyor
             main = set(self.pool.workers) if self.pool else set()
             shared = self._shared_gpu()
             dmem = self._diar_mem_ok() if self.dbacklog else True
@@ -1130,7 +1170,9 @@ class Pipeline:
                     continue  # iş iptal/başarısız: görevi at
                 self.queued_n += 1
                 self.pool.put(t)
-            if self.hpool is not None and not night:  # gece modunda yardımcı (monitörlü) karta iş yok
+            if self.hpool is not None and not night and flex >= 1:
+                self._flex_hold_helpers()  # bilgisayar kullanılıyor: ikinci karta yeni iş yok
+            elif self.hpool is not None and not night:  # gece modunda yardımcı (monitörlü) karta iş yok
                 self._helper_dispatch(len(main - self.fatal))
             if self.ddelayed:
                 now = time.time()
@@ -1155,8 +1197,89 @@ class Pipeline:
                 self.dqueued_n += 1
                 self.dpool.put(t)
                 self._dmem_since, self._dmem_forced, self._dmem_at = None, False, 0.0  # sonraki görev için yeniden
-            if self.hpool is not None and not night:
+            if self.hpool is not None and not night and flex < 1:
                 self._helper_diar_dispatch()
+
+    # ---------------------------------------------------------- esnek tam güç (stt/flex.py)
+    def _flex_on(self) -> bool:
+        """Esnek yavaşlama geçerli mi: ayarda açık, gece modu kapalı (onun kendi molası var), ekran kartında
+        çalışılıyor, iş var, canlı yayın yok (canlı metin gecikmesin)."""
+        if not getattr(self.cfg, "gpu_flex", True) or getattr(self.cfg, "night_mode", False):
+            return False
+        if self.pool is None or getattr(self.pool, "threads", False):
+            return False
+        if not any(str(d).startswith("cuda") for d in self.devices):
+            return False
+        jobs = list(self.jobs.values())
+        return any(j.status in ("prep", "run") for j in jobs) and not any(j.live_active for j in jobs)
+
+    def _flex_level(self) -> int:
+        return self.flex.level if self._flex_on() else 0
+
+    def _flex_tick(self) -> None:
+        """``FLEX_SAMPLE_S``'de bir işlemci / RAM ölçümü (arka planda: snapshot ve süreç süreleri motor döngüsünü
+        bekletmesin). ``self.lock`` altında çağrılır."""
+        now = time.time()
+        if self._flex_probing or now - self._flex_at < FLEX_SAMPLE_S or not self._flex_on():
+            return
+        self._flex_at = now
+        self._flex_probing = True
+        if self._flex_sampler is None:
+            from .flex import CpuSampler
+            self._flex_sampler = CpuSampler()
+
+        def run():
+            try:
+                cpu = self._flex_sampler.sample()
+                from .util import memory_status
+                m = memory_status()
+                with self.lock:
+                    old = self.flex.level
+                    msg = self.flex.update(cpu[0] if cpu else None, m["ram_free"] if m else None, time.time())
+                    if msg:
+                        log.info("[esnek] %s", msg)
+                    if self.flex.level != old:
+                        if self.flex.level < 2:
+                            self._flex_rest_until = 0.0
+                        if self.flex.level < 1:
+                            for wid in self._helper_wids():
+                                if self._h_note.get(wid) == FLEX_NOTE:
+                                    self._helper_note(wid, "")  # yeniden iş alınca / kapalıysa kendi notu
+                        self._night_emit()
+            except Exception:  # noqa: BLE001
+                log.debug("esnek ölçüm", exc_info=True)
+            finally:
+                self._flex_probing = False
+        self._spawn(run)
+
+    def _helper_wids(self) -> list[str]:
+        return (list(self.hpool.workers) if self.hpool is not None else []) + \
+            ([HELPER_DIAR] if self.hpool is not None else [])
+
+    def _flex_hold_helpers(self) -> None:
+        """Kademe ≥ 1: ikinci karta yeni görev verilmez (sürmekte olan biter). Model bellekte kalır: bilgisayar
+        sakinleşince hemen sürer (açıp kapamak işlemciyi daha çok yorardı). Kapalı olanın notu değişmez."""
+        for wid in self._helper_wids():
+            if wid not in self._h_parked and wid not in self.inflight:
+                self._helper_note(wid, FLEX_NOTE)
+
+    def flex_state(self) -> dict:
+        on = bool(getattr(self.cfg, "gpu_flex", True))
+        if not on:
+            note = "kapalı"
+        elif getattr(self.cfg, "night_mode", False):
+            note = "gece modu açık (kendi molası var)"
+        elif not self._flex_on():
+            note = "açık · iş bekleniyor"
+        else:
+            note = self.flex.note()
+        return {"on": on, "level": self._flex_level(), "note": note, "card2": self._flex_card}
+
+    def _reserve(self) -> float:
+        """İkinci kartta başka programlara bırakılan bellek. Monitörsüz esnek kartta en çok ``FLEX_RESERVE_GB``
+        (tarayıcı ekranı Intel'le çizer); monitörlü yardımcıda ayardaki değer (YouTube / sekmeler)."""
+        r = float(self.cfg.helper_reserve_gb)
+        return min(r, FLEX_RESERVE_GB) if self._flex_card else r
 
     # ---------------------------------------------------------- gece modu (stt/governor.py)
     def _night_on(self) -> bool:
@@ -1320,7 +1443,8 @@ class Pipeline:
         else:
             note = self.gov.note()
         return {"on": on, "note": note, "temp": self.gov.temp, "rest": round(self.gov.rest),
-                "paused": bool(on and self.gov.holding() and self._night_on() and self.active()), "card": card}
+                "paused": bool(on and self.gov.holding() and self._night_on() and self.active()), "card": card,
+                "flex": self.flex_state()}
 
     def _night_emit(self) -> None:
         self.emit("night", **self.night_state())
@@ -1379,7 +1503,7 @@ class Pipeline:
         if not (isinstance(used, (int, float)) and isinstance(total, (int, float)) and total > 0):
             return "", sizes[-1]
         free = (total - used) / 1024
-        reserve = self.cfg.helper_reserve_gb
+        reserve = self._reserve()
         if parked:
             for b in sizes:
                 if free - reserve >= foot[b]:
@@ -1502,7 +1626,7 @@ class Pipeline:
                 self._h_probe.pop(wid, None)
                 del self._h_parked[wid]
                 log.info("[%s] yardımcı kart açılıyor (toplu boyut %d, %.1f GB YouTube / tarayıcıya ayrıldı)", wid,
-                         batch, self.cfg.helper_reserve_gb)
+                         batch, self._reserve())
                 self._h_note[wid] = ""
                 self._h_batch[wid] = batch
                 self._h_own.pop(wid, None)
@@ -1583,11 +1707,11 @@ class Pipeline:
             frac = None
             if isinstance(used, (int, float)) and isinstance(total, (int, float)) and total > 0:
                 free = (total - used) / 1024
-                room = free - self.cfg.helper_reserve_gb
+                room = free - self._reserve()
                 if room < HELPER_DIAR_GB:
                     self._h_ready[wid] = now + HELPER_RECHECK_S
                     self._helper_note(wid, f"kapalı, kart boşalınca açılacak: kartta yer yok ({free:.1f} GB boş, "
-                                           f"{self.cfg.helper_reserve_gb:.1f} GB ayrılmış)")
+                                           f"{self._reserve():.1f} GB ayrılmış)")
                     return
                 frac = min(0.9, max(0.2, room / (total / 1024)))  # torch bu kadarını aşmaz (ayrılan bellek kalsın)
             else:
@@ -1615,7 +1739,7 @@ class Pipeline:
         used, total = ld.get("used_mb"), ld.get("total_mb")
         if isinstance(used, (int, float)) and isinstance(total, (int, float)) and total > 0:
             free = (total - used) / 1024
-            if free < self.cfg.helper_reserve_gb / 2:
+            if free < self._reserve() / 2:
                 since = self._h_busy_since.setdefault(wid, now)
                 self._h_ready[wid] = now + HELPER_RECHECK_S
                 self._h_probe.pop(wid, None)
@@ -1738,7 +1862,7 @@ class Pipeline:
         self._h_note[wid] = ""
         self._h_last[wid] = time.time()
         log.info("[%s] yardımcı kartta konuşmacı ayırma açılıyor (%s, bellek sınırı %s; %.1f GB YouTube / tarayıcıya "
-                 "ayrıldı)", wid, dev, f"%{round(frac * 100)}" if frac else "yok", self.cfg.helper_reserve_gb)
+                 "ayrıldı)", wid, dev, f"%{round(frac * 100)}" if frac else "yok", self._reserve())
         self._mark_helper()
         if self.hdpool is None:
             self.hdpool = WorkerPool([dev], ecfg, names=[wid])
@@ -1843,6 +1967,8 @@ class Pipeline:
         if getattr(self.cfg, "night_mode", False) and not (self._is_helper(wid) or self._is_hdiar(wid)):
             # gece modu: kart her görevden sonra ısıya göre dinlenir (stt/governor.py)
             self._rest_until = max(self._rest_until, time.time() + self.gov.rest)
+        elif not (self._is_helper(wid) or self._is_hdiar(wid)) and self._flex_level() >= 2:
+            self._flex_rest_until = max(self._flex_rest_until, time.time() + FLEX_REST_S)  # esnek kademe 2
         if self._is_helper(wid):  # yardımcı kart dinlenir (kart serinler, ölçüm yalnız başka programları görür)
             self._h_ready[wid] = time.time() + self.cfg.helper_rest_s
             self._h_last[wid] = time.time()

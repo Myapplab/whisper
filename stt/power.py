@@ -34,6 +34,9 @@ OC_TOOLS = ("msiafterburner", "afterburner", "precisionx", "precision x1", "gput
 TASK_SDDL = "D:(A;;FA;;;BA)(A;;FA;;;SY)(A;;GRGX;;;AU)"
 RESUME_QUERY = ("<QueryList><Query Id=\"0\" Path=\"System\"><Select Path=\"System\">*[System[Provider["
                 "@Name='Microsoft-Windows-Power-Troubleshooter'] and EventID=1]]</Select></Query></QueryList>")
+# Ayarlar > Ekran kartı > Güç düzeni: (güç sınırı %, en yüksek saat MHz; 0 = saat sınırı yok). "tam": kartın kendi
+# varsayılanı (güç sıçramaları kesilmez: kullanıcıda 1.9.16'da bilgisayar yeniden başlıyordu; kullanıcının seçimi)
+POWER_PROFILES = {"guvenli": (70, 1600), "dengeli": (85, 1800), "tam": (100, 0)}
 FIELDS = ("power.limit", "power.default_limit", "power.min_limit", "power.max_limit", "power.draw", "temperature.gpu",
           "clocks.gr")
 
@@ -114,7 +117,7 @@ def restrict(devices: list[str], helpers: list[str], gi: dict, cfg, cards: dict 
     names = ", ".join(c["name"] for c in bad)
     why = (f"İki ekran kartı birlikte çalışacaktı ama güvenli güç ayarı uygulanmamış ({names}). Bilgisayar yeniden "
            f"başlamasın diye şimdilik yalnız {(gi or {}).get(int(keep.split(':')[1]), {}).get('name', keep)} kullanılıyor. "
-           "Ayarlar › Ekran kartı › 'Güvenli güç ayarını uygula'ya basın (Windows bir kez izin sorar); sonra iki kart "
+           "Ayarlar › Ekran kartı › 'Güç ayarını uygula'ya basın (Windows bir kez izin sorar); sonra iki kart "
            "birlikte çalışır.")
     return [keep], [], why
 
@@ -189,17 +192,28 @@ def _q(s: str) -> str:
     return '"' + s + '"'
 
 
+def profile_of(pct, clock) -> str:
+    """Ayardaki güç / saat değerinin düzen adı ("ozel" = elle stt.toml)."""
+    for k, v in POWER_PROFILES.items():
+        if (int(pct or 0), int(clock or 0)) == v:
+            return k
+    return "ozel"
+
+
 def plan(cards: dict, pct: int, clock: int) -> list[tuple[str, str]]:
-    """[(anahtar, nvidia-smi argümanları)]: önce bütün güç sınırları, sonra saat sınırları."""
+    """[(anahtar, nvidia-smi argümanları)]: önce bütün güç sınırları, sonra saat sınırları (clock 0: önceki saat
+    sınırı kaldırılır; "Tam güç"e geçince 1600 MHz kilidi kalmasın)."""
     out = []
     ok = [c for _, c in sorted(cards.items()) if UUID_RE.match(c.get("uuid") or "")]
     for c in ok:
         w = target_w(c, pct)
         if w:
             out.append((f"pl@{c['index']}", f"-i {c['uuid']} -pl {w}"))
-    if clock:
-        for c in ok:
+    for c in ok:
+        if clock:
             out.append((f"lgc@{c['index']}", f"-i {c['uuid']} -lgc 210,{int(clock)}"))
+        else:
+            out.append((f"rgc@{c['index']}", f"-i {c['uuid']} -rgc"))
     return out
 
 

@@ -48,7 +48,7 @@ def test_restrict_two_cards_without_power_limit():
     """Kullanıcıda yalnız 3090 yükteyken bile bilgisayar yeniden başlıyordu: iki kart birlikte yalnız sınır varken."""
     cfg = Config()
     d, h, why = pw.restrict(["cuda:0", "cuda:1"], [], GI_FREE, cfg, _cards())
-    assert d == ["cuda:1"] and h == [] and "Güvenli güç" in why and "RTX 3090" in why
+    assert d == ["cuda:1"] and h == [] and "Güç ayarını uygula" in why and "RTX 3090" in why
     assert pw.restrict(["cuda:0", "cuda:1"], [], GI_FREE, cfg, _cards(224, 245)) == (["cuda:0", "cuda:1"], [], "")
     # yardımcı modu (monitörlü 3080 yardımcı): yardımcı da sayılır
     d, h, why = pw.restrict(["cuda:1"], ["cuda:0"], GI_MON, cfg, _cards())
@@ -66,7 +66,8 @@ def test_plan_order_and_uuid_check():
     p = pw.plan(c, 70, 1600)
     assert [k for k, _ in p] == ["pl@0", "pl@1", "lgc@0", "lgc@1"]             # önce güç, sonra saat
     assert p[0][1] == f"-i {U0} -pl 224" and p[3][1] == f"-i {U1} -lgc 210,1600"
-    assert [k for k, _ in pw.plan(c, 70, 0)] == ["pl@0", "pl@1"]
+    # saat sınırı yok ("Tam güç"): önceki 1600 MHz kilidi kaldırılır (1.9.21)
+    assert [k for k, _ in pw.plan(c, 70, 0)] == ["pl@0", "pl@1", "rgc@0", "rgc@1"]
     bad = {0: {**c[0], "uuid": "GPU-1234 & calc.exe"}}
     assert pw.plan(bad, 70, 1600) == [] and pw.undo_plan(bad) == []            # komut satırına bir şey sızmasın
     assert [a for _, a in pw.undo_plan(c)] == [f"-i {U0} -pl 320", f"-i {U0} -rgc", f"-i {U1} -pl 350", f"-i {U1} -rgc"]
@@ -232,7 +233,7 @@ def test_pipeline_start_uses_one_card_until_power_set(tmp_path, monkeypatch):
         monkeypatch.setattr(pw, "query", lambda c=cards: c)
         made.clear()
         events.clear()
-        p = pl.Pipeline(Config(out_dir=tmp_path))
+        p = pl.Pipeline(Config(out_dir=tmp_path, gpu_flex=False))  # esnek düzen (1.9.21) test_v1921'de
         p.events = events.append
         p.start()
         assert p.devices == want and made[0] == want

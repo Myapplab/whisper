@@ -238,7 +238,7 @@ def test_list_channel_finder_opt_in(tmp_path, monkeypatch):
     import stt.channel as ch
     import stt.gui as gui
     used = []
-    monkeypatch.setattr(ch, "find_pressers", lambda url, cfg, limit=None: used.append("find") or
+    monkeypatch.setattr(ch, "find_in_channel", lambda url, cfg, limit=None, search=None, topic=None: used.append("find") or
                         {"title": "Man City", "channel": "Man City", "items": [], "sources": {"arama: x": 0}})
     monkeypatch.setattr(ch, "list_videos", lambda url, cfg, limit=None: used.append("list") or
                         {"title": "Man City", "channel": "Man City", "items": []})
