@@ -21,7 +21,7 @@ Masaüstündeki **STT** simgesine çift tıklayın (terminal açılmaz).
   bırakılan kart gri görünür.
 - **Durdur:** sıradaki ve çalışan bütün işleri durdurur; biten parçalar saklanır, aynı linki tekrar eklerseniz
   kaldığı yerden devam eder.
-- **Veri seti:** Premier League › takım › maç ağacı, basın toplantısı/takım/maç sayıları, `index.csv`.
+- **Veri seti:** Premier League › takım › sezon › maç ağacı, basın toplantısı/takım/maç sayıları, `index.csv`.
   *Yeniden sınıflandır*: işlenmiş videoları metni yeniden çevirmeden güncel FPL fikstürüyle doğru takım / maç
   klasörüne taşır (GW, skor, maç öncesi/sonrası); önce ne değişeceğini gösterir, onaylayınca uygular.
 - **Ayarlar:** veri seti klasörü, HuggingFace token, FPL repo klasörü, çerez tarayıcısı, ekran kartı kullanımı
@@ -90,17 +90,22 @@ irm https://raw.githubusercontent.com/Myapplab/whisper/main/installer/guncelle.p
 cikti\
   Premier League\
     Arsenal\
-      2026-11-08 GW11 Arsenal vs Chelsea\
-        mac.json                                    fikstür bilgisi (FPL); "ek_bilgiler" alanına maça ait başka veri eklenebilir
-        2026-11-07 mac-oncesi - Mikel Arteta.txt    soru-cevap metni
-        2026-11-07 mac-oncesi - Mikel Arteta.json   kelime zamanları + konuşmacı
-        2026-11-07 mac-oncesi - Mikel Arteta.srt
-        2026-11-07 mac-oncesi - Mikel Arteta - ozet.md
-      2026-11-04 Champions League Arsenal vs Slavia Prague\
+      2026-2027\                                    sezon (1 Temmuz - 30 Haziran, maç tarihine göre)
+        2026-11-08 GW11 Arsenal vs Chelsea\
+          mac.json                                    fikstür bilgisi (FPL); "ek_bilgiler" alanına maça ait başka veri eklenebilir
+          2026-11-07 mac-oncesi - Mikel Arteta.txt    soru-cevap metni
+          2026-11-07 mac-oncesi - Mikel Arteta.json   kelime zamanları + konuşmacı
+          2026-11-07 mac-oncesi - Mikel Arteta.srt
+          2026-11-07 mac-oncesi - Mikel Arteta - ozet.md
+        2026-11-04 Champions League Arsenal vs Slavia Prague\
+      2025-2026\ ...
   Diger Takimlar\
-    Galatasaray\ ...
+    Galatasaray\2026-2027\ ...
   index.csv / index.jsonl                           her basın toplantısı bir satır (model eğitimi için)
 ```
+
+- 1.9.25'ten önce işlenmiş kayıtlar sezon klasörüne "Veri seti > Yeniden sınıflandır" ile taşınır (bu sezonun
+  kayıtları yeniden sınıflandırılır; eski sezonlar yalnız sezon klasörüne taşınır, adları değişmez).
 
 - Takım, YouTube kanal adından (ör. "Arsenal") ya da başlıktan bulunur; teknik direktör başlıktan.
 - **Maç ve GW** FPL'nin herkese açık fikstür verisinden otomatik eşleştirilir: takımın, basın

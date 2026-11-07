@@ -242,7 +242,7 @@ def test_dataset_classify_pl_prematch(tmp_path):
                                                                                            "mac-oncesi", "ARS")
     assert match_folder_name(meta) == "2026-11-08 GW11 Arsenal vs Chelsea"
     assert presser_base_name(meta, "x").endswith("mac-oncesi - Mikel Arteta")
-    assert target_dir(tmp_path, meta, "x") == tmp_path / "Premier League" / "Arsenal" / "2026-11-08 GW11 Arsenal vs Chelsea"
+    assert target_dir(tmp_path, meta, "x") == tmp_path / "Premier League" / "Arsenal" / "2026-2027" / "2026-11-08 GW11 Arsenal vs Chelsea"
 
 
 def test_dataset_classify_postmatch_and_away_team(tmp_path):
@@ -252,7 +252,7 @@ def test_dataset_classify_postmatch_and_away_team(tmp_path):
             "upload_date": "20261108", "timestamp": 1794172800}  # 2026-11-08 ~ maçtan sonra
     meta = classify(parse_match(info), info, FPL_SAMPLE)
     assert meta["team"] == "Coventry City" and meta["phase"] == "mac-sonrasi" and meta["gw"] == 11
-    assert target_dir(tmp_path, meta, "x").parts[-3:] == ("Premier League", "Coventry City",
+    assert target_dir(tmp_path, meta, "x").parts[-4:] == ("Premier League", "Coventry City", "2026-2027",
                                                           "2026-11-08 GW11 Everton vs Coventry City")
     assert match_folder_name(meta) == "2026-11-08 GW11 Everton vs Coventry City"
 
@@ -268,7 +268,7 @@ def test_dataset_classify_cup_and_other(tmp_path):
     info = {"title": "Okan Buruk'un VfB Stuttgart maçı öncesi açıklamaları", "channel": "Galatasaray",
             "upload_date": "20261105"}
     meta = classify(parse_match(info), info, FPL_SAMPLE)
-    assert target_dir(tmp_path, meta, "x").parts[-3:] == ("Diger Takimlar", "Galatasaray",
+    assert target_dir(tmp_path, meta, "x").parts[-4:] == ("Diger Takimlar", "Galatasaray", "2026-2027",
                                                           "2026-11-05 Galatasaray vs Stuttgart")
     assert meta["phase"] == "mac-oncesi"
 
@@ -289,3 +289,32 @@ def test_dataset_infers_team_from_opponent_fixture():
     info = {"title": "Mikel Arteta's pre-Chelsea press conference", "timestamp": 1794052800}
     meta = classify(parse_match(info), info, FPL_SAMPLE)
     assert meta["team"] == "Arsenal" and meta["is_pl"] and match_folder_name(meta) == "2026-11-08 GW11 Arsenal vs Chelsea"
+
+
+def test_season_of_and_season_folder(tmp_path):
+    """1.9.25: takım klasöründe sezon klasörü ("2026-2027"); sezon 1 Temmuz'da başlar."""
+    from stt.dataset import NO_SEASON, index_row, season_of, target_dir
+    assert season_of({"match_date": "2026-11-08"}) == "2026-2027"
+    assert season_of({"match_date": "2027-05-30"}) == "2026-2027"      # sezonun son maçı
+    assert season_of({"match_date": "2026-06-30"}) == "2025-2026"
+    assert season_of({"match_date": "2026-07-01"}) == "2026-2027"      # hazırlık maçları yeni sezon
+    assert season_of({"match_date": None, "presser_date": "2025-12-01"}) == "2025-2026"
+    # aynı maçın toplantıları aynı sezonda: maç tarihi önce gelir
+    assert season_of({"match_date": "2026-07-02", "presser_date": "2026-06-30"}) == "2026-2027"
+    assert season_of({}) is None and season_of({"match_date": "tarih-yok"}) is None
+    assert season_of({"match_date": "2026-13-01"}) is None
+    meta = {"team": "Arsenal", "is_pl": True, "match_date": "2025-09-14", "home": "Arsenal", "away": "Chelsea", "gw": 4}
+    assert target_dir(tmp_path, meta, "x") == \
+        tmp_path / "Premier League" / "Arsenal" / "2025-2026" / "2025-09-14 GW04 Arsenal vs Chelsea"
+    nodate = target_dir(tmp_path, {"team": "Galatasaray"}, "x")
+    assert nodate.parts[-4:-1] == ("Diger Takimlar", "Galatasaray", NO_SEASON)
+    # takımsız / podcast: sezon klasörü yok
+    assert target_dir(tmp_path, {"presser_date": "2026-11-08"}, "Baslik").parts[-3:] == \
+        ("Diger Takimlar", "Bilinmeyen", "Baslik")
+    assert target_dir(tmp_path, {"general": True, "team": "Arsenal", "presser_date": "2026-11-08"}, "Pod").parts[-2:] \
+        == ("Podcast ve Film", "Pod")
+    doc = {"segments": [], "title": "t"}
+    paths = {"txt": tmp_path / "a.txt", "json": tmp_path / "a.json"}
+    assert index_row(tmp_path, "k", meta, doc, paths)["season"] == "2025-2026"
+    assert index_row(tmp_path, "k", {"general": True, "team": "Arsenal", "match_date": "2026-01-01"}, doc,
+                     paths)["season"] is None

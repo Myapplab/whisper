@@ -3,15 +3,17 @@
     cikti/
       Premier League/
         Arsenal/
-          2026-11-08 GW11 Arsenal vs Chelsea/
-            mac.json                                   <- fikstür bilgisi (FPL), maça ait ek veriler buraya
-            2026-11-07 mac-oncesi - Mikel Arteta.txt   <- soru-cevap metni
-            2026-11-07 mac-oncesi - Mikel Arteta.json  <- zaman + konuşmacı
-            2026-11-07 mac-oncesi - Mikel Arteta.srt
-            2026-11-07 mac-oncesi - Mikel Arteta - ozet.md
-          2026-11-04 Champions League Arsenal vs Slavia Prague/
+          2026-2027/                                   <- sezon (1 Temmuz - 30 Haziran; 1.9.25'ten beri)
+            2026-11-08 GW11 Arsenal vs Chelsea/
+              mac.json                                   <- fikstür bilgisi (FPL), maça ait ek veriler buraya
+              2026-11-07 mac-oncesi - Mikel Arteta.txt   <- soru-cevap metni
+              2026-11-07 mac-oncesi - Mikel Arteta.json  <- zaman + konuşmacı
+              2026-11-07 mac-oncesi - Mikel Arteta.srt
+              2026-11-07 mac-oncesi - Mikel Arteta - ozet.md
+            2026-11-04 Champions League Arsenal vs Slavia Prague/
+          2025-2026/...
       Diger Takimlar/
-        Galatasaray/...
+        Galatasaray/2026-2027/...
       index.csv / index.jsonl                          <- her basın toplantısı bir satır (model eğitimi için)
 
 Maç ve GW, FPL'nin herkese açık fikstür verisinden bulunur (fantasy.premierleague.com/api).
@@ -382,6 +384,21 @@ def presser_base_name(meta: dict, fallback: str) -> str:
     return safe_filename(f"{name} - {who}" if name else who)
 
 
+SEASON_START_MONTH = 7          # sezon 1 Temmuz'da başlar (hazırlık maçları yeni sezona, Mayıs finali eskisine)
+NO_SEASON = "Sezon bilinmiyor"  # tarihi olmayan kayıt
+
+
+def season_of(meta: dict) -> str | None:
+    """Kaydın sezonu: "2026-2027". Maç tarihi (yoksa basın toplantısı tarihi) 1 Temmuz'dan önceyse önceki sezon.
+    Aynı maçın toplantıları aynı sezon klasörüne düşsün diye önce maç tarihi. Tarih yoksa None."""
+    for k in ("match_date", "presser_date"):
+        m = re.fullmatch(r"(\d{4})-(\d{2})-\d{2}", str(meta.get(k) or ""))
+        if m and 1 <= int(m.group(2)) <= 12:
+            y = int(m.group(1)) - (int(m.group(2)) < SEASON_START_MONTH)
+            return f"{y}-{y + 1}"
+    return None
+
+
 def rel_path(p, root) -> str:
     """Veri seti köküne göre yol, her sistemde "/" ile (index.csv/jsonl'yi okuyan betik Windows'a bağlı kalmasın)."""
     return PurePath(p).relative_to(PurePath(root)).as_posix()
@@ -393,17 +410,19 @@ def target_dir(root: Path, meta: dict, fallback_title: str) -> Path:
     if not meta.get("team"):
         return Path(root) / OTHER_DIR / "Bilinmeyen" / safe_filename(fallback_title, 70)
     league = PL_DIR if meta.get("is_pl") else OTHER_DIR
-    return Path(root) / league / safe_filename(meta["team"]) / match_folder_name(meta)
+    return Path(root) / league / safe_filename(meta["team"]) / (season_of(meta) or NO_SEASON) / match_folder_name(meta)
 
 
 MAX_PATH = 250  # Windows yol sınırı (260) altında kalmak için
 
 
-def out_paths(root: Path, meta: dict, title: str, key: str, create: bool = True) -> tuple[Path, str]:
+def out_paths(root: Path, meta: dict, title: str, key: str, create: bool = True,
+              base: str | None = None) -> tuple[Path, str]:
     """Çıktı klasörü + dosya adı kökü. Windows yol sınırı gözetilir; aynı klasörde aynı adı başka video almışsa
-    " [abcdef]" eki. ``create=False``: yalnız hesapla (yeniden sınıflandırmanın deneme turu)."""
+    " [abcdef]" eki. ``create=False``: yalnız hesapla (yeniden sınıflandırmanın deneme turu). ``base``: dosya adı
+    hesaplanmaz, bu kullanılır (yalnız sezon klasörüne taşınan eski kayıt adını korur)."""
     d = target_dir(root, meta, title)
-    base = presser_base_name(meta, title)
+    base = base or presser_base_name(meta, title)
     # Windows 260 karakter yol sınırı: en uzun dosya "<base> - ozet.md.tmp"
     budget = MAX_PATH - len(str(d)) - len(" - ozet.md.tmp") - 12  # 12: olası " [abcdef]" eki
     if budget < 20:  # klasör adı çok uzun (ör. video başlığı): kısalt
@@ -434,6 +453,7 @@ def write_match_json(folder: Path, meta: dict) -> None:
     data.update({k: meta.get(k) for k in ("competition", "match_date", "gw", "home", "away", "team", "opponent",
                                           "fpl_short", "fixture_id", "kickoff_utc", "is_home", "opponent_short",
                                           "score")})
+    data["season"] = season_of(meta)
     if meta.get("fixture"):
         data["fpl_fixture"] = meta["fixture"]
     data.setdefault("ek_bilgiler", {})  # maça ait başka veriler (kadro, sakatlık, skor...) buraya eklenebilir
@@ -445,7 +465,9 @@ INDEX_FIELDS = ["key", "presser_date", "phase", "league", "team", "opponent", "c
                 "txt", "json",
                 # 1.9.8: FPL modeli için (eski satırlarda boş)
                 "fixture_id", "kickoff_utc", "is_home", "fpl_short", "opponent_short", "score", "speaker_role",
-                "speaker_source", "diar_model", "title"]
+                "speaker_source", "diar_model", "title",
+                # 1.9.25: sezon ("2026-2027"; klasör düzeniyle aynı)
+                "season"]
 
 
 def league_of(meta: dict) -> str:
@@ -471,7 +493,8 @@ def index_row(root: Path, key: str, meta: dict, doc: dict, paths: dict) -> dict:
         # konuşan bilinen bir teknik direktör mü (değilse oyuncu / listede olmayan hoca olabilir)
         "speaker_role": "hoca" if mgr and _known_manager(str(mgr).split()) else None,
         "speaker_source": doc.get("speaker_source"),
-        "diar_model": (doc.get("settings") or {}).get("diar_model"), "title": doc.get("title")}
+        "diar_model": (doc.get("settings") or {}).get("diar_model"), "title": doc.get("title"),
+        "season": season_of(meta) if meta.get("team") and not meta.get("general") else None}
 
 
 def update_index(root: Path, row: dict) -> None:

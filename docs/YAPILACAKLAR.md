@@ -38,6 +38,21 @@ E.2 (C5) ve aşağıdaki K5 planı. **(1.9.5'ten kalan):** kullanıcı Güncelle
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
+- 1.9.25 (Claude; 649 test): kullanıcı: "her takımın klasöründe sezon sezon ayrılsın (2025-2026, 2026-2027),
+  basın toplantısı hangi tarihteyse o sezonun klasöründe olsun". `dataset.season_of` (maç tarihi, yoksa toplantı
+  tarihi; 1 Temmuz sınırı; tarihsiz "Sezon bilinmiyor") → `<lig>/<takım>/<sezon>/<maç>/`. Podcast / takımsız
+  (Bilinmeyen) kayıtta sezon yok. index `season` sütunu, mac.json `season`. Arayüz ağacı takım › sezon › maç (en
+  yeni sezon açık). Eski kayıtlar: "Veri seti > Yeniden sınıflandır" → bu sezonunkiler yeniden sınıflandırılıp
+  taşınır, FPL sezonu dışındakiler YALNIZ sezon klasörüne taşınır (ad + sınıflandırma aynı, eski mac.json ve
+  ek_bilgiler geçer; eskiden hiç dokunulmuyordu). DENENMEDİ: Windows, kullanıcının gerçek 491 kaydı.
+  KULLANICIDAN: Güncelle → Yeniden sınıflandır (önce deneme turu sayıları) ekran görüntüsü + veri seti ağacı.
+- 1.9.24 (Claude): kullanıcı ekranı uygulamanın 1.4.0 görünümüne dönmüştü (Ayarlar'da eski "çerez tarayıcısı",
+  "speaker-diarization-3.1 / segmentation-3.0"). Sebep: depodaki `dist/STT-Kurulum.exe` 1.4.0 kodunu taşıyordu ve
+  C:\stt varsa oraya kurup `stt/` dosyalarını eskileriyle değiştiriyordu (README sorunlarda exe'yi tekrar
+  çalıştırın diyor). Düzeltme: kur.ps1 `update` adımı (`python -m stt.updater`, libs'ten sonra; ağ hatası
+  kurulumu durdurmaz), stt.nsi 9 adım, exe 1.9.24 ile yeniden derlendi (7z ile içi doğrulandı). Kullanıcıda
+  1.4.0'ın kendi güncelleyicisi var (Ayarlar en altta "Güncellemeleri denetle" / üstte Güncelle şeridi).
+  DENENMEDİ: exe Windows'ta çalıştırılmadı.
 - 1.9.23 (Claude; 642 test): kullanıcı: "kanalın search bölümündeki videoları listeleyebilsin", ör.
   `youtube.com/@avfcofficial/search?query=unai%20emery%20press%20conference`. `channel.search_query_of`: kanal içi arama
   (`/@x|channel|c|user/.../search?query=`) ve YouTube araması (`/results?search_query=`) linki. "Kanal · liste"de
