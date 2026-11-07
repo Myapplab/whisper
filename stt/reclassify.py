@@ -402,8 +402,11 @@ def _one(root: Path, row: dict, data: dict, season, apply: bool, state, res: dic
         # o sezonun fikstürü elde yok: eski sınıflandırma kalır, yalnız sezon klasörüne taşınır
         new_dir = out_paths(root, old_ds, info["title"] or "kayit", key, create=False)[0] if old_ds.get("team") \
             else old_dir
-        if _same_dir(new_dir, old_dir) or not _same_dir(new_dir.parent.parent, old_dir.parent):
-            res["other_season"] += 1  # zaten sezon klasöründe ya da başka bir yere gidecekti: dokunma
+        if _same_dir(new_dir, old_dir) or not _same_dir(new_dir.parent.parent, old_dir.parent) \
+                or not _same_name(new_dir.name, old_dir.name):
+            # zaten sezon klasöründe, ya da başka bir yere / başka adlı maç klasörüne gidecekti (eski sürümün ya da
+            # elle verilmiş ad): dokunma, yoksa farklı klasörler birleşirdi
+            res["other_season"] += 1
             return
         match, meta, season_only = doc.get("match"), dict(old_ds), True
     else:
@@ -454,12 +457,9 @@ def _one(root: Path, row: dict, data: dict, season, apply: bool, state, res: dic
     if not same_place:
         _move_news(old_dir, old_base, new_dir, new_base, paths)
     same_match = _same_dir(new_dir.parent.parent, old_dir.parent) and _same_name(new_dir.name, old_dir.name)
-    if (season_only or same_match) and not (new_dir / "mac.json").exists() and (old_dir / "mac.json").is_file():
+    if (season_only or same_match) and (old_dir / "mac.json").is_file():
         # yalnız sezon klasörüne taşınan maç: eski mac.json (fikstür, skor, elle eklenen ek_bilgiler) yeni yere geçer
-        try:
-            atomic_write_text(new_dir / "mac.json", (old_dir / "mac.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError) as e:
-            log.warning("Eski mac.json kopyalanamadı (%s): %s", old_dir, e)
+        _carry_mac(old_dir / "mac.json", new_dir / "mac.json")
     if season_only and (new_dir / "mac.json").is_file():
         _set_mac_season(new_dir / "mac.json", meta)   # eski bilgiler (skor, fikstür) boş alanlarla ezilmesin
     elif meta.get("team"):
@@ -491,6 +491,25 @@ def _one(root: Path, row: dict, data: dict, season, apply: bool, state, res: dic
         else:
             _save_pending(root, [x for x in _load_pending(root) if not _same_item(x, key, old_dir, old_base)])
     log.info("Yeniden sınıflandırıldı: %s -> %s", title[:70], rel_path(paths["txt"], root))
+
+
+def _carry_mac(old: Path, new: Path) -> None:
+    """Eski mac.json yeni klasöre: yeni yoksa kopya; varsa (güncellemeden sonra o maçın yeni toplantısı işlenmiş)
+    yenide boş olan alanlar (ek_bilgiler, skor, fikstür) eskisinden doldurulur."""
+    try:
+        if not new.exists():
+            atomic_write_text(new, old.read_text(encoding="utf-8"))
+            return
+        o, n = json.loads(old.read_text(encoding="utf-8")), json.loads(new.read_text(encoding="utf-8"))
+        if not (isinstance(o, dict) and isinstance(n, dict)):
+            return
+        empty = (None, "", {}, [])
+        fill = {k: v for k, v in o.items() if v not in empty and n.get(k) in empty}
+        if fill:
+            n.update(fill)
+            atomic_write_text(new, json.dumps(n, ensure_ascii=False, indent=1))
+    except (OSError, ValueError) as e:
+        log.warning("Eski mac.json yeni klasöre aktarılamadı (%s): %s", old, e)
 
 
 def _set_mac_season(p: Path, meta: dict) -> None:

@@ -1489,3 +1489,36 @@ def test_gui_dataset_tree_has_seasons(tmp_path, monkeypatch):
     assert tm["seasons"][0]["folder"] == str(tmp_path / "Premier League" / "Arsenal" / "2026-2027")
     pod = next(x for x in ds["leagues"] if x["league"] == "Podcast ve Film")
     assert pod["teams"][0]["seasons"] == []
+
+
+def test_reclassify_other_season_renamed_folder_not_merged(tmp_path):
+    """Eski sezon: hesaplanan maç klasörü adı eski addan farklıysa (eski sürüm / elle ad) taşınmaz, birleşmez."""
+    from stt.reclassify import reclassify
+    ds = {"team": "Arsenal", "is_pl": True, "presser_date": "2026-03-01", "match_date": "2026-03-01",
+          "home": "Arsenal", "away": "Chelsea", "opponent": "Chelsea"}
+    a = _old_output(tmp_path, "y_e1", "Mikel Arteta's pre-Chelsea press conference", "Arsenal",
+                    _ts("2026-03-01 12:00"), "Premier League/Arsenal/2026-03-01 Arsenal vs Chelsea (eski ad)",
+                    "2026-03-01 - Mikel Arteta", ds)
+    res = reclassify(tmp_path, apply=True, data=FPL)
+    assert res["moved"] == 0 and res["other_season"] == 1 and a["txt"].exists()
+
+
+def test_reclassify_season_move_merges_extras_into_existing_mac(tmp_path):
+    """Yeni sezon klasöründe mac.json zaten varsa (güncellemeden sonra işlenen toplantı) eski ek_bilgiler ona geçer."""
+    from stt.reclassify import reclassify
+    ds = {"team": "Arsenal", "opponent": "Chelsea", "is_pl": True, "gw": 11, "home": "Arsenal", "away": "Chelsea",
+          "presser_date": "2026-11-06", "match_date": "2026-11-08", "phase": "mac-oncesi", "manager": "Mikel Arteta",
+          "competition": "Premier League"}
+    p = _old_output(tmp_path, "y_pre3", "Mikel Arteta's pre-Chelsea press conference", "Arsenal",
+                    _ts("2026-11-06 12:00"), "Premier League/Arsenal/2026-11-08 GW11 Arsenal vs Chelsea",
+                    "2026-11-06 mac-oncesi - Mikel Arteta", ds)
+    (p["txt"].parent / "mac.json").write_text(json.dumps({"team": "Arsenal", "ek_bilgiler": {"kadro": [1]}}),
+                                              encoding="utf-8")
+    new = tmp_path / "Premier League" / "Arsenal" / "2026-2027" / "2026-11-08 GW11 Arsenal vs Chelsea"
+    new.mkdir(parents=True)
+    (new / "mac.json").write_text(json.dumps({"team": "Arsenal", "gw": 11, "ek_bilgiler": {}}), encoding="utf-8")
+    res = reclassify(tmp_path, apply=True, data=FPL)
+    assert res["moved"] == 1
+    m = json.loads((new / "mac.json").read_text("utf-8"))
+    assert m["ek_bilgiler"] == {"kadro": [1]} and m["gw"] == 11
+    assert not p["txt"].parent.exists()

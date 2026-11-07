@@ -38,7 +38,7 @@ E.2 (C5) ve aşağıdaki K5 planı. **(1.9.5'ten kalan):** kullanıcı Güncelle
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
-- 1.9.25 (Claude; 649 test): kullanıcı: "her takımın klasöründe sezon sezon ayrılsın (2025-2026, 2026-2027),
+- 1.9.25 (Claude; 651 test; bağımsız inceleme 2 hata buldu, testle düzeltildi: eski sezon klasör adı farklıysa taşınmaz (birleşme olmasın), yeni klasörde mac.json varsa eski ek_bilgiler ona aktarılır): kullanıcı: "her takımın klasöründe sezon sezon ayrılsın (2025-2026, 2026-2027),
   basın toplantısı hangi tarihteyse o sezonun klasöründe olsun". `dataset.season_of` (maç tarihi, yoksa toplantı
   tarihi; 1 Temmuz sınırı; tarihsiz "Sezon bilinmiyor") → `<lig>/<takım>/<sezon>/<maç>/`. Podcast / takımsız
   (Bilinmeyen) kayıtta sezon yok. index `season` sütunu, mac.json `season`. Arayüz ağacı takım › sezon › maç (en
