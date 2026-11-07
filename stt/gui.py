@@ -309,6 +309,7 @@ class App:
             threading.Thread(target=self._auto_update_check, name="guncelleme", daemon=True).start()
             threading.Thread(target=self._follow_loop, name="takip", daemon=True).start()
             threading.Thread(target=self._display_guard_loop, name="ekran-koruma", daemon=True).start()
+            threading.Thread(target=self._card_log_loop, name="kart-durumu", daemon=True).start()
         return {"version": __version__, "settings": self.get_settings(), "engine": self._engine_state,
                 "dataset": self.dataset(), "pending": [{"uid": x["uid"], "title": x["title"], "source": x["source"]}
                                                        for x in self._pending],
@@ -342,8 +343,9 @@ class App:
         reset_busy_marks(self._state_dir())
         msg = (f"STT çalışırken bilgisayar {len(hits)} kez yeniden başladı (son: {fmt_time(hits[-1]['t'])}; sebep: "
                f"{restart_reason(hits)}). Bu bir donanım kararsızlığıdır: 1) MSI Afterburner'da Reset'e, sonra Save'e basın "
-               "(hız aşırtma kapansın); 2) Afterburner'da Power Limit'i %75'e indirip Save; 3) güç kaynağı iki ekran "
-               "kartına yetmiyor olabilir. Düzelene dek uzun kuyruk başlatmayın.")
+               "(hız aşırtma kapansın); 2) Ayarlar › Ekran kartı › 'Güvenli güç ayarını uygula' (güç + saat sınırı, her "
+               "açılışta kendiliğinden); 3) güç kaynağı iki ekran kartına yetmiyor olabilir. Düzelene dek uzun kuyruk "
+               "başlatmayın.")
         log.warning("%s", msg)
         self._push({"type": "notice", "text": msg})
         return hits
@@ -956,6 +958,64 @@ class App:
             self._push({"type": "diarizen", "done": True, "error": err})
         threading.Thread(target=run, daemon=True, name="stt-diarizen").start()
         return {"ok": True}
+
+    # ---------------------------------------------------------- iki kart güvenli düzen (stt/power.py)
+    def safe_status(self) -> dict:
+        """Ayarlar > Ekran kartı > 'İki kart güvenli düzen' listesi (monitör, güç sınırı, hız aşırtma, kart ayarı)."""
+        from .power import safe_layout
+        try:
+            return {"ok": True, **safe_layout(self._cfg, gi=self._gpus or None)}
+        except Exception as e:  # noqa: BLE001
+            log.debug("güvenli düzen okunamadı", exc_info=True)
+            return {"ok": False, "error": f"{type(e).__name__}: {e}", "items": [], "summary": ""}
+
+    def safe_apply(self, undo: bool = False) -> dict:
+        """'Güvenli güç ayarını uygula' (undo: 'Geri al'): Windows yönetici izni sorar; güç + saat sınırı şimdi uygulanır ve
+        her açılışta uygulayan görev kaydedilir. Uygulayınca kart ayarı 'Önerilen' olur; motor işler bitince yeniden açılır
+        (iki kart birlikte çalışabilir hâle gelir)."""
+        if getattr(self, "_safe_busy", False):
+            return {"ok": False, "error": "Zaten uygulanıyor."}
+        self._safe_busy = True
+        try:
+            from .power import apply
+            r = apply(self._cfg, undo=bool(undo))
+            if r.get("ok") and not undo and (self._cfg.gpus or "auto").lower() != "auto":
+                save_settings({"gpus": "auto"})
+                self._cfg = load_config()
+                if self._pipe is not None:
+                    self._pipe.cfg = self._cfg
+            if r.get("ok"):
+                log.info("[güç] %s", "güvenli güç ayarı geri alındı" if undo else "güvenli güç ayarı uygulandı")
+                self._restart.set()  # işler bitince motor kartları yeniden seçer
+            st = self.safe_status()
+            return {**{k: v for k, v in r.items() if k != "status"}, "layout": st, "settings": self.get_settings()}
+        finally:
+            self._safe_busy = False
+
+    def _card_log_loop(self) -> None:
+        """İş sürerken 5 dk'da bir kartların ısısı / gücü günlüğe (bilgisayar yeniden başlarsa son satır neyin yükte
+        olduğunu gösterir). 88°C üstünde uyarı."""
+        from .power import card_line, query
+        warned: set = set()
+        while not self._stop.wait(300):
+            try:
+                if self._pipe is None or not self._pipe.active():
+                    continue
+                cards = query()
+                if cards:
+                    log.info("[kartlar] %s", " | ".join(f"cuda:{i} {card_line(c)}" for i, c in sorted(cards.items())))
+                for i, c in cards.items():
+                    hot = (c.get("temp") or 0) >= 88
+                    if hot and i not in warned:
+                        warned.add(i)
+                        msg = (f"{c['name']} çok ısındı ({c['temp']:.0f}°C). Kasanın havalandırmasına bakın; Ayarlar › "
+                               "Ekran kartı › 'Güvenli güç ayarını uygula' kartı serinletir.")
+                        log.warning("%s", msg)
+                        self._push({"type": "notice", "text": msg})
+                    elif not hot and (c.get("temp") or 0) < 80:
+                        warned.discard(i)
+            except Exception:  # noqa: BLE001
+                log.debug("kart durumu okunamadı", exc_info=True)
 
     def voices_list(self) -> list[dict]:
         from .voices import VoiceLibrary

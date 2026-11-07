@@ -314,6 +314,21 @@ class Pipeline:
             self.devices = devices
             if all(d.startswith("cuda") for d in devices):
                 self.helper_devices = helper_devices(cfg.gpus, gi)
+                # iki kart birlikte yalnız güvenli güç ayarıyla (bilgisayar yeniden başlıyordu; stt/power.py)
+                try:
+                    from .power import card_line, query, restrict
+                    cards = query()
+                    for i, c in sorted(cards.items()):
+                        log.info("[güç] cuda:%d %s, sınır %s W (varsayılan %s W)", i, card_line(c),
+                                 f"{c['limit']:.0f}" if c.get("limit") else "?", f"{c['default']:.0f}" if c.get("default") else "?")
+                    devices, self.helper_devices, why = restrict(devices, self.helper_devices, gi, cfg, cards)
+                except Exception:  # noqa: BLE001
+                    log.debug("güç sınırı okunamadı", exc_info=True)
+                    why = ""
+                if why:
+                    self.devices = devices
+                    log.warning("%s", why)
+                    self.emit("notice", text=why)
             ecfg["gpu_mem"] = {i: g["gb"] for i, g in gi.items()}
             ecfg["display_gpus"] = [i for i, g in gi.items() if g.get("display")]
             ecfg["display_batch"] = cfg.display_batch

@@ -38,6 +38,18 @@ E.2 (C5) ve aşağıdaki K5 planı. **(1.9.5'ten kalan):** kullanıcı Güncelle
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
+- 1.9.17 (Claude; 568 test): kullanıcı: **"iki GPU'nun çalıştığı ama bilgisayarda hiçbir problem çıkmayacağı ve ekranın
+  kararmayacağı bir düzen kur"**. Yapılan (`stt/power.py`, ayrıntı GELISTIRME "1.9.17"): Ayarlar > Ekran kartı >
+  **"İki kart güvenli düzen"** listesi (monitör anakartta mı / güç sınırı / açık Afterburner / kart ayarı Önerilen mi)
+  + **"Güvenli güç ayarını uygula"**: tek Windows izniyle iki karta güç sınırı (%70: 3090 245 W, 3080 224 W) + saat
+  sınırı 1600 MHz, her açılışta "STT Guvenli Guc" görevi yeniden uygular; "Geri al" kaldırır. Güç sınırı yokken iki kart
+  birlikte çalıştırılmaz (yalnız 3090, uyarı; `safe_dual`). İş sürerken 5 dk'da bir günlükte `[kartlar]` ısı/güç satırı.
+  Kontrol'de "Güç sınırı", "Hız aşırtma", "İki kart düzeni" satırları. Ekran kararmasının çözümü yine monitör kablosunun
+  anakarttaki (Intel) çıkışa takılması (yazılımla monitörlü karta güvenli yük verilemez). DENENMEDİ: Windows, UAC,
+  nvidia-smi -pl/-lgc, schtasks /XML. KULLANICIDAN: monitör kablosu anakarta → Afterburner Reset+Save → Güncelle →
+  Ayarlar > "Güvenli güç ayarını uygula" → listenin ekran görüntüsü; birkaç saat iş sonrası günlükte `[güç]` ve
+  `[kartlar]` satırları; yeniden başlama olursa Kontrol ekranı. Arka paneldeki anakart çıkışı yoksa / görüntü gelmezse
+  BIOS'ta iGPU (i3-10100F ise iGPU yok: o zaman ucuz ikinci küçük kart ya da tek kart).
 - 1.9.16 (Claude; 554 test): kullanıcı "Önerilen"e aldı, **bilgisayar sürekli yeniden başlıyor** (yalnız 3090 yükte).
   Uygulama Windows açılışında kendiliğinden başlamıyor, bekleyen işler "Devam et" istemeden başlamıyor (döngü
   uygulamadan değil). Büyük olasılıkla donanım kararsızlığı: 3090 hız aşırtması (bellek +1441 / çekirdek +143) ya da

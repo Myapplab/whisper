@@ -87,6 +87,21 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   elle numara. `_display_guard` bu modlarda çökme görürse `gpus=auto`. Doctor monitörlü kartı CUDA'dan gizler.
   `Pipeline._diar_mem_ok`: ayırma görevi RAM yetmiyorsa verilmez (5 sn'de bir ölçüm, en çok `DIAR_MEM_MAX_WAIT_S`
   600 sn), `_diar_turn` metni durdurmaz; eskiden işçi içinde bekleyen ayırma 3090'ı boşta tutuyordu.
+- **1.9.17 iki kart güvenli düzen (`stt/power.py`):** kullanıcı "iki GPU çalışsın, bilgisayarda sorun çıkmasın, ekran
+  kararmasın" dedi. Üç ayak: (1) monitör iGPU'da (yoksa `choose_gpus` monitörlü kartı boş bırakır, değişmedi);
+  (2) güç + saat sınırı: Ayarlar > Ekran kartı > "Güvenli güç ayarını uygula" → `power.apply`: tek UAC
+  (`ShellExecuteExW runas` → `cmd.exe /d /s /c "..."`, PowerShell betiği YOK: SAC betikleri kısıtlayabilir) ile her kart
+  için `nvidia-smi -i <UUID> -pl <varsayılanın gpu_power_pct %'si>` + `-lgc 210,<gpu_max_clock>` (önce bütün -pl), ve
+  `schtasks /Create /XML` "STT Guvenli Guc" (SYSTEM, açılıştan 1 dk sonra + oturum açılışında, tek eylem
+  `cmd /d /s /c "a & b"`: biri düşse de öbürü çalışır). Sonuç dosyası `%LOCALAPPDATA%\stt\guvenli_guc_sonuc.txt`
+  (`STT_OK/STT_FAIL anahtar`; cmd'de `0>>` girdi tanıtıcısı sayıldığı için `(echo ...)>>`). Görev yalnız System32 /
+  Program Files'taki nvidia-smi'yi çalıştırır (`safe_exe`), UUID düzenli ifadeyle denetlenir. "Geri al": `-pl varsayılan`,
+  `-rgc`, görev silinir. Uygulayınca `gpus=auto` + motor işler bitince yeniden açılır. (3) `safe_dual` (varsayılan
+  açık): `Pipeline.start` → `power.restrict`: iki (ya da yardımcıyla birlikte) kart kullanılacak ve kullanılan bir kartın
+  `power.limit`'i hedef+3 W'tan büyükse tek kart (monitörsüz, en büyük) + uyarı. Sınır okunamıyorsa (alan yok)
+  kısıtlanmaz. Kontrol: "Güç sınırı", "Hız aşırtma" (açık Afterburner vb. `tasklist`), "İki kart düzeni".
+  `App._card_log_loop`: iş sürerken 5 dk'da bir `[kartlar]` ısı/güç/saat satırı, 88°C'de uyarı. DENENMEDİ: Windows,
+  gerçek nvidia-smi -pl/-lgc (GeForce'ta yönetici ister; web kaynakları çalıştığını söylüyor), schtasks /XML, UAC.
 - **Konuşmacı ayırma ayrı süreçte** (`Pipeline.dpool`, wid `diar`, ilk ayırma görevinde açılır, belleği en büyük
   kartta): aynı süreçte torch + CTranslate2 → `invalid device ordinal` ve 1.2.0'da `CUDNN_STATUS_EXECUTION_FAILED`
   + `MemoryError` görüldü. `Diarizer.run`: cuDNN hatasında cuDNN kapalı tekrar dener; işlemciye geçmez (1.6.2, `diar_cpu`).

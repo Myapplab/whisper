@@ -40,6 +40,7 @@ header{display:flex;align-items:center;gap:12px 18px;padding:10px 18px;backgroun
 .brand svg{flex:none}
 .brand b{font:600 17px var(--display);letter-spacing:.2px}
 .brand span{color:var(--muted);font-size:13px}
+.safe-list{display:flex;flex-direction:column;gap:4px;margin:4px 0 6px}.safe-item.ok{color:var(--ok)}.safe-item.bad{color:var(--err)}.safe-sum{font-weight:600;margin-top:2px}
 .gpus{display:flex;gap:8px;flex-wrap:wrap;margin-left:8px;min-width:0}
 .gpu{display:flex;align-items:center;gap:8px;padding:5px 10px;border:1px solid var(--line);border-radius:999px;background:var(--panel-2);font-size:12.5px;max-width:300px}
 @media (max-width:1250px){.gpu{max-width:210px}}
@@ -401,6 +402,10 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
       <div class="field" id="sHelperRow"><label for="sHelperGb">Yardımcı kartta YouTube / tarayıcı için boş bırakılacak bellek (GB)</label>
         <input type="text" id="sHelperGb" inputmode="decimal" style="width:90px" class="txt">
         <span class="hint">Bu kadar bellek YouTube ve sekmelere kalır, geri kalanı ve kartın gücü metin çevirisine verilir. Birkaç YouTube + 10 kadar sekme için 2 GB yeterli; YouTube takılırsa artırın. Kaydedince hemen geçerli.</span></div>
+      <div class="field" id="sSafe"><label>İki kart güvenli düzen (iki kart birlikte, bilgisayar yeniden başlamadan, ekran kararmadan)</label>
+        <div id="sSafeList" class="safe-list hint">Denetleniyor…</div>
+        <div class="row"><button class="btn small" id="sSafeApply" type="button">Güvenli güç ayarını uygula</button><button class="btn small" id="sSafeUndo" type="button">Geri al</button><span class="hint" id="sSafeOut"></span></div>
+        <span class="hint">Üç adım: 1) monitör kablosu anakarttaki (Intel) çıkışa — ekran kartları ekran çizmez, kararma biter; 2) bu düğme: iki karta güç sınırı (%70) ve saat sınırı (1600 MHz) konur, bilgisayarı yeniden başlatan güç sıçramaları kesilir; Windows bir kez izin sorar, sonra her açılışta kendiliğinden uygulanır; 3) MSI Afterburner'da Reset + Save. Güç ayarı yokken iki kart birlikte çalıştırılmaz (yalnız 3090).</span></div>
       <label class="toggle"><input type="checkbox" id="sUiGpu"><span>Arayüzde ekran kartı hızlandırması<small>Kapalı önerilir (açılışta ekranın kararıp gelmesini önler). Değişiklik yeniden açılışta geçerli.</small></span></label>
       <div class="sec">Yapay zekâ (isteğe bağlı)</div>
       <div class="field"><label for="sLlm">Sağlayıcı</label>
@@ -1023,10 +1028,38 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     $("#sFplState").textContent = s.fpl_repo ? (s.fpl_ok ? "presser.py bulundu." : "Bu klasörde presser.py yok.") : "";
     updateNote();
   }
+  async function refreshSafe() {
+    const box = $("#sSafeList"); box.textContent = "Denetleniyor…";
+    const r = await call("safe_status"); showSafe(r);
+  }
+  function showSafe(r) {
+    const box = $("#sSafeList");
+    if (!r) { box.textContent = ""; return; }
+    if (!r.ok && r.error) { box.textContent = "Denetlenemedi: " + r.error; return; }
+    const mark = v => v === true ? "✓" : v === false ? "✗" : "?";
+    box.replaceChildren(...(r.items || []).map(i => el("div", { class: "safe-item " + (i.ok === true ? "ok" : i.ok === false ? "bad" : "unk") }, mark(i.ok) + " " + i.text)),
+      el("div", { class: "safe-sum" }, r.summary || ""));
+    const pw = (r.items || []).find(i => i.key === "power");
+    $("#sSafeUndo").hidden = !(pw && pw.ok === true);
+  }
+  async function safeApply(undo) {
+    if (undo && !confirm("Güç ve saat sınırı kaldırılsın mı? (İki kart birlikte bir daha çalışmaz, ta ki yeniden uygulayana dek.)")) return;
+    $("#sSafeOut").textContent = "Windows izin soracak: 'Evet'e basın…";
+    $("#sSafeApply").disabled = $("#sSafeUndo").disabled = true;
+    try {
+      const r = await call("safe_apply", undo);
+      if (!r) { $("#sSafeOut").textContent = ""; return; }
+      $("#sSafeOut").textContent = r.ok ? (undo ? "Geri alındı." : "Uygulandı ✓" + (r.warn ? " (" + r.warn + ")" : "") + " Sıradaki işler bitince kartlar yeniden seçilir.") : "Olmadı: " + r.error;
+      if (r.settings) { const keep = $("#sSafeOut").textContent; fillSettings(r.settings); $("#sSafeOut").textContent = keep; }
+      showSafe(r.layout);
+    } finally { $("#sSafeApply").disabled = $("#sSafeUndo").disabled = false; }
+  }
+  $("#sSafeApply").onclick = () => safeApply(false);
+  $("#sSafeUndo").onclick = () => safeApply(true);
   $("#sGpu").onchange = () => { $("#sHelperRow").hidden = $("#sGpu").value !== "yardim"; };
   $("#btnSettings").onclick = async () => {  // her açılışta güncel ayarlar (kart listesi motor açılınca belli oluyor)
     const s = await call("get_settings"); if (s) fillSettings(s);
-    $("#mSettings").classList.add("show");
+    $("#mSettings").classList.add("show"); $("#sSafeOut").textContent = ""; refreshSafe();
   };
   $("#sOutPick").onclick = async () => { const r = await call("pick_folder"); if (r) $("#sOut").value = r; };
   $("#sFplPick").onclick = async () => { const r = await call("pick_folder"); if (r) $("#sFpl").value = r; };

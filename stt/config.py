@@ -30,6 +30,11 @@ class Config:
     # kart konuşmacı ayırmaya geçer (aynı anda tek iş: metin ya da ayırma).
     helper_reserve_gb: float = 2.0       # yardımcı kartta başka programlara (YouTube, sekmeler) bırakılan boş bellek
     helper_rest_s: float = 0.0           # yardımcı kart her parçadan sonra bu kadar dinlenir (0 = tam güç)
+    # iki kart birlikte (1.9.17): yalnız güç + saat sınırı uygulanmışken (stt/power.py). Kullanıcıda yalnız 3090 yükteyken
+    # bile bilgisayar yeniden başlıyordu (güç sıçraması / hız aşırtma); iki kart tam yükte bu toplanır.
+    safe_dual: bool = True               # sınır uygulanmamışsa tek kart (Ayarlar > Ekran kartı > Güvenli güç ayarı)
+    gpu_power_pct: int = 70              # güç sınırı: kartın varsayılan gücünün yüzdesi (50-100)
+    gpu_max_clock: int = 1600            # en yüksek çekirdek saati (MHz; boost sıçramalarını keser). 0 = sınır yok
     low_priority: bool = True            # tanıma süreçleri düşük öncelikte (bilgisayar donmasın)
     isolate_gpu: bool = True             # her işçi yalnızca kendi kartını görür (monitörlü kartta CUDA bağlamı yok)
     ui_gpu: bool = False                 # arayüz (WebView2) ekran kartı hızlandırması; kapalı = ekran kararmasın
@@ -240,6 +245,9 @@ def normalize(cfg: Config) -> Config:
     cfg.llm_budget_usd = _num(cfg.llm_budget_usd, 5.0, 0.0)
     cfg.helper_rest_s = _num(cfg.helper_rest_s, 0.0, 0.0, 600.0)
     cfg.helper_reserve_gb = _num(cfg.helper_reserve_gb, 2.0, 0.5, 16.0)
+    cfg.gpu_power_pct = int(_num(cfg.gpu_power_pct, 70, 50, 100))
+    clk = int(_num(cfg.gpu_max_clock, 1600, 0, 3000))
+    cfg.gpu_max_clock = 0 if clk <= 0 else max(900, clk)
     for k in ("gemini_api_key", "anthropic_api_key", "openai_api_key", "hf_token", "api_token", "webhook_url",
               "llm_model"):
         v = getattr(cfg, k)
