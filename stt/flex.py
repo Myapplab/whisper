@@ -44,6 +44,7 @@ class Flex:
         self.level = 0
         self.others: float | None = None
         self.ram: float | None = None
+        self.ram_low = False     # son ölçümde boş RAM az mıydı (bekleyen ikinci kart daha erken kapatılır)
         self._up = 0
         self._calm_since: float | None = None
 
@@ -54,6 +55,7 @@ class Flex:
             return ""  # ölçülemedi: son durum sürer
         cpu = others or 0.0
         low_ram = ram_free is not None and ram_free < RAM_LOW_GB
+        self.ram_low = low_ram
         want = 2 if cpu >= UP2_CPU else 1 if (cpu >= UP1_CPU or low_ram) else 0
         if want > self.level:
             self._up += 1
@@ -108,44 +110,55 @@ def _win_system_times():
     return total - f(idle), total
 
 
-def _win_tree_times(root: int) -> dict[int, int] | None:
-    """Kök süreç + bütün alt süreçleri (işçiler, ffmpeg, WebView2, nvidia-smi): {pid: çekirdek+kullanıcı süresi}."""
-    import ctypes
-    from ctypes import wintypes
+class _WinTree:
+    """Kök süreç + bütün alt süreçleri (işçiler, ffmpeg, WebView2, nvidia-smi): {anahtar: çekirdek+kullanıcı süresi}.
+    Görülen her sürecin tanıtıcısı açık tutulur: süreç iki ölçüm arasında kapanırsa (ffmpeg dönüştürmesi bitti) son
+    süresi yine okunur ve bir kez daha sayılır, sonra bırakılır (yoksa bizim işimiz "başka programlar" sanılırdı).
+    Tanıtıcı açıkken pid başka sürece verilmez. Anahtar (pid, oluşturma zamanı)."""
 
-    class PE(ctypes.Structure):
-        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
-                    ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wintypes.DWORD),
-                    ("cntThreads", wintypes.DWORD), ("th32ParentProcessID", wintypes.DWORD),
-                    ("pcPriClassBase", wintypes.LONG), ("dwFlags", wintypes.DWORD), ("szExeFile", wintypes.WCHAR * 260)]
-    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
-    k32.OpenProcess.restype = wintypes.HANDLE
-    snap = k32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
-    if not snap or snap == wintypes.HANDLE(-1).value:
-        return None
-    parent: dict[int, int] = {}
-    try:
-        pe = PE()
-        pe.dwSize = ctypes.sizeof(PE)
-        ok = k32.Process32FirstW(wintypes.HANDLE(snap), ctypes.byref(pe))
-        while ok:
-            parent[pe.th32ProcessID] = pe.th32ParentProcessID
-            ok = k32.Process32NextW(wintypes.HANDLE(snap), ctypes.byref(pe))
-    finally:
-        k32.CloseHandle(wintypes.HANDLE(snap))
-    out: dict[int, int] = {}
-    for pid in descendants(root, parent):
-        h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-        if not h:
-            continue
+    def __init__(self):
+        self.handles: dict[int, int] = {}
+
+    def __call__(self, root: int) -> dict | None:
+        import ctypes
+        from ctypes import wintypes
+
+        class PE(ctypes.Structure):
+            _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
+                        ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wintypes.DWORD),
+                        ("cntThreads", wintypes.DWORD), ("th32ParentProcessID", wintypes.DWORD),
+                        ("pcPriClassBase", wintypes.LONG), ("dwFlags", wintypes.DWORD), ("szExeFile", wintypes.WCHAR * 260)]
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        k32.OpenProcess.restype = wintypes.HANDLE
+        snap = k32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+        if not snap or snap == wintypes.HANDLE(-1).value:
+            return None
+        parent: dict[int, int] = {}
         try:
+            pe = PE()
+            pe.dwSize = ctypes.sizeof(PE)
+            ok = k32.Process32FirstW(wintypes.HANDLE(snap), ctypes.byref(pe))
+            while ok:
+                parent[pe.th32ProcessID] = pe.th32ParentProcessID
+                ok = k32.Process32NextW(wintypes.HANDLE(snap), ctypes.byref(pe))
+        finally:
+            k32.CloseHandle(wintypes.HANDLE(snap))
+        live = set(descendants(root, parent))
+        for pid in live - set(self.handles):
+            h = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+            if h:
+                self.handles[pid] = h
+        out: dict = {}
+        ft = lambda t: (t.dwHighDateTime << 32) | t.dwLowDateTime  # noqa: E731
+        for pid, h in list(self.handles.items()):
             c, e, kt, ut = (wintypes.FILETIME() for _ in range(4))
             if k32.GetProcessTimes(wintypes.HANDLE(h), ctypes.byref(c), ctypes.byref(e), ctypes.byref(kt), ctypes.byref(ut)):
-                out[pid] = ((kt.dwHighDateTime << 32) | kt.dwLowDateTime) + ((ut.dwHighDateTime << 32) | ut.dwLowDateTime)
-        finally:
-            k32.CloseHandle(wintypes.HANDLE(h))
-    return out
+                out[(pid, ft(c))] = ft(kt) + ft(ut)
+            if pid not in live:  # kapandı (ya da artık bizim değil): son süresi bu ölçümde sayıldı, bırak
+                k32.CloseHandle(wintypes.HANDLE(h))
+                del self.handles[pid]
+        return out
 
 
 def _proc_system_times():
@@ -164,10 +177,12 @@ def _proc_tree_times(root: int) -> dict[int, int] | None:
             with open(f"/proc/{d}/stat", encoding="utf-8", errors="replace") as f:
                 rest = f.read().rsplit(")", 1)[1].split()
             parent[int(d)] = int(rest[1])
-            times[int(d)] = int(rest[11]) + int(rest[12])  # utime + stime (jiffy; /proc/stat ile aynı birim)
+            # utime + stime + beklenen (kapanmış) çocukların süresi cutime + cstime (jiffy; /proc/stat ile aynı birim):
+            # iki ölçüm arasında kapanan ffmpeg ebeveynin cutime'ına geçer
+            times[int(d)] = (int(rest[11]) + int(rest[12]) + int(rest[13]) + int(rest[14]), int(rest[19]))
         except (OSError, IndexError, ValueError):
             continue
-    return {p: times[p] for p in descendants(root, parent) if p in times}
+    return {(p, times[p][1]): times[p][0] for p in descendants(root, parent) if p in times}
 
 
 def descendants(root: int, parent: dict[int, int]) -> list[int]:
@@ -195,7 +210,11 @@ class CpuSampler:
         self.root = root or os.getpid()
         nt = os.name == "nt"
         self._system = system or (_win_system_times if nt else _proc_system_times)
-        self._tree = tree or (_win_tree_times if nt else _proc_tree_times)
+        self._tree = tree or (_WinTree() if nt else _proc_tree_times)
+        self._prev = None
+
+    def reset(self) -> None:
+        """İş bitti: sonraki ölçüm baştan (uzun aradan sonraki ilk fark yanlış olmasın)."""
         self._prev = None
 
     def sample(self) -> tuple[float, float] | None:
@@ -213,8 +232,8 @@ class CpuSampler:
         if dtot <= 0:
             return None
         busy = max(0.0, (st[0] - prev[0][0]) / dtot * 100)
-        # yeni süreç (ör. ffmpeg) bütün süresiyle sayılır; kapanan sürecin son payı kaybolur (kısa, ardışık ölçüm şartı)
-        ours = sum(max(0, t - prev[1].get(pid, 0)) for pid, t in procs.items()) / dtot * 100
+        # anahtar (pid, başlangıç): yeni süreç (ör. ffmpeg) bütün süresiyle sayılır, pid'i yeniden kullanan süreç karışmaz
+        ours = sum(max(0, t - prev[1].get(key, 0)) for key, t in procs.items()) / dtot * 100
         ours = min(busy, ours)
         return max(0.0, busy - ours), ours
 

@@ -389,3 +389,145 @@ def test_power_profiles(tmp_path, monkeypatch):
     saved.clear()
     app.save_settings({"power_profile": "bozuk"})
     assert "gpu_power_pct" not in saved
+
+
+# ---------------------------------------------------------------- inceleme düzeltmeleri
+def test_unknown_date_does_not_trust_this_season_manager():
+    """YouTube düz listesinde tarih gelmeyebilir: hocanın eski kulübündeki toplantısı bu sezonki takımına gitmesin."""
+    from stt.channel import select
+    items = [_e("r1", "Xabi Alonso pre-match press conference | Real Madrid", date=""),
+             _e("r2", "Enzo Maresca press conference | Chelsea", date=""),
+             _e("r3", "Mikel Arteta press conference", date="")]          # başka takım yok: bu sezonki eşleme
+    ch = "Sky Sports News"
+    assert [e["id"] for e in select([dict(x) for x in items], "basin", search="Chelsea", channel=ch) if e["match"]] == ["r2"]
+    assert [e["id"] for e in select([dict(x) for x in items], "basin", search="Manchester City", channel=ch) if e["match"]] == []
+    assert [e["id"] for e in select([dict(x) for x in items], "basin", search="Arsenal", channel=ch) if e["match"]] == ["r3"]
+
+
+def test_men_only_does_not_drop_first_team_videos():
+    from stt.channel import select
+    items = [_e("m1", "Arteta on academy graduates | press conference"),
+             _e("m2", "Mikel Arteta reacts to Arsenal Women's win"),
+             _e("m3", "Arsenal Academy | U18 highlights"),
+             _e("m4", "Calcio e sport: Arsenal news"),
+             _e("m5", "Arsenal Women 2-0 Chelsea Women"),
+             _e("m6", "Arsenal U21 squad news"),
+             _e("m7", "Arsenal Legends v Milan Glorie")]
+    assert [e["id"] for e in select([dict(x) for x in items], "hepsi", search="Arsenal") if e["match"]] == ["m1", "m2", "m4"]
+    club = [_e("n1", "Pep on City legends", channel="Man City"), _e("n2", "Women's press conference", channel="Man City")]
+    assert [e["id"] for e in select(club, "hepsi", search="Man City") if e["match"]] == ["n1"]
+
+
+def test_queries_round_robin_across_terms(monkeypatch):
+    from stt.channel import find_in_channel
+    calls = []
+    _fake(monkeypatch, calls, "Sky Sports")
+    find_in_channel("https://www.youtube.com/@Sky", Config(), search="Arsenal, Chelsea, Liverpool, Everton", topic="basin")
+    q = " ".join(c.split("query=")[1] for c in calls if "query=" in c)
+    for name in ("Arsenal", "Chelsea", "Liverpool", "Everton", "Andoni%20Iraola", "David%20Moyes"):
+        assert name in q                                                 # sonuncunun hocası da kesilmedi
+
+
+def test_flat_listing_asks_youtube_dates(monkeypatch):
+    import stt.fetch as f
+    from stt.channel import list_videos
+    seen = []
+    monkeypatch.setattr(f, "ytdlp_info", lambda url, c=None, flat=False, extra=None, workdir=None: seen.append((url, extra)) or {"entries": []})
+    try:
+        list_videos("https://www.youtube.com/@Arsenal", Config())
+    except RuntimeError:
+        pass
+    assert all(x[1]["extractor_args"]["youtubetab"]["approximate_date"] == [""] for x in seen) and seen
+    seen.clear()
+    try:
+        list_videos("https://www.dailymotion.com/arsenal", Config())
+    except RuntimeError:
+        pass
+    assert seen and "extractor_args" not in seen[0][1]
+
+
+def test_search_on_non_youtube_channel_lists(tmp_path, monkeypatch):
+    import stt.channel as ch
+    import stt.gui as gui
+    used = []
+    monkeypatch.setattr(ch, "find_in_channel", lambda *a, **k: used.append("find"))
+    monkeypatch.setattr(ch, "list_videos", lambda url, cfg, limit=None: used.append("list") or
+                        {"title": "DM", "channel": "DM", "items": [_e("x1", "Mikel Arteta press conference")]})
+    app = gui.App.__new__(gui.App)
+    app._cfg = Config(out_dir=tmp_path)
+    app._pipe = None
+    monkeypatch.setattr(gui.App, "llm", lambda self: type("L", (), {"available": lambda s: False})())
+    app._state = lambda: type("S", (), {"done_keys": lambda s, k: set()})()
+    r = app.list_channel("https://www.dailymotion.com/sky", {"topic": "basin", "search": "Arsenal", "find": True})
+    assert r["ok"] and used == ["list"] and r["matched"] == 1          # kutu işaretli olsa da hata vermez
+
+
+def test_flex_does_not_hold_when_main_card_gone(tmp_path):
+    p, job, tasks = _flex_pipe(tmp_path, 2)
+    p._h_parked.pop("cuda:0", None)
+    p.fatal.add("cuda:1")                                               # 3090 metin işçisi kalıcı düştü
+    p._dispatch()
+    p._dispatch()                                                       # ilk tur kartı ölçer, ikinci tur görev verir
+    assert len(p.hpool.put_q) == 1                                      # ikinci kart sürdürür (kuyruk durmaz)
+
+
+def test_flex_health_keeps_queue_with_second_card(tmp_path):
+    p, job, tasks = _flex_pipe(tmp_path, 0)
+    p._flex_card = True
+    p.pool.dead.add("cuda:1")
+    p.fatal.add("cuda:1")
+    p._health()                                                         # eskiden: "Çalışan işçi kalmadı" + RuntimeError
+    assert job.status == "run"
+    p._flex_card = False
+    import pytest
+    with pytest.raises(RuntimeError):
+        p._health()
+
+
+def test_flex_hold_parks_idle_helper_and_disabled(tmp_path):
+    import time as t
+
+    from stt.pipeline import HELPER_IDLE_PARK_S, HELPER_SWITCH_S
+    p, job, tasks = _flex_pipe(tmp_path, 1)
+    p._h_parked.pop("cuda:0", None)
+    p._h_last["cuda:0"] = t.time() - HELPER_SWITCH_S - 1
+    p._dispatch()
+    assert "cuda:0" not in p.hpool.stopped                              # işlemci yüzünden: hemen kapanmaz
+    p.flex.ram_low = True
+    p._dispatch()
+    assert "cuda:0" in p.hpool.stopped                                  # RAM az: bekleyen kart belleği bıraksın
+    q, job, tasks = _flex_pipe(tmp_path / "b", 1)
+    q._h_parked.pop("cuda:0", None)
+    q._h_last["cuda:0"] = t.time() - HELPER_IDLE_PARK_S - 1
+    q._dispatch()
+    assert "cuda:0" in q.hpool.stopped
+    r, job, tasks = _flex_pipe(tmp_path / "c", 1)
+    r._h_parked.pop("cuda:0", None)
+    r.helper_disabled = "ekran sürücüsü çöktü"
+    r._dispatch()
+    assert "cuda:0" in r.hpool.stopped                                  # kapatılan yardımcı beklemede kalmaz
+
+
+def test_flex_resets_when_queue_ends(tmp_path):
+    p, job, tasks = _flex_pipe(tmp_path, 2)
+    ev = []
+    p.events = ev.append
+    p._flex_at = 0
+    p._spawn = lambda fn: None
+    p._flex_tick()                                                      # açık: durum olayı
+    job.status = "done"
+    p._flex_tick()
+    assert p.flex.level == 0 and any(e.get("type") == "night" for e in ev)
+
+
+def test_full_power_rgc_failure_is_only_warning(tmp_path, monkeypatch):
+    import stt.power as pw
+    from test_v1917 import _apply_env, _cards
+    res = _apply_env(tmp_path, monkeypatch)
+
+    def runner(params):
+        assert "-rgc" in params
+        res.write_text("STT_OK pl@0\nSTT_OK pl@1\nSTT_FAIL rgc@0\nSTT_OK rgc@1\nSTT_OK task\n")
+        return 0
+    r = pw.apply(Config(gpu_power_pct=100, gpu_max_clock=0), runner=runner, cards=_cards())
+    assert r["ok"] and "saat sınırı" in r["warn"]

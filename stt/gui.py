@@ -710,7 +710,8 @@ class App:
         topic = opts.get("topic") or "basin"
         playlist = is_playlist_url(url)
         # aranan yazıldıysa YouTube kanalının tamamı taranır (yalnız son videolar değil); kutu işaretliyse her zaman
-        finder = not playlist and (bool(opts.get("find")) or bool(search and channel_root(url)))
+        # (yalnız YouTube kanalında; başka sitede aranan yazılsa da son videolar listelenip süzülür)
+        finder = not playlist and bool(channel_root(url)) and (bool(opts.get("find")) or bool(search))
         limit = int(opts.get("limit") or self._cfg.channel_max)
         try:
             if finder:

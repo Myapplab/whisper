@@ -427,13 +427,15 @@ def apply(cfg, undo: bool = False, runner=None, cards: dict | None = None) -> di
     st = status(cfg)  # yeniden oku: komut "başarılı" deyip sınırı değiştirmemiş olabilir
     keys = [k for k, _ in cmds] + ["task"]
     missing = [k for k in keys if k not in out["ok"] and k not in out["fail"]]  # yarıda kaldı / zaman aşımı
-    pl_fail = [k for k in out["fail"] if k.startswith("pl@") or k.startswith("rgc@")] + \
-        [k for k in missing if k != "task" and not k.startswith("lgc@")]
+    clock_key = ("lgc@",) if undo else ("lgc@", "rgc@")  # uygularken saat sınırı kaldırma (Tam güç) yalnız uyarı
+    pl_fail = [k for k in out["fail"] if k.startswith("pl@") or (undo and k.startswith("rgc@"))] + \
+        [k for k in missing if k != "task" and not k.startswith(clock_key)]
     msgs = []
     if pl_fail:
         msgs.append("güç sınırı " + ("kaldırılamadı" if undo else "konamadı") + ": " + ", ".join(pl_fail))
-    if any(k.startswith("lgc@") for k in out["fail"] + missing):
-        msgs.append("saat sınırı desteklenmedi (yalnız güç sınırı geçerli)")
+    if any(k.startswith(clock_key) for k in out["fail"] + missing):
+        msgs.append("saat sınırı desteklenmedi (yalnız güç sınırı geçerli)" if not undo or any(
+            k.startswith("lgc@") for k in out["fail"] + missing) else "saat sınırı kaldırılamadı")
     task_bad = "task" in out["fail"] or "task" in missing
     if task_bad and not undo:  # geri almada görev hiç kaydedilmemiş olabilir: sorun değil
         msgs.append("her açılışta uygulayan görev kaydedilemedi")

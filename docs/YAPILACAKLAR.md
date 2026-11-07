@@ -38,7 +38,7 @@ E.2 (C5) ve aşağıdaki K5 planı. **(1.9.5'ten kalan):** kullanıcı Güncelle
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
-- 1.9.21 (Claude; kullanıcının 2 isteği; testler aşağıda): (1) **Kanalın tamamında arama:** "Kanal · liste" > "Ne
+- 1.9.21 (Claude; kullanıcının 2 isteği; 637 test; bağımsız inceleme 9 hata buldu, hepsi testle düzeltildi — GELISTIRME "1.9.21"): (1) **Kanalın tamamında arama:** "Kanal · liste" > "Ne
   arıyorsunuz?" (takım / kişi / konu, virgülle). Kullanıcı önce "verdiğim takımın erkek A takımının bütün basın
   toplantıları" dedi, sonra "yalnız basın toplantısı değil, her şey: kanaldaki bütün ilgili videolar". Aranan yazılınca
   YouTube kanalının tamamı taranır (kanal içi arama + ilgili listeler + son videolar), uyanlar seçili ve listenin başında

@@ -142,6 +142,16 @@ def _entries(info: dict, depth: int = 0) -> list[dict]:
     return out
 
 
+# YouTube düz listesinde (kanal sekmesi, kanal içi arama) yükleme tarihi gelmez; "2 yıl önce" yazısından yaklaşık tarih
+# (yt-dlp youtubetab:approximate_date). Takım eşleştirmesi hocanın hangi sezonda nerede olduğunu tarihten bilir.
+YT_DATES = {"extractor_args": {"youtubetab": {"approximate_date": [""]}}}
+
+
+def _flat_extra(url: str, n: int) -> dict:
+    host = (urlsplit(url).hostname or "").lower()
+    return {"playlistend": n, **(YT_DATES if "youtube.com" in host else {})}
+
+
 def list_videos(url: str, cfg, limit: int | None = None) -> dict:
     """{'title', 'channel', 'items': [...]} (yeniden eskiye). limit: sekme başına en fazla video."""
     from concurrent.futures import ThreadPoolExecutor
@@ -156,7 +166,7 @@ def list_videos(url: str, cfg, limit: int | None = None) -> dict:
 
     def fetch(tab):
         try:
-            return ytdlp_info(tab, cfg.cookies_browser, flat=True, extra={"playlistend": limit}), None
+            return ytdlp_info(tab, cfg.cookies_browser, flat=True, extra=_flat_extra(tab, limit)), None
         except Exception as e:  # noqa: BLE001
             return None, str(e)[:200]
     tabs = _youtube_tabs(url)
@@ -235,15 +245,15 @@ def find_in_channel(url: str, cfg, limit: int | None = None, search: str | None 
 
     def flat(u, n):
         try:
-            return ytdlp_info(u, cfg.cookies_browser, flat=True, extra={"playlistend": n}), None
+            return ytdlp_info(u, cfg.cookies_browser, flat=True, extra=_flat_extra(u, n)), None
         except Exception as e:  # noqa: BLE001
             return None, str(e)[:200]
     pinfo, _ = flat(base + "/playlists", 300)
     chan = (pinfo or {}).get("channel") or (pinfo or {}).get("uploader") or ""
+    per_term = [[f"{name} {q}".strip() for name in _term_names(term) for q in TERM_QUERIES[topic]] for term in terms]
     queries: list[str] = []
-    for term in terms:
-        for name in _term_names(term):
-            queries += [f"{name} {q}".strip() for q in TERM_QUERIES[topic]]
+    for i in range(max((len(x) for x in per_term), default=0)):  # sırayla: çok aranan olunca sonuncusu kesilmesin
+        queries += [x[i] for x in per_term if i < len(x)]
     from .match import club_of_channel
     own = bool(chan) and any(_team_canon(t) and club_of_channel(chan) == _team_canon(t) for t in terms)
     if not terms or own:  # kulübün kendi kanalı: başlıkta takım adı yazmayabilir ("MANAGER'S PREVIEW: Pep on Wolves")
@@ -292,11 +302,26 @@ def find_pressers(url: str, cfg, limit: int | None = None) -> dict:
 
 
 # ------------------------------------------------------------------ aranan: takım / kişi / konu
-# Takım arandığında yalnız A takımı (erkek): kadın takımı, altyaş, akademi, efsaneler, e-spor, basketbol videoları alınmaz
-MEN_ONLY_EXCLUDE = re.compile(
-    r"(?<![a-z0-9])(?:wom[ae]n\w*|wsl|wfc|ladies|girls|lionesses|kadin\w*|bayan\w*|femenin\w*|feminin\w*|frauen\w*|"
-    r"femminile|u ?(?:1[4-9]|2[0-3])s?|under ?(?:1[4-9]|2[0-3])|academy|akademi\w*|youth|pl2|reserves?|legends?|"
-    r"futsal|e ?sports?|efootball|basketball|basketbol|nba)(?![a-z0-9])")
+# Takım arandığında yalnız A takımı (erkek). İki tür işaret:
+# - güçlü (kadın takımı, yaş grubu, e-spor, basketbol): başlıkta geçerse alınmaz, ancak takımın bu sezonki (erkek) hocası da
+#   başlıktaysa alınır ("Mikel Arteta reacts to Arsenal Women's win" Arteta'nın sözü);
+# - zayıf (akademi, altyapı, efsaneler, yedekler): yalnız takım adının hemen ardındaysa ("Arsenal Academy", "City legends");
+#   "Arteta on academy graduates | press conference" A takımı toplantısıdır.
+MEN_STRONG = (r"wom[ae]n\w*|wsl|wfc|ladies|girls|lionesses|kadin\w*|bayan\w*|femenin\w*|feminin\w*|frauen\w*|femminile|"
+              r"u ?(?:1[4-9]|2[0-3])s?|under ?(?:1[4-9]|2[0-3])|pl2|futsal|esports?|efootball|basketball|basketbol|nba")
+MEN_WEAK = r"academy|akademi\w*|youth|legends?|reserves?|b team|ii"
+MEN_ONLY_EXCLUDE = re.compile(rf"(?<![a-z0-9])(?:{MEN_STRONG})(?![a-z0-9])")
+
+
+def _not_first_team(title: str, team: str, manager_named: bool) -> bool:
+    """Başlık takımın kadın / altyaş / akademi / efsaneler takımı mı (yalnız A takımı istenirken)."""
+    from .match import _ALIASES, _tnorm
+    t = _tnorm(title)
+    aliases = [a for a, c in _ALIASES if c == team]
+    for a in aliases:  # "arsenal women", "man city u21", "liverpool academy", "city legends"
+        if re.search(rf"(?<![a-z0-9]){re.escape(a)}(?:'s)?\s+(?:{MEN_STRONG}|{MEN_WEAK})(?![a-z0-9])", t):
+            return not manager_named  # hocası da başlıktaysa A takımı haberi ("Arteta reacts to Arsenal Women's win")
+    return bool(MEN_ONLY_EXCLUDE.search(_norm(title))) and not manager_named
 
 
 def _team_canon(term: str | None) -> str | None:
@@ -305,22 +330,29 @@ def _team_canon(term: str | None) -> str | None:
     return _ALIAS_MAP.get(_alias_norm(term or "")) if (term or "").strip() else None
 
 
-def team_video(title: str, channel: str, team: str, date: str | None = None, own: bool = False) -> bool:
+def team_video(title: str, channel: str, team: str, date: str | None = None, own: bool = False,
+               first_team: bool = False) -> bool:
     """Video ``team`` ile ilgili mi? own=True (basın toplantısı): toplantı o takımın mı (konuşan o takımın hocası /
     oyuncusu; "Maresca previews Arsenal" Arsenal'in değil). own=False: başlıkta takım ya da bu sezonki hocası geçiyor.
     Takımın kendi kanalındaki (kanal adı yalnız kulüp adı: "Arsenal", "Liverpool FC") her video o takımındır."""
     from .match import _joined, _team_hits, club_of_channel, find_manager, find_teams, manager_team, parse_match
     club = club_of_channel(channel or "")
-    if club == team:
-        return True
     teams = find_teams(title)
     mgr = find_manager(title, teams)
     mt = manager_team(mgr, date) if mgr else None
+    d8 = (date or "").replace("-", "")
+    if mt and not date and teams and mt not in teams:
+        # tarih bilinmiyor ve başlık başka takımı anıyor: hoca o zaman orada olabilir ("Xabi Alonso press conference |
+        # Real Madrid", Maresca'nın Chelsea dönemi). Bu sezonki hoca eşlemesine güvenilmez.
+        mt, d8 = None, "19000101"
+    if first_team and _not_first_team(title, team, mt == team):
+        return False
+    if club == team:
+        return True
     if not own:
         return team in teams or mt == team
     if club:
         return False  # başka kulübün kanalı: toplantı o kulübün
-    d8 = (date or "").replace("-", "")
     if parse_match({"title": title, "channel": "", "upload_date": d8})["team"] == team:
         return True
     if mt is None and team in teams[:2]:  # "Arsenal vs Chelsea | Post-match press conference": hangisi belli değil
@@ -343,10 +375,8 @@ def term_match(e: dict, term: str, topic: str | None, channel: str = "") -> bool
     title = e.get("title") or ""
     canon = _team_canon(term)
     if canon:
-        if MEN_ONLY_EXCLUDE.search(_norm(title)):
-            return False
         return team_video(title, e.get("channel") or channel, canon, e.get("date") or None,
-                          own=(topic or "").lower() == "basin")
+                          own=(topic or "").lower() == "basin", first_team=True)
     return _hit(f" {_norm(title)} ", _prep([term]))
 
 

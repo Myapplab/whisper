@@ -136,6 +136,17 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   kalınca bir kademe iner. Gece modu açıkken devre dışı (onun molası var). (c) Ayarlar > **Güç düzeni**: Güvenli (%70,
   1600 MHz, varsayılan) / Dengeli (%85, 1800) / Tam (%100, saat sınırı yok; `plan` artık `-rgc` ile eski kilidi kaldırır);
   "Güç ayarını uygula"ya yeniden basılmalı. Windows'ta / gerçek kartlarda DENENMEDİ (ölçüm eşikleri tahmin).
+  Bağımsız inceleme 9 hata buldu, hepsi testle düzeltildi: YouTube düz listesinde tarih yoktu → hoca eşlemesi eski
+  sezonun toplantısını bu sezonki takıma veriyordu (artık `approximate_date` + tarih yokken başlık başka takımı anıyorsa
+  hocaya güvenilmez); esnek düzende 3090 işçisi kalıcı düşünce bütün kuyruk "işçi kalmadı" ile düşüyordu (`_flex_spare`);
+  RAM yüzünden başlayan yavaşlama ikinci kartın tuttuğu RAM yüzünden bitmiyordu (beklemede boştaki kart kapatılır); ana
+  işçi yokken ikinci kart da tutuluyordu; kapatılan (sürücü çökmesi) yardımcı beklemede kalıyordu; kademe kuyruk bitince
+  sıfırlanmıyordu; kısa ömürlü ffmpeg "başka program" sayılıyordu (Windows'ta tanıtıcı açık tutulur, Linux'ta cutime);
+  YouTube olmayan kanalda aranan yazınca hata; "Tam güç"te `-rgc` hatası güç hatası sanılıyordu; "academy / legends /
+  reserves / youth / e sport" A takımı videolarını atıyordu (artık bunlar yalnız takım adının hemen ardındaysa; kadın /
+  altyaş işareti hocası da başlıktaysa atmaz); çok aranan olunca sonuncunun sorguları kesiliyordu (sırayla). Bilerek
+  bırakılan: tarafsız kanalda hoca adı olmayan "A vs B | Post-match press conference" iki takıma da seçilir; Defender'ın
+  bizim dosyalarımızı taraması ve sürücü (DPC) süresi "başka program" sayılabilir (kullanıcıda ölçülmeli: `[esnek]`).
 - **1.9.20 monitör Intel'e geçiş:** kullanıcı Intel sürücüsünü kurdu (Ayarlar'da artık Intel adı görünüyor) ama liste hâlâ "Monitör RTX 3080 bağlı" diyordu. `igpu_advice` artık üç durumu ayırır: Intel kurulu ama masaüstünde değil (= kablo hâlâ NVIDIA'da; "sürücü ✓, kalan tek adım kablo"), Intel masaüstünde + NVIDIA da (ikinci monitör/TV/kablo), yalnız Intel (✓). `mark_display`: Windows masaüstünü Intel çiziyorsa listede olmayan NVIDIA kart, nvidia-smi "Enabled" dese de boş sayılır (eskiden korunuyordu; kablo anakarttayken 3080 hiç kullanılmayabilirdi). Windows'ta denenmedi.
 - **1.9.19 gece modu (`stt/governor.py`, `cfg.night_mode`):** kullanıcı "uyurken 200+ video, bilgisayar çökmesin, GPU
   az harcasın, yavaş ama stabil, Afterburner gibi ama uygulama kendi ayarlasın" dedi. Fan eğrisi / hız aşırtma yazılımdan

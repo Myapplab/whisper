@@ -316,6 +316,7 @@ class Pipeline:
         self._flex_sampler = None
         self._flex_at = 0.0
         self._flex_probing = False
+        self._flex_was = False
         self._flex_rest_until = 0.0            # kademe 2: bu zamana dek ana karta yeni görev verilmez
         self._flex_card = False                # ikinci kart "esnek" düzende (monitörsüz; yardımcı düzeniyle)
         self._flex_card_possible = False       # iki kart monitörsüz ve "Önerilen": esnek düzen açılabilir
@@ -1170,8 +1171,11 @@ class Pipeline:
                     continue  # iş iptal/başarısız: görevi at
                 self.queued_n += 1
                 self.pool.put(t)
-            if self.hpool is not None and not night and flex >= 1:
-                self._flex_hold_helpers()  # bilgisayar kullanılıyor: ikinci karta yeni iş yok
+            # bilgisayar kullanılıyor: ikinci karta yeni iş yok. Ana kartta çalışan metin işçisi yoksa (çöktü / açılamadı)
+            # tutulmaz: yoksa kuyruk hiç ilerlemezdi
+            flex_hold = flex >= 1 and self._main_takers() > 0
+            if self.hpool is not None and not night and flex_hold:
+                self._flex_hold_helpers()
             elif self.hpool is not None and not night:  # gece modunda yardımcı (monitörlü) karta iş yok
                 self._helper_dispatch(len(main - self.fatal))
             if self.ddelayed:
@@ -1197,7 +1201,7 @@ class Pipeline:
                 self.dqueued_n += 1
                 self.dpool.put(t)
                 self._dmem_since, self._dmem_forced, self._dmem_at = None, False, 0.0  # sonraki görev için yeniden
-            if self.hpool is not None and not night and flex < 1:
+            if self.hpool is not None and not night and not (flex >= 1 and "diar" not in self.fatal):
                 self._helper_diar_dispatch()
 
     # ---------------------------------------------------------- esnek tam güç (stt/flex.py)
@@ -1220,7 +1224,19 @@ class Pipeline:
         """``FLEX_SAMPLE_S``'de bir işlemci / RAM ölçümü (arka planda: snapshot ve süreç süreleri motor döngüsünü
         bekletmesin). ``self.lock`` altında çağrılır."""
         now = time.time()
-        if self._flex_probing or now - self._flex_at < FLEX_SAMPLE_S or not self._flex_on():
+        on = self._flex_on()
+        if on != self._flex_was:
+            self._flex_was = on
+            if not on:  # iş bitti / gece modu / kapatıldı: sonraki kuyruk tam güçle başlasın, eski ölçüm kullanılmasın
+                self.flex = Flex()
+                self._flex_rest_until = 0.0
+                if self._flex_sampler is not None:
+                    self._flex_sampler.reset()
+                for wid in self._helper_wids():
+                    if self._h_note.get(wid) == FLEX_NOTE:
+                        self._helper_note(wid, "")
+            self._night_emit()
+        if self._flex_probing or now - self._flex_at < FLEX_SAMPLE_S or not on:
             return
         self._flex_at = now
         self._flex_probing = True
@@ -1250,18 +1266,41 @@ class Pipeline:
                 log.debug("esnek ölçüm", exc_info=True)
             finally:
                 self._flex_probing = False
-        self._spawn(run)
+        try:
+            self._spawn(run)
+        except Exception:  # noqa: BLE001  (iş parçacığı açılamadı: ölçüm takılı kalmasın)
+            self._flex_probing = False
+            log.debug("esnek ölçüm başlatılamadı", exc_info=True)
 
     def _helper_wids(self) -> list[str]:
         return (list(self.hpool.workers) if self.hpool is not None else []) + \
             ([HELPER_DIAR] if self.hpool is not None else [])
 
+    def _main_takers(self) -> int:
+        """Görev alabilecek ana metin işçisi sayısı (kalıcı düşen / kapatılan sayılmaz)."""
+        return len(set(self.pool.workers) - self.fatal - self._drop_wids) if self.pool else 0
+
     def _flex_hold_helpers(self) -> None:
-        """Kademe ≥ 1: ikinci karta yeni görev verilmez (sürmekte olan biter). Model bellekte kalır: bilgisayar
-        sakinleşince hemen sürer (açıp kapamak işlemciyi daha çok yorardı). Kapalı olanın notu değişmez."""
+        """Kademe ≥ 1: ikinci karta yeni görev verilmez (sürmekte olan biter). Model bellekte kalır, bilgisayar
+        sakinleşince hemen sürer (açıp kapamak işlemciyi daha çok yorardı); ama boşta uzun kalırsa kapatılır: RAM azken
+        ``HELPER_SWITCH_S``, yoksa ``HELPER_IDLE_PARK_S`` sonra (bellek başka programlara kalsın; yoksa RAM yüzünden
+        başlayan yavaşlama, ikinci kartın tuttuğu RAM yüzünden hiç bitmezdi). Kapatılmış (sürücü çökmesi / güç
+        koruması) yardımcı önce kapatılır. ``self.lock`` altında."""
+        if self.helper_disabled:
+            self._helper_stop_all()
+            return
+        now = time.time()
+        wait = HELPER_SWITCH_S if self.flex.ram_low else HELPER_IDLE_PARK_S
         for wid in self._helper_wids():
-            if wid not in self._h_parked and wid not in self.inflight:
-                self._helper_note(wid, FLEX_NOTE)
+            if wid in self._h_parked or wid in self.inflight:
+                continue
+            queued = self.hqueued_n if wid != HELPER_DIAR else self.hdqueued_n
+            if wid in self.idle and not queued and now - self._h_last.get(wid, now) >= wait:
+                log.info("[%s] esnek: ikinci kart %d sn'dir bekliyor, kapatıldı (bellek boşalsın; gerekince açılır)",
+                         wid, int(now - self._h_last.get(wid, now)))
+                self._park_helper(wid, HELPER_OFF)
+                continue
+            self._helper_note(wid, FLEX_NOTE)
 
     def flex_state(self) -> dict:
         on = bool(getattr(self.cfg, "gpu_flex", True))
@@ -1274,6 +1313,12 @@ class Pipeline:
         else:
             note = self.flex.note()
         return {"on": on, "level": self._flex_level(), "note": note, "card2": self._flex_card}
+
+    def _flex_spare(self) -> bool:
+        """Esnek ikinci kart iş alabilir durumda mı (ana kart düşerse metni o sürdürür)."""
+        hp = self.hpool
+        return bool(self._flex_card and hp is not None and not self.helper_disabled and any(
+            w not in self.fatal and w not in self._h_gone for w in hp.workers))
 
     def _reserve(self) -> float:
         """İkinci kartta başka programlara bırakılan bellek. Monitörsüz esnek kartta en çok ``FLEX_RESERVE_GB``
@@ -1927,7 +1972,8 @@ class Pipeline:
             log.error("[%s] işçi başlatılamadı: %s", wid, m["error"])
             log.info("%s", m.get("trace", ""))
             main_ws = set(self.pool.workers) if self.pool else set()
-            if main_ws and not (self.ready_workers & main_ws) and main_ws <= set(self.worker_errors):
+            if main_ws and not (self.ready_workers & main_ws) and main_ws <= set(self.worker_errors) \
+                    and not self._flex_spare():
                 self.failed_reason = "Model yüklenemedi: " + hint
                 self.emit("fatal", error=self.failed_reason)
             return
@@ -2235,7 +2281,10 @@ class Pipeline:
                             self.dbacklog.appendleft(t)
                         self.hdqueued_n = 0
             if pool is self.pool:
-                main_alive = alive
+                main_alive = main_alive | alive
+            elif pool is self.hpool and self._flex_spare():
+                # esnek düzen: ana kart düştüyse ikinci kart metni sürdürür (eskiden iki kart da ana işçiydi)
+                main_alive = main_alive | {w for w in pool.workers if w not in self.fatal and w not in self._h_gone}
         self._drop_dead_diar()
         alive = main_alive
         if not alive and self.active():
