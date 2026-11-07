@@ -38,6 +38,7 @@ E.2 (C5) ve aşağıdaki K5 planı. **(1.9.5'ten kalan):** kullanıcı Güncelle
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
+- 1.9.20 (Claude; 601 test): kullanıcı Intel sürücüsünü kurdu ("Intel display ... enable") ama Ayarlar hâlâ "✗ Monitör RTX 3080 bağlı" diyor. Kod okundu: bu ileti yalnız Intel bağdaştırıcısı Windows'ta GÖRÜNÜP masaüstüne bağlı DEĞİLKEN çıkar = sürücü tamam, kablo büyük olasılıkla hâlâ 3080'de. İleti artık bunu açıkça söylüyor ("sürücü ✓, kalan tek adım kablo"); ikinci monitör/TV durumu ayrı ileti; masaüstü Intel'deyken nvidia-smi'nin yanlış "Enabled"ı 3080'i kilitlemiyor. DENENMEDİ: Windows. KULLANICIDAN: kablo anakarta takılı mı (fotoğraf), Güncelle sonrası Ayarlar listesi ekran görüntüsü. Kablo anakarttayken yine ✗ ise: PowerShell `Get-CimInstance Win32_VideoController | Select Name,CurrentHorizontalResolution` çıktısı istensin.
 - 1.9.19 (Claude; 597 test; bağımsız inceleme: ciddi hata yok, 5 küçük bulgu düzeltildi): kullanıcı uyumadan önce: **"200'den fazla video olur mu; bilgisayar çökmesin, GPU az
   harcasın, yavaş ama stabil, MSI Afterburner gibi ama uygulama kendi ayarlasın"**. Cevap: kuyrukta sınır yok; "Kanal ·
   liste"deki "En fazla 200" kutusu 5000'e kadar yazılabilir. Yapılan: **Gece modu** (kart şeridinde düğme + Ayarlar >

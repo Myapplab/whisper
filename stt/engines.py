@@ -154,10 +154,19 @@ def igpu_advice(adapters: list[tuple[str, bool]] | None, info: dict) -> tuple[bo
                        "seçenekler › İsteğe bağlı güncelleştirmeler › Sürücü güncelleştirmeleri (Intel Display / UHD "
                        "Graphics), yoksa intel.com 'Driver & Support Assistant'. Sonra bilgisayarı kapatıp kabloyu "
                        "anakarttaki çıkışa takın.")
+    if intel and any(a for _, a in intel):
+        # Intel masaüstünde ama bir NVIDIA kart da: ikinci monitör / TV / ikinci kablo o kartta
+        return False, (f"Monitör anakartta (Intel) ama {', '.join(nv_display)} kartına da ikinci bir ekran (monitör, TV "
+                       "ya da ikinci kablo) bağlı görünüyor. O karttaki bütün görüntü kablolarını çıkarın; o zaman iki "
+                       "ekran kartı da tam güçle, ekran kararmadan çalışır.")
     if intel:
-        return False, (f"Monitör {', '.join(nv_display) or 'NVIDIA kartına'} bağlı. Monitör kablosunu anakarttaki "
-                       "(arka paneldeki, ekran kartlarının ÜSTÜNDEKİ) HDMI/DisplayPort çıkışına takarsanız iki ekran kartı "
-                       "da tam güçle, ekran kararmadan çalışır.")
+        # 1.9.20 kullanıcıda: sürücü kuruldu (Intel adı göründü) ama kablo hâlâ NVIDIA kartında
+        card = ", ".join(nv_display) or "NVIDIA ekran kartı"
+        return False, (f"Intel ekran sürücüsü kurulu ✓ ({intel[0][0]}). Kalan tek adım kablo: monitör hâlâ {card} "
+                       f"kartına bağlı. Bilgisayarı kapatın, monitör kablosunu {card} kartından çıkarıp anakarttaki "
+                       "(arka panelde, USB girişlerinin yanında, ekran kartlarının ÜSTÜNDEKİ) HDMI ya da DisplayPort "
+                       "çıkışına takın, sonra açın. O zaman iki ekran kartı da tam güçle, ekran kararmadan çalışır. "
+                       "Görüntü gelmezse BIOS'ta Primary Display: 'CPU Graphics' (iGPU) seçin.")
     return False, ("Anakart görüntü çıkışı (Intel) görünmüyor: BIOS'ta kapalı olabilir ('iGPU Multi-Monitor' / "
                    "'Primary Display: iGPU' açın) ya da işlemci 'F' modeli olabilir (i3-10100F'de yok). Monitör "
                    "NVIDIA kartına bağlıyken o karta iş verilmemesi en güvenlisi (Ayarlar › Ekran kartı: Önerilen).")
@@ -178,14 +187,18 @@ def mark_display(out: dict[int, dict], adapters: list[str] | None) -> None:
     if len(set(names)) != len(names):  # iki aynı model kart: adla ayırt edilemez, nvidia-smi'ye güven
         return
     att = [_norm_gpu(a) for a in adapters]
+    # masaüstünü anakarttaki çıkış (Intel) çiziyorsa Windows'un listesi kesin: listede olmayan NVIDIA kart boştur.
+    # nvidia-smi display_mode/active 'Enabled' bazen kablo çıkarıldıktan sonra da kalıyor; ona uyulursa monitör
+    # anakarta takılı olduğu hâlde 3080 hiç kullanılmıyordu
+    on_igpu = any("intel" in a for a in att)
     for g in out.values():
         n = _norm_gpu(g["name"])
         hit = n in att  # tam ad eşleşmesi ("rtx 3080" ile "rtx 3080 ti" karışmasın)
         if hit:
             g["display"] = True  # nvidia-smi 'Disabled' dese bile: Windows bu kartla çiziyor
-        elif g.get("display") is None and att:
+        elif on_igpu or (g.get("display") is None and att):
             g["display"] = False  # masaüstü listesinde yok (monitör başka kartta / iGPU'da)
-        # nvidia-smi 'Enabled' dediyse koru (yanlışlıkla korumak yalnızca biraz hız kaybettirir)
+        # yoksa nvidia-smi 'Enabled' dediyse koru (yanlışlıkla korumak yalnızca biraz hız kaybettirir)
 
 
 _GPU_CACHE: tuple[float, dict] | None = None

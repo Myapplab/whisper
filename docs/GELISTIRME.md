@@ -111,6 +111,7 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   görev yoksa hata değil; nvidia-smi `GetSystemDirectoryW`'den; tek kartta kutu / Kontrol satırları gizli.
   DENENMEDİ: Windows, gerçek nvidia-smi -pl/-lgc (GeForce'ta yönetici ister; web kaynakları çalıştığını söylüyor),
   schtasks /XML + SDDL ile standart kullanıcının /Run'ı, UAC.
+- **1.9.20 monitör Intel'e geçiş:** kullanıcı Intel sürücüsünü kurdu (Ayarlar'da artık Intel adı görünüyor) ama liste hâlâ "Monitör RTX 3080 bağlı" diyordu. `igpu_advice` artık üç durumu ayırır: Intel kurulu ama masaüstünde değil (= kablo hâlâ NVIDIA'da; "sürücü ✓, kalan tek adım kablo"), Intel masaüstünde + NVIDIA da (ikinci monitör/TV/kablo), yalnız Intel (✓). `mark_display`: Windows masaüstünü Intel çiziyorsa listede olmayan NVIDIA kart, nvidia-smi "Enabled" dese de boş sayılır (eskiden korunuyordu; kablo anakarttayken 3080 hiç kullanılmayabilirdi). Windows'ta denenmedi.
 - **1.9.19 gece modu (`stt/governor.py`, `cfg.night_mode`):** kullanıcı "uyurken 200+ video, bilgisayar çökmesin, GPU
   az harcasın, yavaş ama stabil, Afterburner gibi ama uygulama kendi ayarlasın" dedi. Fan eğrisi / hız aşırtma yazılımdan
   güvenle yapılamaz (güç + saat sınırı zaten 1.9.17); gece modu kartın *çalışma oranını* ayarlar. Kart şeridindeki
