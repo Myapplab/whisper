@@ -258,8 +258,10 @@ def main(argv: list[str] | None = None) -> int:
         a = p.parse_args(argv[1:])
         setup_logging(a.verbose)
         cfg = _apply(cfg, a)
-        from .channel import channel_root, find_in_channel, is_playlist_url, list_videos, select
+        from .channel import channel_root, find_in_channel, is_playlist_url, list_videos, search_query_of, select
         from .sources import Item
+        if search_query_of(a.link):  # YouTube arama linki: bulunanların hepsi (linkteki arama esas)
+            a.konu, a.ara = "hepsi", None
         if a.ara and channel_root(a.link) and not is_playlist_url(a.link):
             data = find_in_channel(a.link, cfg, limit=a.limit, search=a.ara, topic=a.konu)
         else:

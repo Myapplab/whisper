@@ -704,16 +704,19 @@ class App:
     # ---------------------------------------------------------- kanal / oynatma listesi
     def list_channel(self, url: str, opts: dict) -> dict:
         from .channel import (TOPIC_LABELS, _words, channel_root, collection_name, find_in_channel, is_playlist_url,
-                              list_videos, select)
+                              list_videos, search_query_of, select)
         url = (url or "").strip()
         if not url:
             return {"ok": False, "error": "Kanal ya da oynatma listesi linki girin."}
         search = ", ".join(_words(opts.get("search")))
         topic = opts.get("topic") or "basin"
         playlist = is_playlist_url(url)
+        # YouTube arama sayfası linki (kanal içi arama ya da YouTube araması): bulunanlar kullanıcının aramasıdır, oynatma
+        # listesi gibi işlenmemişlerin hepsi seçili gelir; kanal taraması yapılmaz (linkteki arama esas)
+        query = search_query_of(url)
         # aranan yazıldıysa YouTube kanalının tamamı taranır (yalnız son videolar değil); kutu işaretliyse her zaman
         # (yalnız YouTube kanalında; başka sitede aranan yazılsa da son videolar listelenip süzülür)
-        finder = not playlist and bool(channel_root(url)) and (bool(opts.get("find")) or bool(search))
+        finder = not playlist and not query and bool(channel_root(url)) and (bool(opts.get("find")) or bool(search))
         limit = int(opts.get("limit") or self._cfg.channel_max)
         try:
             if finder:
@@ -723,16 +726,19 @@ class App:
         except Exception as e:  # noqa: BLE001
             from .fetch import explain_error
             return {"ok": False, "error": explain_error(str(e))}
-        use_ai = bool(opts.get("ai")) and not playlist and self.llm().available()  # liste zaten kullanıcının seçimi
+        pick_all = playlist or bool(query)
+        use_ai = bool(opts.get("ai")) and not pick_all and self.llm().available()  # liste zaten kullanıcının seçimi
         # oynatma listesi kullanıcının seçtiği videolardır: konu süzgeci yok (yalnız "geçerse alma" ve özel kelimeler);
         # işlenmemişlerin hepsi seçili gelir (eskiden "MANAGER'S PREVIEW" gibi başlıklar tek tek işaretleniyordu)
-        sel_topic = "hepsi" if playlist else topic
+        sel_topic = "hepsi" if pick_all else topic
         label = "" if topic == "hepsi" else TOPIC_LABELS.get(topic, "")
         items = select(data["items"], sel_topic, opts.get("custom"), opts.get("exclude"),
                        llm=self.llm() if use_ai else None,
                        llm_topic=" ".join(x for x in (search, opts.get("custom") or label) if x),
-                       search=search, channel=data.get("channel") or "")
+                       search="" if query else search, channel=data.get("channel") or "")
         coll = collection_name(data.get("channel") or data.get("title") or url, topic, opts.get("custom"), search)
+        if query:  # "Aston Villa - unai emery press conference" (arama linkinde "Ne arıyorsunuz?" kullanılmaz)
+            coll = " - ".join(x for x in (data.get("channel") or "", query) if x)
         try:
             from .sources import Item
             done = self._state().done_keys([Item("url", e["url"]).compute_key() for e in items])
@@ -744,7 +750,8 @@ class App:
             items.sort(key=lambda e: not e.get("match"))
         return {"ok": True, "title": data.get("title"), "channel": data.get("channel"), "items": items,
                 "matched": sum(1 for e in items if e.get("match")), "collection": coll, "ai": use_ai,
-                "playlist": playlist, "finder": finder, "search": search, "sources": data.get("sources") or {}}
+                "playlist": playlist, "finder": finder, "search": "" if query else search, "query": query or "",
+                "sources": data.get("sources") or {}}
 
     def start_selected(self, urls: list[str], opts: dict) -> dict:
         msg = self._busy_msg()

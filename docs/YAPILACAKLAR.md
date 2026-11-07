@@ -38,6 +38,13 @@ E.2 (C5) ve aşağıdaki K5 planı. **(1.9.5'ten kalan):** kullanıcı Güncelle
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
+- 1.9.23 (Claude; 642 test): kullanıcı: "kanalın search bölümündeki videoları listeleyebilsin", ör.
+  `youtube.com/@avfcofficial/search?query=unai%20emery%20press%20conference`. `channel.search_query_of`: kanal içi arama
+  (`/@x|channel|c|user/.../search?query=`) ve YouTube araması (`/results?search_query=`) linki. "Kanal · liste"de
+  (Linkler'e yapıştırılırsa oraya taşınır) link olduğu gibi listelenir (yt-dlp YoutubeTabIE "search" sekmesi /
+  YoutubeSearchURLIE, kaynağında doğrulandı); oynatma listesi gibi işlenmemişlerin hepsi seçili (konu süzgeci yok,
+  "Başlıkta geçerse alma" geçerli); kanal taraması ve yapay zekâ seçimi yapılmaz; "Ne arıyorsunuz?" yok sayılır; koleksiyon
+  "<kanal> - <arama>". Takip ve `stt kanal` de aynı. DENENMEDİ: gerçek YouTube (bu ortamdan erişim yok), Windows.
 - 1.9.22 (Claude; 638 test): kullanıcı ekranı (1.9.21 çalışıyor: üstte "RTX 3090" + "RTX 3080 yardımcı · metin/ayırma"
   = esnek düzen açıldı, "Esnek güç açık", güvenli düzen listesi ✓ monitör Intel'de, ✓ güç 238/245 W). Soru: "MSI'da
   hepsi resetlendi ama satır hâlâ kırmızı". Sebep: uygulama Afterburner'ın içindeki ayarı okuyamaz, yalnız açık olduğunu

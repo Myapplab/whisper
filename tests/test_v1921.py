@@ -553,3 +553,69 @@ def test_afterburner_ack(tmp_path, monkeypatch):
     app._cfg, app._pipe = Config(out_dir=tmp_path), None
     assert app.oc_ack(True) == {"ack": "msiafterburner.exe"}
     assert app.oc_ack(False) == {"ack": None} and saved["oc_ack"] == ""
+
+
+# ---------------------------------------------------------------- 1.9.23: YouTube arama linki
+SEARCH_URL = "https://www.youtube.com/@avfcofficial/search?query=unai%20emery%20press%20conference"
+
+
+def test_search_query_of():
+    from stt.channel import is_collection_url, is_playlist_url, search_query_of
+    assert search_query_of(SEARCH_URL) == "unai emery press conference"
+    assert search_query_of("https://m.youtube.com/channel/UC123/search/?query=Emery+presser") == "Emery presser"
+    assert search_query_of("https://www.youtube.com/c/3blue1brown/search?query=linear%20algebra") == "linear algebra"
+    assert search_query_of("https://www.youtube.com/results?search_query=arteta+press+conference&sp=CAI%253D") == \
+        "arteta press conference"
+    for u in ("https://www.youtube.com/@avfcofficial/search", "https://www.youtube.com/@avfcofficial/videos",
+              "https://www.youtube.com/watch?v=abc", "https://www.dailymotion.com/search?query=x",
+              "https://www.youtube.com/@avfcofficial/search?query=%20"):
+        assert search_query_of(u) is None
+    assert is_collection_url(SEARCH_URL) and is_collection_url("https://www.youtube.com/results?search_query=x")
+    assert not is_playlist_url(SEARCH_URL)
+
+
+def test_list_channel_search_url_selects_all(tmp_path, monkeypatch):
+    """Kullanıcı: kanalın arama bölümündeki videolar listelensin (…/@avfcofficial/search?query=unai emery press conference)."""
+    import stt.channel as ch
+    import stt.fetch as f
+    import stt.gui as gui
+    seen = []
+
+    def info(url, cookies=None, flat=False, extra=None, workdir=None):
+        seen.append((url, extra))
+        return {"title": "Aston Villa - Search - unai emery press conference", "channel": "Aston Villa", "entries": [
+            {"id": "s1", "url": "https://www.youtube.com/watch?v=s1", "title": "Unai Emery's pre-Brentford press conference"},
+            {"id": "s2", "url": "https://www.youtube.com/watch?v=s2", "title": "EMERY: We must be ready"},   # konu sözcüğü yok
+            {"id": "s3", "url": "https://www.youtube.com/watch?v=s3", "title": "Women's press conference"}]}
+    monkeypatch.setattr(f, "ytdlp_info", info)
+    monkeypatch.setattr(ch, "find_in_channel", lambda *a, **k: (_ for _ in ()).throw(AssertionError("tarama yapılmamalı")))
+    app = gui.App.__new__(gui.App)
+    app._cfg = Config(out_dir=tmp_path)
+    app._pipe = None
+    monkeypatch.setattr(gui.App, "llm", lambda self: type("L", (), {"available": lambda s: True})())
+    app._state = lambda: type("S", (), {"done_keys": lambda s, k: set()})()
+    r = app.list_channel(SEARCH_URL, {"topic": "basin", "find": True, "search": "Arsenal", "ai": True, "exclude": "women"})
+    assert r["ok"] and r["query"] == "unai emery press conference" and not r["finder"] and not r["ai"]
+    assert [e["id"] for e in r["items"] if e["match"]] == ["s1", "s2"]          # konu süzgeci yok, "geçerse alma" var
+    assert seen[0][0] == SEARCH_URL and len(seen) == 1                            # link olduğu gibi (sekmeye bölünmez)
+    assert seen[0][1]["extractor_args"]["youtubetab"]["approximate_date"] == [""]
+    assert r["title"] == "Aston Villa" and r["collection"] == "Aston Villa - unai emery press conference"
+
+
+def test_links_tab_moves_search_url_to_channel_tab(tmp_path, monkeypatch):
+    import stt.gui as gui
+    app = gui.App.__new__(gui.App)
+    app._cfg = Config(out_dir=tmp_path)
+    app._enqueue = lambda it, retry=False: None
+    app._engine_state = {}
+    r = app.start(SEARCH_URL, [], {})
+    assert r["collections"] == [SEARCH_URL] and r["count"] == 0
+
+
+def test_follow_search_url_takes_all_new(tmp_path, monkeypatch):
+    import stt.channel as ch
+    f = ch.Follows(tmp_path)
+    f.add(SEARCH_URL, "Aston Villa - unai emery press conference", "basin", search="Arsenal")
+    monkeypatch.setattr(ch, "list_videos", lambda url, cfg, limit=None: {
+        "channel": "Aston Villa", "items": [_e("t1", "EMERY: We must be ready", channel="Aston Villa")]})
+    assert [e["id"] for e in ch.check_follow(f.all()[0], Config())] == ["t1"]

@@ -58,6 +58,26 @@ def _norm(s: str) -> str:
     return " ".join(re.sub(r"[\W_]+", " ", s).split())
 
 
+def search_query_of(url: str) -> str | None:
+    """YouTube arama sayfası linki mi? Kanal içi arama (``/@Kanal/search?query=unai emery press conference``) ya da
+    YouTube araması (``/results?search_query=...``): aranan metni döner, değilse None. Listesi yt-dlp'de: kanal içi arama
+    YoutubeTabIE "search" sekmesi, YouTube araması YoutubeSearchURLIE."""
+    p = urlsplit((url or "").strip())
+    host = (p.hostname or "").lower()
+    if not host.endswith("youtube.com"):
+        return None
+    q = parse_qs(p.query)
+    path = (p.path or "/").rstrip("/")
+    if re.match(r"^/(@[^/]+|channel/[^/]+|c/[^/]+|user/[^/]+)/search$", path):
+        val = (q.get("query") or [""])[0]
+    elif path in ("/results", "/search"):
+        val = (q.get("search_query") or q.get("q") or [""])[0]
+    else:
+        return None
+    val = " ".join(val.split())
+    return val or None
+
+
 def is_collection_url(url: str) -> bool:
     """Kanal / oynatma listesi linki mi (tek video değil)?"""
     p = urlsplit(url.strip())
@@ -65,6 +85,8 @@ def is_collection_url(url: str) -> bool:
     path = p.path or "/"
     q = parse_qs(p.query)
     if host.endswith("youtube.com"):
+        if search_query_of(url):  # arama sayfası: bulunan videolar listelenir
+            return True
         if path == "/playlist" and "list" in q:
             return True
         if path == "/watch":
@@ -187,7 +209,9 @@ def list_videos(url: str, cfg, limit: int | None = None) -> dict:
     if not items and errors:
         raise RuntimeError("Liste alınamadı: " + " | ".join(errors))
     items.sort(key=lambda e: e.get("date") or "", reverse=True)  # tarihsizler sırasını korur (zaten yeniden eskiye)
-    return {"title": re.sub(r"\s+-\s+(Videos|Live|Videolar)$", "", title), "channel": channel, "items": items}
+    # "Aston Villa - Videos", "3Blue1Brown - Search - linear algebra" -> kanal adı
+    return {"title": re.sub(r"\s+-\s+(?:Videos|Live|Videolar|Search\s+-\s+.*)$", "", title), "channel": channel,
+            "items": items}
 
 
 # ------------------------------------------------------------------ kanalın tamamında arama (takım / kişi / konu)
@@ -482,10 +506,11 @@ class Follows:
 def check_follow(row: dict, cfg, llm=None, limit: int = 30) -> list[dict]:
     """Takip edilen kanaldaki yeni ve konuya uyan videolar (görülenler hariç)."""
     data = list_videos(row["url"], cfg, limit=limit)
-    items = select(data["items"], row.get("topic"), row.get("custom"), row.get("exclude"),
+    q = search_query_of(row["url"])  # arama linki takipte: aramada çıkan yeni videoların hepsi (linkteki arama esas)
+    items = select(data["items"], "hepsi" if q else row.get("topic"), row.get("custom"), row.get("exclude"),
                    llm=llm if (row.get("opts") or {}).get("ai") else None,
                    llm_topic=" ".join(x for x in (row.get("search"), row.get("custom") or row.get("topic")) if x),
-                   search=row.get("search"), channel=data.get("channel") or "")
+                   search=None if q else row.get("search"), channel=data.get("channel") or "")
     seen = set(row.get("seen") or [])
     return [e for e in items if e["match"] and (e.get("id") or e["url"]) not in seen and not e.get("live")]
 

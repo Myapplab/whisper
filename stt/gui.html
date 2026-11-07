@@ -282,8 +282,8 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
         <div class="chips" id="chips"></div>
       </div>
       <div class="mode" id="m-channel" hidden>
-        <div class="field"><label for="chUrl">Kanal ya da oynatma listesi linki</label>
-          <input class="txt" id="chUrl" spellcheck="false" placeholder="https://www.youtube.com/@Arsenal  ·  …/playlist?list=…"></div>
+        <div class="field"><label for="chUrl">Kanal, oynatma listesi ya da YouTube arama linki</label>
+          <input class="txt" id="chUrl" spellcheck="false" placeholder="https://www.youtube.com/@Arsenal  ·  …/playlist?list=…  ·  …/@Kanal/search?query=…"></div>
         <div class="field"><label for="chSearch">Ne arıyorsunuz? Takım, kişi ya da konu (isteğe bağlı; virgülle birden çok)</label>
           <input class="txt" id="chSearch" spellcheck="false" placeholder="ör. Arsenal  ·  Arteta  ·  Saka, Ødegaard  ·  transfer">
           <span class="hint">Yazarsanız kanalın tamamı taranır (yalnız son videolar değil) ve ilgili videolar seçili gelir. Takım adı yazılırsa yalnız A takımı (kadın / altyaş / akademi hariç); konu “Basın toplantısı” ise yalnız o takımın toplantıları. Her şey için konuyu “Hepsi” yapın.</span></div>
@@ -596,7 +596,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
   $("#chSearch").addEventListener("input", () => { if ($("#chSearch").value.trim()) $("#chFind").checked = true; chReset(); });
   async function listChannel() {
     const u = $("#chUrl").value.trim(); if (!u) { toast("Kanal ya da oynatma listesi linkini girin."); return; }
-    $("#btnList").disabled = $("#btnStart").disabled = true; $("#chInfo").textContent = $("#chFind").checked || $("#chSearch").value.trim() ? "Kanalın tamamı taranıyor… (1-3 dakika)" : "Listeleniyor… (büyük kanallarda 1-2 dakika)";
+    $("#btnList").disabled = $("#btnStart").disabled = true; $("#chInfo").textContent = /youtube\.com\/(?:.+\/search\?(?:.*&)?query=|results\?(?:.*&)?search_query=)/i.test(u) ? "Arama sonuçları listeleniyor…" : $("#chFind").checked || $("#chSearch").value.trim() ? "Kanalın tamamı taranıyor… (1-3 dakika)" : "Listeleniyor… (büyük kanallarda 1-2 dakika)";
     const r = await call("list_channel", u, chOpts());
     $("#btnList").disabled = $("#btnStart").disabled = false;
     if (!r || !r.ok) { $("#chInfo").textContent = (r && r.error) || "Listelenemedi."; return; }
@@ -606,7 +606,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
   function renderChannel() {
     const r = state.ch, l = $("#chList"); l.replaceChildren();
     const done = r.items.filter(e => e.done).length;
-    $("#chInfo").textContent = (r.channel || r.title || "") + ": " + r.items.length + " video" + (r.playlist ? " (oynatma listesi: işlenmemişlerin hepsi seçildi)" : r.search ? ", “" + r.search + "” ile ilgili " + r.matched + " (seçili, listenin başında)" : ", konuya uyan " + r.matched) + (done ? " — " + done + " tanesi daha önce işlendi" : "") + (r.ai ? " — yapay zekâ seçti" : "") + (r.finder ? " — kanal tarandı: " + Object.entries(r.sources || {}).map(([k, v]) => k + " " + v).join(", ") : "");
+    $("#chInfo").textContent = (r.channel || r.title || "") + ": " + r.items.length + " video" + (r.playlist ? " (oynatma listesi: işlenmemişlerin hepsi seçildi)" : r.query ? " (“" + r.query + "” araması: işlenmemişlerin hepsi seçildi)" : r.search ? ", “" + r.search + "” ile ilgili " + r.matched + " (seçili, listenin başında)" : ", konuya uyan " + r.matched) + (done ? " — " + done + " tanesi daha önce işlendi" : "") + (r.ai ? " — yapay zekâ seçti" : "") + (r.finder ? " — kanal tarandı: " + Object.entries(r.sources || {}).map(([k, v]) => k + " " + v).join(", ") : "");
     for (const e of r.items) {
       const cb = el("input", { type: "checkbox" }); cb.checked = state.chSel.has(e.url);
       cb.onchange = () => { cb.checked ? state.chSel.add(e.url) : state.chSel.delete(e.url); setMode("channel"); };
