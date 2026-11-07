@@ -38,6 +38,11 @@ E.2 (C5) ve aşağıdaki K5 planı. **(1.9.5'ten kalan):** kullanıcı Güncelle
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
+- 1.9.17 KULLANICIDA (ekran görüntüsü 2026-11-07): "Güvenli güç ayarını uygula" Windows'ta ÇALIŞTI (UAC + nvidia-smi -pl):
+  3080 238 W (varsayılanı 340 W), 3090 245 W, saat 1600 MHz; Afterburner kapalı ✓; Önerilen ✓. Eksik tek adım: "Anakart
+  görüntü çıkışı (Intel) görünmüyor" → BIOS'ta iGPU kapalı ya da işlemci i3-10100F. Kullanıcıya işlemci adı sorgusu ve
+  BIOS adımı verildi. F modelse: ucuz küçük ikinci kart (GT 710/1030) monitör için, ya da tek kart (3090) kalır.
+  Henüz doğrulanmadı: yeniden başlatma sonrası görevin sınırı yeniden koyması (listede ✓ kalmalı).
 - 1.9.17 (Claude; 572 test; bağımsız inceleme 9 bulgu, hepsi düzeltildi): kullanıcı: **"iki GPU'nun çalıştığı ama bilgisayarda hiçbir problem çıkmayacağı ve ekranın
   kararmayacağı bir düzen kur"**. Yapılan (`stt/power.py`, ayrıntı GELISTIRME "1.9.17"): Ayarlar > Ekran kartı >
   **"İki kart güvenli düzen"** listesi (monitör anakartta mı / güç sınırı / açık Afterburner / kart ayarı Önerilen mi)
