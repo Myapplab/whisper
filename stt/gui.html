@@ -48,6 +48,8 @@ header{display:flex;align-items:center;gap:12px 18px;padding:10px 18px;backgroun
 .gpu.idle .dot{background:var(--ok)} .gpu.busy .dot{background:var(--busy);box-shadow:0 0 0 3px var(--busy-soft)}
 .gpu.error .dot{background:var(--err)} .gpu.paused .dot{background:var(--warn)}
 .gpu .what{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gpu.night{cursor:pointer;font:inherit;color:inherit;margin-left:8px;flex:none}.gpu.night b{white-space:nowrap}.gpu.night:hover{border-color:var(--accent)}
+.gpu.night.on .dot{background:#6366f1;box-shadow:0 0 0 3px rgba(99,102,241,.2)}.gpu.night.on.paused .dot{background:var(--warn)}
 .spacer{flex:1}
 .btn{border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:7px 12px}
 .btn:hover{background:var(--panel-2)}
@@ -238,6 +240,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     <div><b>STT</b> <span>Basın Odası</span></div>
   </div>
   <div class="gpus" id="gpus"><div class="gpu"><i class="dot"></i><span class="what">Motor başlatılıyor…</span></div></div>
+  <button class="gpu night" id="night" type="button" aria-pressed="false"><i class="dot"></i><b>Gece modu</b><span class="what">kapalı</span></button>
   <div class="spacer"></div>
   <div class="views" id="views" role="group" aria-label="Görünüm">
     <button type="button" data-v="new" aria-pressed="false">Yeni iş</button>
@@ -406,6 +409,10 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
         <div id="sSafeList" class="safe-list hint">Denetleniyor…</div>
         <div class="row"><button class="btn small" id="sSafeApply" type="button">Güvenli güç ayarını uygula</button><button class="btn small" id="sSafeUndo" type="button">Geri al</button><span class="hint" id="sSafeOut"></span></div>
         <span class="hint">Üç adım: 1) monitör kablosu anakarttaki (Intel) çıkışa — ekran kartları ekran çizmez, kararma biter; 2) bu düğme: iki karta güç sınırı (<span id="sSafePct">%70</span>) ve saat sınırı (<span id="sSafeClk">1600 MHz</span>) konur, bilgisayarı yeniden başlatan güç sıçramaları kesilir; Windows bir kez izin sorar, sonra her açılışta kendiliğinden uygulanır; 3) MSI Afterburner'da Reset + Save. Güç ayarı yokken iki kart birlikte çalıştırılmaz (yalnız 3090).</span></div>
+      <label class="toggle"><input type="checkbox" id="sNight"><span>Gece modu: yavaş ama dengeli (uzun kuyruk, ör. gece 200+ video)<small>Yalnız bir kart çalışır (monitörlü karta / yardımcıya iş yok); kart her işten sonra ısısına göre dinlenir, hedef ısının üstüne çıkınca mola uzar, çok ısınınca soğuyana dek bekler; işçiler 90 dk'da bir yenilenir; diskte yer azalınca indirme durur. Kaydedince hemen geçerli (üstteki "Gece modu" düğmesi de aynı).</small></span></label>
+      <div class="field"><label for="sNightTemp">Gece modunda hedef kart ısısı (°C)</label>
+        <input type="text" id="sNightTemp" inputmode="numeric" style="width:90px" class="txt">
+        <span class="hint">60-83 arası; varsayılan 72. Hedefin 8 derece üstünde kart soğuyana (hedef - 6) dek yeni iş almaz. Düşük değer = daha serin ve sessiz, daha yavaş.</span></div>
       <label class="toggle"><input type="checkbox" id="sUiGpu"><span>Arayüzde ekran kartı hızlandırması<small>Kapalı önerilir (açılışta ekranın kararıp gelmesini önler). Değişiklik yeniden açılışta geçerli.</small></span></label>
       <div class="sec">Yapay zekâ (isteğe bağlı)</div>
       <div class="field"><label for="sLlm">Sağlayıcı</label>
@@ -711,6 +718,23 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     }
   }
 
+  // ---------- gece modu (yavaş ama dengeli; kart ısısına göre kendini ayarlar)
+  function renderNight() {
+    const n = state.night || {}, b = $("#night");
+    b.classList.toggle("on", !!n.on); b.classList.toggle("paused", !!n.paused); b.setAttribute("aria-pressed", String(!!n.on));
+    const what = n.on ? [n.card, n.note || "açık"].filter(Boolean).join(" · ") : "kapalı";
+    b.replaceChildren(el("i", { class: "dot" }), el("b", {}, "Gece modu"), el("span", { class: "what" }, what));
+    b.title = n.on ? "Açık: yalnız bir kart çalışır; kart her işten sonra ısısına göre dinlenir, çok ısınınca soğuyana dek bekler; işçiler düzenli yenilenir; diskte yer azalınca indirme durur. Kapatmak için tıklayın."
+      : "Kapalı. Uzun kuyruk için (ör. gece 200+ video) tıklayın: yavaş ama dengeli; ekran kartı az ısınır, bilgisayar yorulmaz. Kuyruk sürerken de açılabilir.";
+  }
+  $("#night").onclick = async () => {
+    const on = !(state.night || {}).on;
+    const r = await call("set_night_mode", on);
+    if (!r) return;
+    state.night = r.night; renderNight(); $("#sNight").checked = !!(r.night || {}).on;
+    toast(r.night && r.night.on ? "Gece modu açık: yavaş ama dengeli. Kart ısısına göre kendini ayarlar." : "Gece modu kapalı: normal hız.");
+  };
+
   // ---------- veri seti
   function renderDataset(ds) {
     const t = $("#tree"); t.replaceChildren();
@@ -1007,6 +1031,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     g.value = s.gpus || "auto";
     $("#sHelperGb").value = s.helper_reserve_gb ?? 2; $("#sHelperRow").hidden = g.value !== "yardim";
     $("#sSafe").hidden = cards.length < 2;  // tek kartta iki kart düzeni yok
+    $("#sNight").checked = !!s.night_mode; $("#sNightTemp").value = s.night_temp ?? 72;
     $("#sSafePct").textContent = "%" + (s.gpu_power_pct ?? 70); $("#sSafeClk").textContent = s.gpu_max_clock ? s.gpu_max_clock + " MHz" : "yok";
     $("#sOut").value = s.out_dir || ""; $("#sFpl").value = s.fpl_repo || ""; $("#sCookie").value = s.cookies_browser || "auto";
     $("#sCookieFile").value = s.cookies_file || ""; $("#sBrowser").checked = !!s.browser_capture; $("#sUiGpu").checked = !!s.ui_gpu;
@@ -1094,6 +1119,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
   // keepOpen: pencere açık kalsın (anahtar denemesi / silme); clear: stt.toml'dan silinecek anahtarlar
   async function saveSettings(keepOpen, clear) {
     const s = await call("save_settings", { out_dir: $("#sOut").value, hf_token: $("#sHf").value, fpl_repo: $("#sFpl").value, cookies_browser: $("#sCookie").value, gpus: $("#sGpu").value, helper_reserve_gb: $("#sHelperGb").value,
+      night_mode: $("#sNight").checked, night_temp: $("#sNightTemp").value,
       cookies_file: $("#sCookieFile").value, browser_capture: $("#sBrowser").checked, ui_gpu: $("#sUiGpu").checked,
       llm_provider: $("#sLlm").value, llm_model: $("#sLlmModel").value, llm_budget_usd: $("#sBudget").value, gemini_api_key: $("#sGemKey").value,
       anthropic_api_key: $("#sClaKey").value, openai_api_key: $("#sOaiKey").value, llm_news: $("#sLlmNews").checked, llm_qa: $("#sLlmQa").checked,
@@ -1172,6 +1198,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
       case "train": onTrain(ev); return;
       case "dropped": state.files.push(...ev.paths); renderChips(); setMode("links"); toast(ev.paths.length + " dosya eklendi"); return;
       case "follows": renderFollows(ev.follows); return;
+      case "night": state.night = ev; renderNight(); return;
     }
     if (!ev.uid) return;
     const j = job(ev.uid, ev);
@@ -1251,6 +1278,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     onEvent({ type: "engine", ...h.engine });
     renderDataset(h.dataset);
     renderFollows(h.follows);
+    state.night = h.night || { on: !!h.settings.night_mode }; renderNight();
     if (h.pending && h.pending.length) {
       $("#pendText").textContent = "Uygulama kapanmadan önce bitmemiş " + h.pending.length + " iş var (" + h.pending.slice(0, 2).map(x => x.title || x.source).join(", ") + (h.pending.length > 2 ? "…" : "") + "). Kaldığı yerden devam edilsin mi?";
       $("#pend").classList.add("show");

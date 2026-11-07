@@ -38,6 +38,14 @@ E.2 (C5) ve aşağıdaki K5 planı. **(1.9.5'ten kalan):** kullanıcı Güncelle
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
+- 1.9.19 (Claude; 592 test): kullanıcı uyumadan önce: **"200'den fazla video olur mu; bilgisayar çökmesin, GPU az
+  harcasın, yavaş ama stabil, MSI Afterburner gibi ama uygulama kendi ayarlasın"**. Cevap: kuyrukta sınır yok; "Kanal ·
+  liste"deki "En fazla 200" kutusu 5000'e kadar yazılabilir. Yapılan: **Gece modu** (kart şeridinde düğme + Ayarlar >
+  Ekran kartı; kuyruk sürerken de hemen geçerli; ayrıntı GELISTIRME "1.9.19"): tek kart, her görevden sonra ısıya göre
+  mola (hedef 72°C, 80°C'de soğuma molası, 66°C'de sürer), işçiler 90 dk'da bir yenilenir, önden 3 video; her modda
+  disk koruması (8 GB'tan az boş yer varsa indirme bekler). Fan eğrisi / hız aşırtma yapılmadı (yazılımdan güvenli
+  değil; güç + saat sınırı 1.9.17'de var). DENENMEDİ: Windows, gerçek kart. KULLANICIDAN: sabah kart şeridi ekran
+  görüntüsü + günlükte `[gece]` ve `[kartlar]` satırları (mola kaç sn'ye çıktı, soğuma molası oldu mu), kaç video bitti.
 - 1.9.18 (Claude; 573 test): kullanıcıda işlemci i3-10100 (F değil, iGPU var). BIOS (ASUS TUF, Advanced › System Agent ›
   Graphics Configuration) "iGPU Multi-Monitor" zaten Enabled'dı; Primary Display "CPU Graphics" yapıldı, kablo anakarta
   takılınca açılış logosu göründü ama Windows "takıldı": aygıt "Microsoft Basic Display Adapter" = Intel sürücüsü yok.

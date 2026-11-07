@@ -111,6 +111,22 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   görev yoksa hata değil; nvidia-smi `GetSystemDirectoryW`'den; tek kartta kutu / Kontrol satırları gizli.
   DENENMEDİ: Windows, gerçek nvidia-smi -pl/-lgc (GeForce'ta yönetici ister; web kaynakları çalıştığını söylüyor),
   schtasks /XML + SDDL ile standart kullanıcının /Run'ı, UAC.
+- **1.9.19 gece modu (`stt/governor.py`, `cfg.night_mode`):** kullanıcı "uyurken 200+ video, bilgisayar çökmesin, GPU
+  az harcasın, yavaş ama stabil, Afterburner gibi ama uygulama kendi ayarlasın" dedi. Fan eğrisi / hız aşırtma yazılımdan
+  güvenle yapılamaz (güç + saat sınırı zaten 1.9.17); gece modu kartın *çalışma oranını* ayarlar. Kart şeridindeki
+  "Gece modu" düğmesi ya da Ayarlar > Ekran kartı; motor yeniden açılmadan, kuyruk sürerken de geçerli
+  (`App.set_night_mode`, `Pipeline._night_tick` açılıp kapanmayı izler). Açıkken: (1) tek kart (`_night_single`: yardımcı
+  işçiler boştaysa `_park_helper(.., "gece modu")`, not `NIGHT_NOTE`; "Hepsi"de öbür ana kart işçileri `_drop_wids` ile
+  ilk görevlerinde kapanır, gece modu kapanırsa henüz kapanmamışlar `_night_drops` ile geri alınır); (2) ana / ayırma
+  işçisinin her görevinden sonra `_rest_until = now + gov.rest` (`_dispatch`'te `hold`: metin de ayırma da verilmez);
+  `Governor` 20 sn'de bir (`SAMPLE_S`, `_night_probe` ayrı iş parçacığında `power.query`) çalışan kartın ısısıyla molayı
+  ayarlar: hedefin (`night_temp`, varsayılan 72) üstünde x1.5+2, 4 derece altında x0.8 (4-90 sn); hedef+8'de soğuma molası
+  (yeni görev yok), hedef-6'da biter; 15 dk'dan uzun sürerse en uzun molayla devam (iş sonsuza dek durmaz); ısı okunamazsa
+  sabit 10 sn. (3) `_night_recycle`: `night_recycle_min` (90) dakikadır açık işçi boşta + kuyruğunda görev yokken
+  `respawn(idle=True)` (yalnız tek işçili havuz; hata sayılmaz). (4) önden en çok 3 video (`NIGHT_PREP_AHEAD`). Canlı
+  yayın sürerken molalar uygulanmaz. Her modda: **disk koruması** `_disk_free_ok` (`min_free_gb` 8): diskte yer azsa
+  `_wait_prep_turn` yeni indirmeyi bekletir, tek uyarı; eskiden disk dolunca kuyruğun kalanı tek tek başarısız oluyordu.
+  DENENMEDİ: Windows, gerçek kart (nvidia-smi ısısı, molanın ısıya etkisi, model yeniden yükleme süresi).
 - **Konuşmacı ayırma ayrı süreçte** (`Pipeline.dpool`, wid `diar`, ilk ayırma görevinde açılır, belleği en büyük
   kartta): aynı süreçte torch + CTranslate2 → `invalid device ordinal` ve 1.2.0'da `CUDNN_STATUS_EXECUTION_FAILED`
   + `MemoryError` görüldü. `Diarizer.run`: cuDNN hatasında cuDNN kapalı tekrar dener; işlemciye geçmez (1.6.2, `diar_cpu`).

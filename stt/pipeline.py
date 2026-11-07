@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .audio import plan_chunks
 from .config import Config, diar_agc_on
+from .governor import NIGHT_PREP_AHEAD, SAMPLE_S, Governor
 from .fetch import Cancelled, DRMProtected, FetchError, LiveStream, SkipItem, is_transient, prepare_audio  # noqa: F401
 from .merge import apply_labels, assign_speakers, label_speakers, label_speakers_all, merge_chunks
 from .outputs import to_txt, write_all
@@ -41,6 +42,8 @@ HELPER_DIAR = "diar2"     # yardımcı kartta ikinci konuşmacı ayırma işçis
 HELPER_DIAR_GB = 3.0      # konuşmacı ayırma işçisinin kartta kapladığı bellek (CUDA + pyannote, toplu 8; tahmin)
 HELPER_DIAR_WAIT_S = 15.0  # ayırma işi bu kadar sn ana işçide beklemedikçe yardımcıda ayırma açılmaz (açılış anı)
 HELPER_SWITCH_S = 20.0    # yardımcı kart bu kadar sn işsiz kalırsa öbür işe (metin <-> konuşmacı ayırma) geçer
+NIGHT_NOTE = "kapalı · gece modu (tek kart)"
+DISK_CHECK_S = 30.0       # diskteki boş yer en çok bu kadar sn'de bir ölçülür
 
 
 @dataclass
@@ -287,6 +290,19 @@ class Pipeline:
         self._dmem_since: float | None = None
         self._dmem_forced = False    # bekleme sınırı doldu: ayırma görevi verilene dek RAM'e bakılmaz
         self._drop_wids: set[str] = set()  # ekran koruması: ilk görevinde kapatılacak (monitörlü kart) ana işçiler
+        # gece modu (stt/governor.py): ısıya göre görev arası mola, soğuma molası, işçi yenileme, tek kart
+        self.gov = Governor(cfg.night_temp)
+        self._rest_until = 0.0                 # bu zamana dek ekran kartına yeni görev verilmez (gece modu molası)
+        self._gov_at = 0.0
+        self._gov_probing = False
+        self._night_was: bool | None = None
+        self._night_drops: set[str] = set()    # gece modunda kapatılacak öbür ana kart işçileri
+        self._born: dict[str, float] = {}      # işçi -> hazır olduğu an (gece modunda yenileme için)
+        self._gi: dict = {}
+        self._disk_lock = threading.Lock()
+        self._disk_at = 0.0
+        self._disk_ok = True
+        self._disk_warned = False
 
     # ---------------------------------------------------------- başlatma
     def start(self):
@@ -310,6 +326,7 @@ class Pipeline:
                          os.environ.pop("CUDA_VISIBLE_DEVICES"))
             from .engines import gpu_info
             gi = gpu_info()
+            self._gi = gi
             devices = detect_devices(cfg.gpus, gi)
             self.devices = devices
             if all(d.startswith("cuda") for d in devices):
@@ -574,14 +591,45 @@ class Pipeline:
         """Kuyruğun tamamı önden indirilmesin: en çok ``PREP_AHEAD`` video hazırlanmış / çevriliyor olsun. Eskiden
         100 videonun hepsi saatlerce önden indiriliyor, VAD'den geçiriliyor (i3'te GPU işçileriyle yarış, fan; diskte
         100 x ses.wav; arayüzde 100 kart birden "Metne çevriliyor 0/N"). Sonuç değişmez. Döner: False = durduruldu."""
-        while not self._pending_ahead_ok():
+        while not (self._pending_ahead_ok() and self._disk_free_ok()):
             if self._cancelled(item) or self._closing:
                 return False
             time.sleep(1.0)
         return not (self._cancelled(item) or self._closing)
 
     def _pending_ahead_ok(self) -> bool:
-        return self._prep_ahead() < PREP_AHEAD
+        limit = NIGHT_PREP_AHEAD if getattr(self.cfg, "night_mode", False) else PREP_AHEAD
+        return self._prep_ahead() < limit
+
+    def _disk_free_ok(self) -> bool:
+        """Çıktı klasörünün diskinde ``min_free_gb``'den az yer varsa yeni video indirilmez (çalışan işler biter, yer
+        açılınca kendiliğinden sürer). Eskiden disk dolunca kuyruktaki her video tek tek "başarısız" oluyordu (200
+        videoluk gece kuyruğu sabaha boşa giderdi)."""
+        need = float(getattr(self.cfg, "min_free_gb", 0) or 0)
+        if need <= 0:
+            return True
+        with self._disk_lock:
+            now = time.time()
+            if now - self._disk_at < DISK_CHECK_S:
+                return self._disk_ok
+            self._disk_at = now
+            try:
+                free = shutil.disk_usage(self.out_root).free / 2 ** 30
+            except OSError:
+                self._disk_ok = True
+                return True
+            ok = free >= need
+            if not ok and not self._disk_warned:
+                msg = (f"Diskte yer azaldı ({free:.1f} GB boş; en az {need:.0f} GB olmalı): yeni video indirilmiyor, "
+                       "çalışan işler bitiyor. Çıktı klasörünün olduğu diskte yer açın (Geri Dönüşüm Kutusu, eski "
+                       "indirmeler); yer açılınca kuyruk kendiliğinden devam eder.")
+                log.warning("%s", msg)
+                self.emit("notice", text=msg)
+            elif ok and self._disk_warned:
+                log.info("Diskte yer açıldı (%.1f GB boş): indirmeler sürüyor", free)
+            self._disk_warned = not ok
+            self._disk_ok = ok
+            return ok
 
     def _fail_item(self, item: Item, err: str, status: str = "failed"):
         with self.lock:
@@ -942,7 +990,7 @@ class Pipeline:
             while msg is not None:
                 self._safe_msg(msg)
                 msg = pool.get(0.01)
-        for step in (self._health, self._dispatch):
+        for step in (self._health, self._night_tick, self._dispatch):
             try:
                 step()
             except Exception:  # noqa: BLE001  (tek bir hata bütün motoru durdurmasın)
@@ -1061,11 +1109,17 @@ class Pipeline:
 
     def _dispatch(self):
         with self.lock:
+            night = bool(getattr(self.cfg, "night_mode", False))
+            if night:
+                self._night_single()
+            hold = self._night_on() and self._night_hold()  # gece modu: görev arası mola / soğuma molası
             main = set(self.pool.workers) if self.pool else set()
             shared = self._shared_gpu()
             dmem = self._diar_mem_ok() if self.dbacklog else True
             if shared and ("diar" in self.inflight or self.dqueued_n > 0 or (self._diar_turn() and dmem)):
                 main -= shared  # kart konuşmacı ayırmada (ya da sırası geldi): metin görevi verilmez
+            if hold:
+                main = set()
             while len(self.idle & main) - self.queued_n > 0 and self.backlog:
                 t = self.backlog.popleft()
                 job = self.jobs.get(t["job"])
@@ -1073,7 +1127,7 @@ class Pipeline:
                     continue  # iş iptal/başarısız: görevi at
                 self.queued_n += 1
                 self.pool.put(t)
-            if self.hpool is not None:
+            if self.hpool is not None and not night:  # gece modunda yardımcı (monitörlü) karta iş yok
                 self._helper_dispatch(len(main - self.fatal))
             if self.ddelayed:
                 now = time.time()
@@ -1088,6 +1142,8 @@ class Pipeline:
             if shared and (self.queued_n > 0 or any(w in self.inflight for w in shared)
                            or (self.backlog and not self._diar_turn())):
                 didle = 0  # kartta metin çevirisi sürüyor: ayırma bekler
+            if hold:
+                didle = 0
             while didle - self.dqueued_n > 0 and self.dbacklog:
                 t = self.dbacklog.popleft()
                 job = self.jobs.get(t["job"])
@@ -1096,8 +1152,167 @@ class Pipeline:
                 self.dqueued_n += 1
                 self.dpool.put(t)
                 self._dmem_since, self._dmem_forced, self._dmem_at = None, False, 0.0  # sonraki görev için yeniden
-            if self.hpool is not None:
+            if self.hpool is not None and not night:
                 self._helper_diar_dispatch()
+
+    # ---------------------------------------------------------- gece modu (stt/governor.py)
+    def _night_on(self) -> bool:
+        """Gece modu molaları şu an geçerli mi: ayarda açık, ekran kartında çalışılıyor, canlı yayın yok (canlı metin
+        gecikmesin)."""
+        if not getattr(self.cfg, "night_mode", False) or self.pool is None or getattr(self.pool, "threads", False):
+            return False
+        if not any(str(d).startswith("cuda") for d in self.devices):
+            return False
+        return not any(j.live_active for j in list(self.jobs.values()))
+
+    def _night_hold(self) -> bool:
+        return self.gov.holding() or time.time() < self._rest_until
+
+    def _night_card(self) -> int | None:
+        dev = self._diar_device()
+        return int(dev.split(":")[1]) if dev.startswith("cuda:") else None
+
+    @staticmethod
+    def _card_query() -> dict:
+        from .power import query
+        return query()
+
+    def _night_single(self) -> None:
+        """Gece modu: yalnız bir kart (belleği en büyük monitörsüz kart) çalışır. Yardımcı (monitörlü) kart işçileri
+        boştaysa kapatılır (görevdeki bitirince); "Hepsi" ile açılmış öbür ana kart işçileri ilk görevlerinde kapatılır
+        (ortak kuyruktan boştaki işçi güvenle kapatılamaz; görev bu karta döner). ``self.lock`` altında."""
+        if self.hpool is not None:
+            for wid in list(self.hpool.workers) + [HELPER_DIAR]:
+                pool = self.hdpool if wid == HELPER_DIAR else self.hpool
+                if wid in self._h_parked or wid in self.fatal or wid in self._h_gone:
+                    if wid in self._h_parked and self._h_note.get(wid) != NIGHT_NOTE:
+                        self._helper_note(wid, NIGHT_NOTE)
+                    continue
+                if pool is None:
+                    continue
+                queued = self.hqueued_n if pool is self.hpool else self.hdqueued_n
+                if wid in self.idle and wid not in self.inflight and not queued:
+                    log.info("[%s] gece modu: yardımcı kart kapatıldı (yalnız bir kart çalışır)", wid)
+                    self._park_helper(wid, "gece modu")
+                    self._helper_note(wid, NIGHT_NOTE)
+        spec = getattr(self.pool, "_spec", {}) or {}
+        card = self._diar_device()
+        if not card.startswith("cuda:") or not any(str(d) == card and w not in self.fatal for w, d in spec.items()):
+            return
+        others = {w for w, d in spec.items() if str(d).startswith("cuda:") and str(d) != card and w not in self.fatal
+                  and w not in self._drop_wids}
+        if others:
+            log.info("Gece modu: yalnız %s çalışır; öbür kart(lar) ilk görevlerinde kapatılıyor (%s)", card,
+                     ", ".join(sorted(others)))
+            self._drop_wids |= others
+            self._night_drops |= others
+            self._drop_msg = "gece modu: tek kart çalışır, bu kart kapatıldı (uygulama yeniden açılınca döner)"
+            for w in list(others):
+                if w in self.inflight:
+                    self._drop_worker(w)
+
+    def _night_tick(self) -> None:
+        """Gece modu adımı (pump): açılıp kapanmayı izler, ısıyı ``SAMPLE_S``'de bir ölçer (ayrı iş parçacığında),
+        uzun süredir açık işçileri boştayken yeniler."""
+        on = bool(getattr(self.cfg, "night_mode", False))
+        self.gov.set_target(getattr(self.cfg, "night_temp", 72))
+        if on != self._night_was:
+            first = self._night_was is None
+            self._night_was = on
+            if on:
+                log.info("Gece modu açık: tek kart, her görevden sonra ısıya göre mola (hedef %d°C, %d°C'de soğuma "
+                         "molası), işçiler %s; önden en çok %d video hazırlanır", self.gov.target, self.gov.hot,
+                         f"{self.cfg.night_recycle_min:.0f} dk'da bir yenilenir" if self.cfg.night_recycle_min
+                         else "yenilenmez", NIGHT_PREP_AHEAD)
+            else:
+                with self.lock:
+                    self._rest_until = 0.0
+                    self.gov = Governor(getattr(self.cfg, "night_temp", 72))
+                    self._drop_wids -= self._night_drops  # henüz kapatılmamış öbür kart işçileri çalışmaya devam eder
+                    self._night_drops = set()
+                    for wid, note in list(self._h_note.items()):
+                        if note == NIGHT_NOTE:
+                            self._helper_note(wid, HELPER_OFF)
+                if not first:
+                    log.info("Gece modu kapandı: normal hız")
+            if on or not first:
+                self._night_emit()
+        if not on:
+            return
+        now = time.time()
+        if not self.active():
+            return
+        if self._night_on():
+            self._night_recycle(now)
+        if not self._gov_probing and now - self._gov_at >= SAMPLE_S:
+            self._gov_probing = True
+            self._gov_at = now
+            self._spawn(self._night_probe)
+
+    def _night_probe(self) -> None:
+        """Çalışan kartın ısısını oku (nvidia-smi; ana süreçte CUDA açılmaz), mola süresini ayarla."""
+        try:
+            idx = self._night_card()
+            temp = None
+            if idx is not None:
+                try:
+                    temp = (self._card_query().get(idx) or {}).get("temp")
+                except Exception:  # noqa: BLE001
+                    log.debug("kart ısısı okunamadı", exc_info=True)
+            with self.lock:
+                msg = self.gov.update(temp, time.time())
+            if msg:
+                log.info("[gece] %s", msg)
+            self._night_emit()
+        finally:
+            self._gov_probing = False
+
+    def _night_recycle(self, now: float) -> None:
+        """Gece modu: ``night_recycle_min`` dakikadır açık işçi, boşta ve kuyruğunda görev yokken yeniden açılır
+        (saatlerce süren süreçte bellek parçalanması / sızıntı birikmesin; model ~30 sn'de yeniden yüklenir). Yalnız tek
+        işçili havuzda: boştaki işçi ortak kuyruktan yalnız orada kapanma işaretiyle güvenle kapatılır."""
+        mins = float(getattr(self.cfg, "night_recycle_min", 0) or 0)
+        if mins <= 0:
+            return
+        for pool in (self.pool, self.dpool):
+            if pool is None or getattr(pool, "threads", False) or len(pool.workers) != 1:
+                continue
+            wid = next(iter(pool.workers))
+            born = self._born.get(wid)
+            queued = self.dqueued_n if pool is self.dpool else self.queued_n
+            if born is None or now - born < mins * 60 or wid in self.fatal or wid in self._drop_wids:
+                continue
+            if wid not in self.idle or wid in self.inflight or queued > 0 or wid not in pool.alive():
+                continue
+            log.info("[gece] %s işçisi %.0f dakikadır açık: bellek birikmesin diye yenileniyor (model yeniden yüklenir)",
+                     wid, (now - born) / 60)
+            self._born.pop(wid, None)
+            pool.respawn(wid, idle=True)
+            self.idle.discard(wid)
+            if pool is self.dpool:
+                self.dqueued_n = 0
+            self.emit("worker", wid=wid, state="loading")
+
+    def night_state(self) -> dict:
+        """Arayüzdeki gece modu kutusu: {on, note, temp, rest, paused, card}."""
+        on = bool(getattr(self.cfg, "night_mode", False))
+        idx = self._night_card() if self.devices else None
+        card = (self._gi.get(idx) or {}).get("name") if idx is not None else None
+        if not on:
+            note = ""
+        elif not any(str(d).startswith("cuda") for d in self.devices):
+            note = "ekran kartı yok: mola uygulanmıyor"
+        elif any(j.live_active for j in list(self.jobs.values())):
+            note = "canlı yayın sürüyor: mola yok"
+        elif not self.active():
+            note = "açık · iş bekleniyor"
+        else:
+            note = self.gov.note()
+        return {"on": on, "note": note, "temp": self.gov.temp, "rest": round(self.gov.rest),
+                "paused": bool(on and self.gov.holding()), "card": card}
+
+    def _night_emit(self) -> None:
+        self.emit("night", **self.night_state())
 
     # ---------------------------------------------------------- yardımcı kart ("yardim")
     def _spawn(self, fn) -> None:
@@ -1538,6 +1753,7 @@ class Pipeline:
         if typ == "ready":
             self.idle.add(wid)
             self.ready_workers.add(wid)
+            self._born[wid] = time.time()
             if self._is_helper(wid):
                 self._h_last[wid] = time.time()
             self.emit("worker", wid=wid, state="idle")
@@ -1611,6 +1827,9 @@ class Pipeline:
         if typ == "done":
             self.restarts[wid] = 0  # çalışıyor: yeniden başlatma sayacı sıfırlanır
         self.idle.add(wid)
+        if getattr(self.cfg, "night_mode", False) and not (self._is_helper(wid) or self._is_hdiar(wid)):
+            # gece modu: kart her görevden sonra ısıya göre dinlenir (stt/governor.py)
+            self._rest_until = max(self._rest_until, time.time() + self.gov.rest)
         if self._is_helper(wid):  # yardımcı kart dinlenir (kart serinler, ölçüm yalnız başka programları görür)
             self._h_ready[wid] = time.time() + self.cfg.helper_rest_s
             self._h_last[wid] = time.time()

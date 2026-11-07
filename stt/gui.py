@@ -313,7 +313,7 @@ class App:
         return {"version": __version__, "settings": self.get_settings(), "engine": self._engine_state,
                 "dataset": self.dataset(), "pending": [{"uid": x["uid"], "title": x["title"], "source": x["source"]}
                                                        for x in self._pending],
-                "follows": self.follow_list()}
+                "follows": self.follow_list(), "night": self._night_state()}
 
     # ---------------------------------------------------------- güncelleme
     def _display_guard_loop(self) -> None:
@@ -440,7 +440,7 @@ class App:
                 "ui_diarize": c.ui_diarize,
                 "gpus": g if g in ("auto", "all", "yardim") else str(c.gpus), "gpu_cards": cards,
                 "helper_reserve_gb": c.helper_reserve_gb, "gpu_power_pct": c.gpu_power_pct,
-                "gpu_max_clock": c.gpu_max_clock,
+                "gpu_max_clock": c.gpu_max_clock, "night_mode": bool(c.night_mode), "night_temp": c.night_temp,
                 "browser_capture": bool(c.browser_capture), "ui_gpu": bool(c.ui_gpu),
                 "llm_provider": c.llm_provider or "none", "llm_model": c.llm_model or "",
                 "gemini_key_set": bool(llm.key("gemini")), "anthropic_key_set": bool(llm.key("claude")),
@@ -468,7 +468,7 @@ class App:
             upd["cookies_file"] = (s.get("cookies_file") or "").replace("\\", "/")
         if s.get("cookies_browser"):
             upd["cookies_browser"] = s["cookies_browser"]
-        for k in ("diarize", "ui_diarize", "fpl_auto", "browser_capture", "ui_gpu", "llm_news", "llm_qa"):
+        for k in ("diarize", "ui_diarize", "fpl_auto", "browser_capture", "ui_gpu", "llm_news", "llm_qa", "night_mode"):
             if k in s:
                 upd[k] = bool(s[k])
         if s.get("lang"):
@@ -481,7 +481,7 @@ class App:
         if "llm_model" in s:
             upd["llm_model"] = (s.get("llm_model") or "").strip()
         for k, typ in (("llm_budget_usd", float), ("api_port", int), ("follow_interval_h", float),
-                       ("helper_reserve_gb", float)):
+                       ("helper_reserve_gb", float), ("night_temp", int)):
             if s.get(k) not in (None, ""):
                 try:
                     upd[k] = typ(str(s[k]).replace(",", ".")) if typ is float else typ(s[k])  # "2,5" de olur
@@ -959,6 +959,25 @@ class App:
             self._push({"type": "diarizen", "done": True, "error": err})
         threading.Thread(target=run, daemon=True, name="stt-diarizen").start()
         return {"ok": True}
+
+    # ---------------------------------------------------------- gece modu (stt/governor.py)
+    def _night_state(self) -> dict:
+        if self._pipe is not None:
+            try:
+                return self._pipe.night_state()
+            except Exception:  # noqa: BLE001
+                log.debug("gece modu durumu okunamadı", exc_info=True)
+        return {"on": bool(self._cfg.night_mode), "note": ""}
+
+    def set_night_mode(self, on: bool) -> dict:
+        """Kart şeridindeki "Gece modu" düğmesi: hemen geçerli (motor yeniden açılmaz; kuyruk sürerken de)."""
+        save_settings({"night_mode": bool(on)})
+        self._cfg = load_config()
+        if self._pipe is not None:
+            self._pipe.cfg = self._cfg
+            self._pipe._llm = None
+        log.info("Gece modu %s (arayüzden)", "açıldı" if self._cfg.night_mode else "kapatıldı")
+        return {"ok": True, "night": self._night_state()}
 
     # ---------------------------------------------------------- iki kart güvenli düzen (stt/power.py)
     def safe_status(self) -> dict:
