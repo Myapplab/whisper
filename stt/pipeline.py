@@ -54,6 +54,7 @@ HELPER_OPEN_RAM_GB = 3.0
 HELPER_OPEN_COMMIT_GB = 6.0
 PAGEFILE_DUAL_GB = 40.0   # iki kart çalışacakken sanal bellek sınırı bundan küçükse açılışta bir kez uyarılır
 MEM_NOTICE_S = 3600.0     # bellek azaldı bildirimi en çok saatte bir
+STATS_S = 3600.0          # günlüğe "[verim]" satırı aralığı
 
 
 @dataclass
@@ -330,6 +331,12 @@ class Pipeline:
         self._memstat = memory_status          # RAM / sanal bellek ölçümü (testlerde değiştirilir)
         self._idle = user_idle_s               # klavye / fare en son kaç sn önce (Windows; bilinmiyorsa None)
         self._mem_noticed = 0.0
+        # verim (1.9.27): biten / hatalı işler (zaman, ses sn) ve saatlik özet (günlükte "[verim]", yerel API'de stats)
+        self._stat_done: deque = deque(maxlen=20000)
+        self._stat_failed: deque = deque(maxlen=20000)
+        self._stat_n = {"done": 0, "failed": 0}
+        self._stat_hour = {"t0": time.time(), "ram_min": None, "commit_min": None, "level_s": [0.0, 0.0, 0.0],
+                           "last": None}
         # gece modu (stt/governor.py): ısıya göre görev arası mola, soğuma molası, işçi yenileme, tek kart
         self.gov = Governor(cfg.night_temp)
         self._rest_until = 0.0                 # bu zamana dek ekran kartına yeni görev verilmez (gece modu molası)
@@ -506,6 +513,13 @@ class Pipeline:
 
     # ---------------------------------------------------------- olaylar (GUI)
     def emit(self, typ: str, item: Item | None = None, **data) -> None:
+        if item is not None and (typ == "done" or (typ == "failed" and not data.get("cancelled"))):
+            now = time.time()
+            if typ == "done":
+                self._stat_done.append((now, float(data.get("duration") or 0)))
+            else:
+                self._stat_failed.append(now)
+            self._stat_n[typ] += 1
         # motor kapanırken (hata / yeniden açılış) düşen iş kuyruktan silinmez: yeni motor onu sürdürür (1.9.27;
         # eskiden kapanışta sıra bekleyen işler "Durduruldu" olayıyla kalıcı kuyruktan siliniyordu)
         if item is not None and item.extra.get("uid") and (typ == "done" or (
@@ -1054,7 +1068,7 @@ class Pipeline:
             while msg is not None:
                 self._safe_msg(msg)
                 msg = pool.get(0.01)
-        for step in (self._health, self._night_tick, self._dispatch):
+        for step in (self._health, self._night_tick, self._recycle_tick, self._stats_tick, self._dispatch):
             try:
                 step()
             except Exception:  # noqa: BLE001  (tek bir hata bütün motoru durdurmasın)
@@ -1336,6 +1350,7 @@ class Pipeline:
                         log.info("[esnek] %s", msg)
                     if self.flex.ram_low and not was_low:
                         self._mem_notice(m)
+                    self._stat_sample(m, self.flex.level, time.time())
                     if self.flex.level != old:
                         if self.flex.level < 2:
                             self._flex_rest_until = 0.0
@@ -1529,10 +1544,20 @@ class Pipeline:
             self._gov_probing = False
 
     def _night_recycle(self, now: float) -> None:
-        """Gece modu: ``night_recycle_min`` dakikadır açık işçi, boşta ve kuyruğunda görev yokken yeniden açılır
-        (saatlerce süren süreçte bellek parçalanması / sızıntı birikmesin; model ~30 sn'de yeniden yüklenir). Yalnız tek
-        işçili havuzda: boştaki işçi ortak kuyruktan yalnız orada kapanma işaretiyle güvenle kapatılır."""
-        mins = float(getattr(self.cfg, "night_recycle_min", 0) or 0)
+        self._recycle(now, float(getattr(self.cfg, "night_recycle_min", 0) or 0))
+
+    def _recycle_tick(self) -> None:
+        """Gece modu dışında uzun kuyruk (1.9.27): işçiler ``recycle_min`` dakikada bir boştayken yenilenir (gece
+        modunda ``_night_tick`` kendi aralığıyla yeniler)."""
+        if getattr(self.cfg, "night_mode", False) or not self.active():
+            return
+        self._recycle(time.time(), float(getattr(self.cfg, "recycle_min", 0) or 0))
+
+    def _recycle(self, now: float, mins: float) -> None:
+        """``mins`` dakikadır açık işçi, boşta ve kuyruğunda görev yokken yeniden açılır (saatlerce süren süreçte bellek
+        parçalanması / sızıntı birikmesin; model ~30 sn'de yeniden yüklenir). Yalnız tek işçili havuzda: boştaki işçi
+        ortak kuyruktan yalnız orada kapanma işaretiyle güvenle kapatılır. İkinci kart (yardımcı / esnek) işçisi boştaysa
+        kapatılır; iş birikince yeniden açılır."""
         if mins <= 0:
             return
         for pool in (self.pool, self.dpool):
@@ -1545,14 +1570,67 @@ class Pipeline:
                 continue
             if wid not in self.idle or wid in self.inflight or queued > 0 or wid not in pool.alive():
                 continue
-            log.info("[gece] %s işçisi %.0f dakikadır açık: bellek birikmesin diye yenileniyor (model yeniden yüklenir)",
-                     wid, (now - born) / 60)
+            log.info("[yenileme] %s işçisi %.0f dakikadır açık: bellek birikmesin diye yenileniyor (model yeniden "
+                     "yüklenir)", wid, (now - born) / 60)
             self._born.pop(wid, None)
             pool.respawn(wid, idle=True)
             self.idle.discard(wid)
             if pool is self.dpool:
                 self.dqueued_n = 0
             self.emit("worker", wid=wid, state="loading")
+        with self.lock:
+            for wid in self._helper_wids():
+                born = self._born.get(wid)
+                if born is None or now - born < mins * 60 or wid in self._h_parked or wid in self.fatal \
+                        or wid in self._h_gone:
+                    continue
+                queued = self.hdqueued_n if wid == HELPER_DIAR else self.hqueued_n
+                if wid not in self.idle or wid in self.inflight or queued:
+                    continue
+                log.info("[yenileme] %s ikinci kart işçisi %.0f dakikadır açık: bellek birikmesin diye kapatıldı "
+                         "(iş birikince yeniden açılır)", wid, (now - born) / 60)
+                self._born.pop(wid, None)
+                self._park_helper(wid, HELPER_OFF)
+
+    # ---------------------------------------------------------- verim (1.9.27)
+    def stats(self, window: float = 3600.0) -> dict:
+        """Son ``window`` sn'de biten / hatalı iş ve işlenen ses (dk); açılıştan beri toplam (yerel API, "[verim]")."""
+        now = time.time()
+        done = [(t, a) for t, a in list(self._stat_done) if now - t <= window]
+        failed = [t for t in list(self._stat_failed) if now - t <= window]
+        return {"done_1h": len(done), "failed_1h": len(failed), "audio_min_1h": round(sum(a for _, a in done) / 60, 1),
+                "done_total": self._stat_n["done"], "failed_total": self._stat_n["failed"]}
+
+    def _stat_sample(self, m: dict | None, level: int, now: float) -> None:
+        """Esnek ölçümünden: saatin en düşük boş belleği ve kademelerde geçen süre."""
+        h = self._stat_hour
+        if m:
+            h["ram_min"] = m["ram_free"] if h["ram_min"] is None else min(h["ram_min"], m["ram_free"])
+            h["commit_min"] = m["commit_free"] if h["commit_min"] is None else min(h["commit_min"], m["commit_free"])
+        if h["last"] is not None:
+            h["level_s"][max(0, min(2, level))] += max(0.0, now - h["last"])
+        h["last"] = now
+
+    def _stats_tick(self) -> None:
+        """Saatte bir günlüğe "[verim]" satırı (o saatte iş olduysa): bir sonraki oturumda hız / bellek / esnek kademe
+        ölçümle ayarlansın."""
+        now = time.time()
+        h = self._stat_hour
+        span = now - h["t0"]
+        if span < STATS_S:
+            return
+        st = self.stats(span)
+        if st["done_1h"] or st["failed_1h"] or self.active():
+            with self.lock:
+                waiting = self._pending_futs + sum(1 for j in self.jobs.values() if j.status in ("run", "finalize"))
+            mem = ""
+            if h["ram_min"] is not None:
+                mem = f"; en düşük boş RAM {h['ram_min']:.1f} GB, sanal bellek {h['commit_min']:.1f} GB"
+            lv = h["level_s"]
+            log.info("[verim] son %.0f dk: %d video bitti (%.0f dk ses), %d hata; kuyrukta %d iş%s; esnek kademe süresi "
+                     "0/1/2: %.0f/%.0f/%.0f dk", span / 60, st["done_1h"], st["audio_min_1h"], st["failed_1h"], waiting,
+                     mem, lv[0] / 60, lv[1] / 60, lv[2] / 60)
+        self._stat_hour = {"t0": now, "ram_min": None, "commit_min": None, "level_s": [0.0, 0.0, 0.0], "last": None}
 
     def night_state(self) -> dict:
         """Arayüzdeki gece modu kutusu: {on, note, temp, rest, paused, card}."""

@@ -48,6 +48,9 @@ class Config:
     night_mode: bool = False
     night_temp: int = 72                 # gece modunda hedef kart ısısı (°C; 60-83)
     night_recycle_min: float = 90.0      # gece modunda işçi süreçleri bu kadar dakikada bir yenilenir (0 = kapalı)
+    # 1.9.27: gece modu dışında da uzun kuyrukta işçiler bu kadar dakikada bir boştayken yenilenir (bellek birikmesin;
+    # model ~30 sn'de yeniden yüklenir). 0 = kapalı
+    recycle_min: float = 180.0
     min_free_gb: float = 3.0             # diskte bundan az boş yer varsa yeni video indirilmez (bekler; 0 = kapalı)
     low_priority: bool = True            # tanıma süreçleri düşük öncelikte (bilgisayar donmasın)
     isolate_gpu: bool = True             # her işçi yalnızca kendi kartını görür (monitörlü kartta CUDA bağlamı yok)
@@ -264,6 +267,9 @@ def normalize(cfg: Config) -> Config:
     cfg.night_recycle_min = _num(cfg.night_recycle_min, 90.0, 0.0, 1440.0)
     if 0 < cfg.night_recycle_min < 20:
         cfg.night_recycle_min = 20.0  # model yüklemesi ~30 sn: daha sık yenileme işi yavaşlatır
+    cfg.recycle_min = _num(cfg.recycle_min, 180.0, 0.0, 1440.0)
+    if 0 < cfg.recycle_min < 20:
+        cfg.recycle_min = 20.0
     cfg.min_free_gb = _num(cfg.min_free_gb, 3.0, 0.0, 500.0)
     clk = int(_num(cfg.gpu_max_clock, 1600, 0, 3000))
     cfg.gpu_max_clock = 0 if clk <= 0 else max(900, clk)

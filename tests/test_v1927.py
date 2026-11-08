@@ -402,3 +402,54 @@ def test_pagefile_notice_two_cards(tmp_path, monkeypatch):
         p.fin.shutdown(wait=False)
         notes = [e for e in ev if e["type"] == "notice" and "sanal bellek" in e["text"].lower()]
         assert len(notes) == want
+
+
+# ---------------------------------------------------------------- 4. uzun çalışma: yenileme + verim
+def test_recycle_runs_outside_night_mode(tmp_path):
+    from test_stability import _job, _pipe
+    p = _pipe(tmp_path)                                                 # gece modu kapalı (esnek / normal)
+    job, tasks = _job(p, tmp_path)
+    p.backlog.clear()
+    p._on_msg({"type": "ready", "wid": "cuda:1"})
+    p._born["cuda:1"] = time.time() - 181 * 60
+    p._recycle_tick()
+    assert p.pool.respawned == ["cuda:1"] and p.pool.respawn_idle == [True]   # 3 saattir açık, boşta: yenilendi
+    q = _pipe(tmp_path / "b")
+    q.cfg.recycle_min = 0                                               # kapalı
+    _job(q, tmp_path / "b")
+    q._on_msg({"type": "ready", "wid": "cuda:1"})
+    q._born["cuda:1"] = 0
+    q._recycle_tick()
+    assert q.pool.respawned == []
+
+
+def test_recycle_parks_old_idle_helper(tmp_path):
+    from test_v199 import _pipe, _ready
+    p, job, tasks = _pipe(tmp_path, n=1)
+    p.backlog.clear()
+    _ready(p, "cuda:1", "cuda:0")                                       # ikinci kart açık ve boşta
+    p._born["cuda:0"] = time.time() - 200 * 60
+    p._recycle_tick()
+    assert "cuda:0" in p.hpool.stopped and "cuda:0" in p._h_parked     # kapatıldı; iş birikince yeniden açılır
+    assert p.pool.respawned == []                                       # ana kart yeni açıldı
+
+
+def test_stats_and_hourly_line(tmp_path, caplog):
+    import logging
+
+    from test_stability import _pipe
+    p = _pipe(tmp_path)
+    it = Item("url", "https://x/s1", key="u_s1")
+    it.extra["uid"] = "s1"
+    p.emit("done", it, duration=600.0)
+    p.emit("done", it, duration=1200.0)
+    p.emit("failed", it, error="indirilemedi")
+    p.emit("failed", it, error="Durduruldu.", cancelled=True)          # iptal hata sayılmaz
+    st = p.stats()
+    assert st["done_1h"] == 2 and st["audio_min_1h"] == 30.0 and st["failed_1h"] == 1
+    assert st["done_total"] == 2 and st["failed_total"] == 1
+    p._stat_hour["t0"] -= 3601
+    with caplog.at_level(logging.INFO, logger="stt"):
+        p._stats_tick()
+    assert any("[verim]" in r.message and "2 video" in r.message for r in caplog.records)
+    assert time.time() - p._stat_hour["t0"] < 5                         # yeni saat başladı
