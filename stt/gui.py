@@ -131,6 +131,8 @@ class App:
         self._st = None
         self._pending: list[dict] = []
         self._auto_paused = ""                 # ajan modu çökme döngüsü yüzünden durdu (sebep); "Devam et" kaldırır
+        from collections import deque
+        self._notices: deque = deque(maxlen=20)  # son uyarılar (yerel API /api/status: ajan Telegram'a iletebilsin)
         self._unclean_24h = 0
         try:  # uygulama kapanınca yarım kalan işler: açılışta "Devam et" önerilir (ajan modunda kendiliğinden sürer)
             self._pending = self._state().queue_all()
@@ -166,6 +168,8 @@ class App:
         """
         if ev.get("type") == "fatal":  # tüm işçiler başlatılamadı: motor hata durumunda görünsün
             self._engine_state.update(state="error", error=ev.get("error"))
+        if ev.get("type") in ("notice", "fatal"):
+            self._notices.append({"t": round(time.time()), "type": ev["type"], "text": ev.get("text") or ev.get("error")})
         self._track(ev)
         if ev.get("type") == "worker":  # son durum: sayfa yeniden açılırsa GPU kartları doğru görünsün
             for d in self._engine_state.get("devices", []):
@@ -210,6 +214,85 @@ class App:
 
     def jobs_list(self) -> list[dict]:
         return list(self._jobs.values())[-300:]
+
+    def api_status(self) -> dict:
+        """Yerel API /api/status: ajan (Hermes) kuyruk doluysa beklesin, meşgul / duraklatılmışken göndermesin, sorunları
+        Telegram'a iletebilsin."""
+        from .util import memory_status
+        pipe = self._pipe
+        working = 0
+        if pipe is not None:
+            with pipe.lock:
+                working = sum(1 for j in pipe.jobs.values() if j.status in ("prep", "run", "finalize"))
+        try:
+            total = self._state().queue_count()
+        except Exception:  # noqa: BLE001
+            total = 0
+        total = max(total, working)
+        busy = self._busy_msg()
+        m = memory_status()
+        return {"version": __version__, "engine": dict(self._engine_state), "jobs": self.job_counts(),
+                "queue": {"total": total, "working": working, "waiting": max(0, total - working)},
+                "accepting": not busy and not self._auto_paused, "busy": busy, "paused": self._auto_paused or None,
+                "auto_mode": bool(getattr(self._cfg, "auto_mode", False)), "pending_banner": len(self._pending),
+                "flex": pipe.flex_state() if pipe is not None else None,
+                "memory": {k: round(v, 1) for k, v in m.items()} if m else None,
+                "stats": pipe.stats() if pipe is not None else None, "notices": list(self._notices)[-10:]}
+
+    def lookup(self, urls: list) -> list[dict]:
+        """Yerel API /api/lookup: gönderilen linklerin son durumu (kalıcı kayıttan; uygulama yeniden açılsa da). Ajan
+        bitenleri bildirir, geçici hatayla düşenleri yeniden gönderir."""
+        from .api import retryable_error
+        from .sources import Item
+        st = self._state()
+        queued: dict = {}
+        for r in st.queue_all():
+            k = r.get("key")
+            if not k and r["kind"] == "url":
+                try:
+                    k = Item("url", r["source"]).compute_key()
+                except Exception:  # noqa: BLE001
+                    k = None
+            if k:
+                queued.setdefault(k, r)
+        working: set = set()
+        pipe = self._pipe
+        if pipe is not None:
+            with pipe.lock:
+                working = {k for k, j in pipe.jobs.items() if j.status in ("prep", "run", "finalize")}
+        out = []
+        for u in list(urls or [])[:2000]:
+            u = str(u or "").strip()
+            if not u:
+                continue
+            key = Item("url", u if re.match(r"^https?://", u, re.I) else "https://" + u).compute_key()
+            row = st.get(key)
+            real = row["key"] if row else key
+            it = {"url": u, "key": real, "status": "unknown", "title": (row or {}).get("title") or None,
+                  "out_dir": None, "txt": None, "json": None, "error": None, "retryable": None,
+                  "updated": (row or {}).get("updated")}
+            s = (row or {}).get("status")
+            if key in working or real in working:
+                it["status"] = "working"
+            elif key in queued or real in queued:
+                it["status"] = "waiting"
+            elif s == "done":
+                info = row.get("info") or {}
+                if row.get("out_dir") and Path(row["out_dir"]).exists():
+                    js = info.get("json")
+                    it.update(status="done", out_dir=row["out_dir"], json=js,
+                              txt=str(Path(js).with_suffix(".txt")) if js else None)
+                else:
+                    it["status"] = "missing"  # çıktı klasörü silinmiş / taşınmış: yeniden gönderilirse yeniden işlenir
+            elif s in ("failed", "drm", "skipped_noaudio"):
+                err = row.get("error") or s
+                it.update(status="failed", error=err, retryable=s == "failed" and retryable_error(err))
+            elif s in ("running", "interrupted"):
+                it.update(status="interrupted", error=row.get("error") or None, retryable=True)
+            elif s:
+                it["status"] = s  # cancelled
+            out.append(it)
+        return out
 
     def results(self, limit: int = 100) -> list[dict]:
         return read_jsonl(Path(self._cfg.out_dir).resolve() / "index.jsonl")[-limit:][::-1]

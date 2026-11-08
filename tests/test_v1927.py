@@ -597,3 +597,132 @@ def test_update_while_busy_keeps_queue(tmp_path, monkeypatch):
     assert r["ok"] and killed == [1] and app._stop.is_set() and relaunched == [1] and shut == [1]
     from stt.state import State
     assert [x["uid"] for x in State(tmp_path / "cikti" / ".stt").queue_all()] == [uid]   # kuyruk korundu
+
+
+# ---------------------------------------------------------------- 6. yerel API
+def _api(app):
+    import json as _j
+    import socket
+    import urllib.error
+    import urllib.request
+
+    from stt.api import start_api
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    srv = start_api(app, port)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+    def req(path, body=None, headers=None, raw=None):
+        data = raw if raw is not None else (_j.dumps(body).encode() if body is not None else None)
+        r = urllib.request.Request(f"http://127.0.0.1:{port}{path}", data=data,
+                                   headers={"Content-Type": "application/json", **(headers or {})})
+        try:
+            with opener.open(r, timeout=10) as resp:
+                return resp.status, _j.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            return e.code, _j.loads(e.read() or b"{}")
+    return srv, req
+
+
+def test_api_rejects_browser_and_rebinding(tmp_path, monkeypatch):
+    import stt.gui as g
+    monkeypatch.chdir(tmp_path)
+    app = g.App()
+    srv, req = _api(app)
+    try:
+        assert req("/api/status")[0] == 200                             # yerel program (Hermes, curl)
+        assert req("/api/status", headers={"Host": "evil.example:8765"})[0] == 403        # DNS yeniden bağlama
+        assert req("/api/jobs", {"inputs": ["https://www.youtube.com/watch?v=abcdefghijk"]},
+                   headers={"Origin": "https://evil.example"})[0] == 403                # web sayfası iş ekleyemez
+        assert req("/api/status", headers={"Origin": "null"})[0] == 403
+        assert req("/api/status", headers={"Sec-Fetch-Site": "cross-site"})[0] == 403
+        assert req("/api/status", headers={"Origin": "http://localhost:3000"})[0] == 200
+        assert app._inbox.empty()
+    finally:
+        srv.shutdown()
+
+
+def test_api_jobs_busy_is_503(tmp_path, monkeypatch):
+    import stt.gui as g
+    monkeypatch.chdir(tmp_path)
+    app = g.App()
+    srv, req = _api(app)
+    try:
+        app._training = True                                            # eğitim sürüyor: eskiden 200 + ok:false (link kayboluyordu)
+        code, r = req("/api/jobs", {"inputs": ["https://www.youtube.com/watch?v=abcdefghijk"]})
+        assert code == 503 and r["retry"] is True and app._inbox.empty() and app._state().queue_count() == 0
+        app._training = False
+        app._auto_paused = "çökme döngüsü"
+        code, r = req("/api/jobs", {"inputs": ["https://www.youtube.com/watch?v=abcdefghijk"]})
+        assert code == 503 and "çökme" in r["error"] and app._inbox.empty()
+        app._auto_paused = ""
+        code, r = req("/api/jobs", {"inputs": ["https://www.youtube.com/watch?v=abcdefghijk"], "options": {"lang": "en"}})
+        assert code == 200 and r["ok"] and r["count"] == 1 and len(r["uids"]) == 1
+    finally:
+        srv.shutdown()
+
+
+def test_api_jobs_bad_input_4xx(tmp_path, monkeypatch):
+    import stt.gui as g
+    monkeypatch.chdir(tmp_path)
+    app = g.App()
+    srv, req = _api(app)
+    try:
+        code, r = req("/api/jobs", {"inputs": ["https://www.youtube.com/@Arsenal"]})
+        assert code == 422 and r["ok"] is False                        # kanal linki: /api/channel
+        assert req("/api/jobs", {"inputs": []})[0] == 400
+        assert req("/api/jobs", raw=b"{bozuk")[0] == 400
+        code, r = req("/api/jobs", {"url": "https://youtu.be/abcdefghijk"})   # tek link alanı da olur
+        assert code == 200 and r["count"] == 1
+    finally:
+        srv.shutdown()
+
+
+def test_api_status_queue_fields(tmp_path, monkeypatch):
+    import stt.gui as g
+    monkeypatch.chdir(tmp_path)
+    app = g.App()
+    srv, req = _api(app)
+    try:
+        req("/api/jobs", {"inputs": ["https://www.youtube.com/watch?v=abcdefghijk", "https://www.youtube.com/watch?v=bbbbbbbbbbb"]})
+        app._push({"type": "notice", "text": "Bilgisayarın belleği azaldı"})
+        code, st = req("/api/status")
+        assert code == 200 and st["queue"] == {"total": 2, "working": 0, "waiting": 2}
+        assert st["accepting"] is True and st["auto_mode"] is False and st["paused"] is None
+        assert st["notices"][-1]["text"] == "Bilgisayarın belleği azaldı" and st["version"]
+        assert "commit_free" in (st["memory"] or {"commit_free": 0})
+        app._training = True
+        assert req("/api/status")[1]["accepting"] is False
+    finally:
+        srv.shutdown()
+
+
+def test_api_lookup_statuses(tmp_path, monkeypatch):
+    import stt.gui as g
+    from stt.sources import Item
+    monkeypatch.chdir(tmp_path)
+    app = g.App()
+    st = app._state()
+    U = {n: f"https://www.youtube.com/watch?v={n * 11}" for n in "abcde"}
+    key = {n: Item("url", u).compute_key() for n, u in U.items()}
+    out = tmp_path / "out" / "a"
+    out.mkdir(parents=True)
+    st.set(key["a"], source=U["a"], status="done", title="A", out_dir=str(out), info={"json": str(out / "a.json")})
+    st.set(key["b"], source=U["b"], status="failed", title="B", error="Video bulunamadı ya da kaldırılmış.")
+    st.set(key["c"], source=U["c"], status="failed", title="C", error="İnternet bağlantısı sorunu. (timed out)")
+    st.queue_add("q", "url", U["d"], "D", {})
+    srv, req = _api(app)
+    try:
+        code, r = req("/api/lookup", {"urls": [U[n] for n in "abcde"] + ["https://youtu.be/aaaaaaaaaaa"]})
+        assert code == 200
+        by = [(x["status"], x["retryable"]) for x in r["items"]]
+        assert by == [("done", None), ("failed", False), ("failed", True), ("waiting", None), ("unknown", None),
+                      ("done", None)]                                    # kısa link de aynı video
+        a = r["items"][0]
+        assert a["out_dir"] == str(out) and a["txt"].endswith("a.txt") and a["title"] == "A"
+        code, r = req("/api/lookup?url=" + U["b"].replace("?", "%3F").replace("=", "%3D"))
+        assert code == 200 and r["items"][0]["status"] == "failed"
+    finally:
+        srv.shutdown()
