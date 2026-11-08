@@ -255,3 +255,150 @@ def test_close_stops_downloads_of_old_engine(tmp_path):
     p.close()                                                           # eski motorun indirmesi yenisiyle çakışmasın
     assert str(job.work) in fetch.CANCELLED
     fetch.CANCELLED.discard(str(job.work))
+
+
+# ---------------------------------------------------------------- 3. esnek güç 2: bellek + kullanıcı yokken
+def test_flex_memory_escalates_at_once():
+    from stt.flex import Flex
+    f = Flex()
+    msg = f.update(10, 8.0, 0, commit_free=3.5)                         # sanal bellek az: tek ölçüm yeter
+    assert "kademe 0 → 1" in msg and f.level == 1 and f.ram_low and not f.mem_crit
+    assert "kademe 1 → 2" in f.update(10, 8.0, 10, commit_free=1.5) and f.mem_crit
+    g = Flex()
+    g.update(10, 0.8, 0, commit_free=20)                                # RAM kritik
+    assert g.level == 2 and g.mem_crit
+    h = Flex()
+    assert h.update(50, 8.0, 0, commit_free=20) == "" and h.level == 0  # işlemci: tek sıçrama yetmez (eskisi gibi)
+
+
+def test_flex_away_ignores_cpu_not_memory():
+    from stt.flex import Flex
+    f = Flex()
+    f.update(80, 8, 0, commit_free=20, idle_s=10)
+    f.update(80, 8, 10, commit_free=20, idle_s=20)
+    assert f.level == 2                                                 # kullanıcı başında: başka programlar yavaşlatır
+    msg = f.update(80, 8, 20, commit_free=20, idle_s=400)               # 5 dk'dır fare / klavye yok
+    assert f.level == 0 and "kimse yok" in msg and f.away
+    assert f.update(90, 8, 30, commit_free=20, idle_s=410) == "" and f.level == 0   # yokken işlemci yavaşlatmaz
+    f.update(90, 8, 40, commit_free=3.0, idle_s=420)
+    assert f.level == 1                                                 # bellek koruması yokken de geçerli
+    f.update(90, 8, 50, commit_free=20, idle_s=1)                       # kullanıcı döndü: eski esnek davranış
+    assert f.update(90, 8, 60, commit_free=20, idle_s=2) and f.level == 2
+
+
+def test_flex_calm_needs_commit():
+    from stt.flex import CALM_S, Flex
+    f = Flex()
+    f.update(10, 8, 0, commit_free=3.0)
+    f.update(5, 8, 10, commit_free=5.0)                                 # 4-6 GB arası: sakin sayılmaz
+    assert f.update(5, 8, 10 + CALM_S + 1, commit_free=5.0) == "" and f.level == 1
+    f.update(5, 8, 200, commit_free=7.0)
+    assert "kademe 1 → 0" in f.update(5, 8, 200 + CALM_S, commit_free=7.0)
+
+
+def test_user_idle_unknown_off_windows():
+    import os
+
+    from stt.flex import idle_from_ticks, user_idle_s
+    if os.name != "nt":
+        assert user_idle_s() is None                                    # bilinmiyor = kullanıcı var sayılır
+    assert idle_from_ticks(10_000, 4_000) == 6.0
+    assert idle_from_ticks(5, 0xFFFFFFF0) == 0.021                      # GetTickCount 49,7 günde bir başa döner
+
+
+MEM_LOW = {"ram_total": 24, "ram_free": 6.0, "commit_total": 32, "commit_free": 1.5}
+MEM_OK = {"ram_total": 24, "ram_free": 9.0, "commit_total": 48, "commit_free": 12.0}
+
+
+def test_mem_crit_pauses_prep_even_flex_off(tmp_path):
+    from test_v1921 import _flex_pipe
+    p, job, tasks = _flex_pipe(tmp_path, 0)
+    p.cfg.gpu_flex = False                                              # esnek kapalı: bellek koruması yine çalışır
+    p._flex_at = 0
+    p._flex_sampler = type("S", (), {"sample": lambda s: (5.0, 10.0)})()
+    p._memstat = lambda: dict(MEM_LOW)
+    p._idle = lambda: None
+    p._prep_ahead = lambda: 0
+    p._flex_tick()
+    assert p.flex.mem_crit and not p._pending_ahead_ok()                # yeni video indirilmez
+    assert p._flex_level() == 0                                         # esnek kapalı: kart dağıtımı değişmez
+    p._memstat = lambda: dict(MEM_OK)
+    p._flex_at = 0
+    p._flex_tick()
+    assert not p.flex.mem_crit and p._pending_ahead_ok()
+
+
+def test_memory_pressure_notice_once_per_hour(tmp_path):
+    from test_v1921 import _flex_pipe
+    p, job, tasks = _flex_pipe(tmp_path, 0)
+    ev = []
+    p.events = ev.append
+    p._flex_sampler = type("S", (), {"sample": lambda s: (5.0, 10.0)})()
+    p._idle = lambda: None
+    for mem in (MEM_LOW, MEM_OK, MEM_LOW):
+        p._memstat = lambda m=mem: dict(m)
+        p._flex_at = 0
+        p._flex_tick()
+    notes = [e for e in ev if e["type"] == "notice"]
+    assert len(notes) == 1 and "sanal bellek" in notes[0]["text"].lower()
+    assert "16384" in notes[0]["text"]                                  # sınır 32 GB: sayfa dosyası ipucu
+
+
+def test_helper_not_opened_when_memory_low(tmp_path):
+    from test_v199 import _pipe, _ready
+
+    from stt.pipeline import HELPER_OFF
+    p, job, tasks = _pipe(tmp_path, n=6)
+    p._h_parked["cuda:0"] = HELPER_OFF
+    p.load = {"util": 0, "used_mb": 500.0, "total_mb": 10240.0}        # kartta yer var
+    p._memstat = lambda: dict(MEM_LOW)                                  # ama bilgisayarın belleği az
+    _ready(p, "cuda:1")
+    p._dispatch()
+    p._dispatch()
+    assert p.hpool.respawned == [] and "bellek" in p._h_note["cuda:0"]
+    p._memstat = lambda: dict(MEM_OK)
+    p._h_ready["cuda:0"] = 0
+    p._dispatch()
+    p._dispatch()
+    assert p.hpool.respawned == ["cuda:0"]                              # bellek açılınca ikinci kart açılır
+
+
+def test_hdiar_not_opened_when_memory_low(tmp_path, monkeypatch):
+    from test_v199 import FakeDiarPool, _diar_pipe
+    p, ds = _diar_pipe(tmp_path, monkeypatch)
+    p.load = {"util": 0, "used_mb": 1500.0, "total_mb": 10240.0}
+    p._memstat = lambda: dict(MEM_LOW)
+    p._h_probe.clear()
+    p._dispatch()
+    p._dispatch()
+    assert "diar2" in p._h_parked and FakeDiarPool.made == [] and "bellek" in p._h_note["diar2"]
+
+
+def test_pagefile_notice_two_cards(tmp_path, monkeypatch):
+    import stt.engines as eng
+    import stt.pipeline as pl
+    import stt.power as pw
+    from test_v1917 import _cards
+    from test_v1921 import GI_FREE
+
+    class P:
+        def __init__(self, devices, ecfg, *a, **k):
+            self.workers, self.load_lock = {d: d for d in devices}, None
+
+        def start(self):
+            pass
+    monkeypatch.setattr(eng, "gpu_info", lambda *a, **k: dict(GI_FREE))
+    monkeypatch.setattr(eng, "resolve_model_path", lambda m: "m")
+    monkeypatch.setattr(pl, "WorkerPool", P)
+    monkeypatch.setattr(pw, "query", lambda: _cards(224, 245))
+    monkeypatch.setattr(pw, "reapply", lambda *a, **k: False)
+    for total, want in ((32.0, 1), (56.0, 0)):
+        p = pl.Pipeline(Config(out_dir=tmp_path / str(total)))
+        ev = []
+        p.events = ev.append
+        p._memstat = lambda t=total: {"ram_total": 24, "ram_free": 9, "commit_total": t, "commit_free": 12}
+        p.start()
+        p.prep.shutdown(wait=False)
+        p.fin.shutdown(wait=False)
+        notes = [e for e in ev if e["type"] == "notice" and "sanal bellek" in e["text"].lower()]
+        assert len(notes) == want

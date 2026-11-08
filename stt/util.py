@@ -157,6 +157,13 @@ PAGEFILE_HINT = ("Sanal belleği büyütün: Başlat'a 'Gelişmiş sistem ayarla
                  "yönet' işaretli olsun (ya da C: için Sistem tarafından yönetilen boyut) → Tamam → yeniden başlatın.")
 
 
+# iki ekran kartıyla uzun kuyruk (1.9.27): sistem yönetimli küçük sayfa dosyası dolunca Windows programları kapatıyordu
+PAGEFILE_DUAL_HINT = ("Sanal belleği büyütün: Başlat'a 'Gelişmiş sistem ayarlarını görüntüle' yazın → Performans: "
+                      "Ayarlar → Gelişmiş → Sanal bellek: Değiştir → 'otomatik yönet' işaretini kaldırın → C: → Özel "
+                      "boyut: başlangıç 16384, en çok 32768 (MB) → Ayarla → Tamam → bilgisayarı yeniden başlatın "
+                      "(C: diskinde ~32 GB boş yer gerekir).")
+
+
 def memory_text() -> str:
     m = memory_status()
     if not m:

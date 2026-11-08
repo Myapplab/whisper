@@ -235,6 +235,7 @@ def test_pipeline_start_uses_one_card_until_power_set(tmp_path, monkeypatch):
         events.clear()
         p = pl.Pipeline(Config(out_dir=tmp_path, gpu_flex=False))  # esnek düzen (1.9.21) test_v1921'de
         p.events = events.append
+        p._memstat = lambda: None                                      # sayfa dosyası uyarısı (1.9.27) bu testin konusu değil
         p.start()
         assert p.devices == want and made[0] == want
         assert any(e["type"] == "notice" for e in events) == (len(want) == 1)

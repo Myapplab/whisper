@@ -17,8 +17,16 @@ Yükselme hızlı (``UP_SAMPLES`` ardışık ölçüm, ~20 sn), inme yavaş ve k
 kalınca bir kademe): kısa sıçramalarda kartlar açılıp kapanmasın. Ölçülemiyorsa (eski Windows / izin yok) kademe 0.
 
 İşlemci önceliği zaten düşük (işçiler BELOW_NORMAL, yardımcı IDLE): Windows anlık paylaşımı yapar; bu modül işin
-miktarını da azaltır (öncelik, bellek ve ısı gibi ortak kaynakları korumaz). ``Flex`` saf mantıktır (test edilebilir);
-ölçüm ``CpuSampler``da.
+miktarını da azaltır. ``Flex`` saf mantıktır (test edilebilir); ölçüm ``CpuSampler``da.
+
+1.9.27 (esnek güç 2): kullanıcıda esnek düzen açıkken "uygulamaları kapattı, kendisi kapandı, bilgisayar kastı, işler
+silindi". Sebep sanal bellek (commit = RAM + sayfa dosyası; kullanıcıda ~32 GB): 3-4 ağır süreç + tarayıcı onu
+dolduruyor, Windows programları kapatıyordu; eskiden yalnız işlemciye ve boş RAM'e bakılıyordu. Artık:
+  - boş sanal bellek < ``COMMIT_LOW_GB`` ya da boş RAM < ``RAM_LOW_GB``: HEMEN (tek ölçüm) kademe 1, ikinci kart boşta
+    kalınca çabuk kapanır (``ram_low``; belleği boşalır);
+  - < ``COMMIT_CRIT_GB`` / < ``RAM_CRIT_GB``: kademe 2 + ``mem_crit``: yeni video indirilmez (esnek kapalıyken de);
+  - bilgisayar başında kimse yokken (``AWAY_S`` fare / klavye yok) başka programların işlemci yükü yavaşlatmaz (tam
+    hız); bellek koruması sürer. Kullanıcı dönünce eski esnek davranış.
 """
 from __future__ import annotations
 
@@ -29,8 +37,13 @@ UP1_CPU = 35.0        # başka programlar makinenin bu kadar %'sini kullanınca 
 UP2_CPU = 60.0        # ... bu kadar %'sini kullanınca kademe 2
 CALM_CPU = 20.0       # bunun altında "sakin"
 RAM_LOW_GB = 2.0      # boş RAM bundan azsa en az kademe 1
+RAM_CRIT_GB = 1.0     # boş RAM bundan azsa kademe 2 + yeni indirme yok
 RAM_OK_GB = 3.5       # boş RAM bunun üstündeyse "sakin" sayılabilir
-UP_SAMPLES = 2        # yükselme için ardışık ölçüm (tek sıçrama yetmez)
+COMMIT_LOW_GB = 4.0   # boş sanal bellek bundan azsa en az kademe 1 (ikinci kart bırakır)
+COMMIT_CRIT_GB = 2.0  # boş sanal bellek bundan azsa kademe 2 + yeni indirme yok
+COMMIT_OK_GB = 6.0    # boş sanal bellek bunun üstündeyse "sakin" sayılabilir
+AWAY_S = 300.0        # bu kadar sn fare / klavye kullanılmadıysa bilgisayar başında kimse yok
+UP_SAMPLES = 2        # işlemci yüzünden yükselme için ardışık ölçüm (tek sıçrama yetmez; bellek beklemez)
 CALM_S = 60.0         # bir kademe inmek için bu kadar sn sakin
 REST_L2 = 8.0         # kademe 2: ana kart her görevden sonra bu kadar dinlenir (sn)
 PREP_AHEAD_L1 = 2     # kademe 1-2: önden hazırlanan video
@@ -38,34 +51,51 @@ NOTE_L1 = "esnek: bilgisayar kullanılıyor, bu kart bekliyor"
 
 
 class Flex:
-    """Başka programların yüküne göre kademe. ``update(others_pct, ram_free_gb, now)`` her ölçümde çağrılır."""
+    """Başka programların yüküne ve belleğe göre kademe. ``update(others_pct, ram_free_gb, now, commit_free_gb,
+    idle_s)`` her ölçümde çağrılır."""
 
     def __init__(self):
         self.level = 0
         self.others: float | None = None
         self.ram: float | None = None
-        self.ram_low = False     # son ölçümde boş RAM az mıydı (bekleyen ikinci kart daha erken kapatılır)
+        self.commit: float | None = None
+        self.idle: float | None = None
+        self.away = False        # bilgisayar başında kimse yok (AWAY_S'dir fare / klavye yok)
+        self.ram_low = False     # son ölçümde RAM ya da sanal bellek az mıydı (bekleyen ikinci kart hemen kapatılır)
+        self.mem_crit = False    # bellek kritik: yeni video indirilmez / hazırlanmaz
         self._up = 0
         self._calm_since: float | None = None
 
-    def update(self, others: float | None, ram_free: float | None, now: float) -> str:
+    def update(self, others: float | None, ram_free: float | None, now: float, commit_free: float | None = None,
+               idle_s: float | None = None) -> str:
         """Dönüş: günlüğe yazılacak değişiklik ("" = değişiklik yok)."""
-        self.others, self.ram = others, ram_free
-        if others is None and ram_free is None:
+        self.others, self.ram, self.commit, self.idle = others, ram_free, commit_free, idle_s
+        self.away = idle_s is not None and idle_s >= AWAY_S
+        if others is None and ram_free is None and commit_free is None:
             return ""  # ölçülemedi: son durum sürer
-        cpu = others or 0.0
-        low_ram = ram_free is not None and ram_free < RAM_LOW_GB
-        self.ram_low = low_ram
-        want = 2 if cpu >= UP2_CPU else 1 if (cpu >= UP1_CPU or low_ram) else 0
+        low = (ram_free is not None and ram_free < RAM_LOW_GB) or (commit_free is not None and commit_free < COMMIT_LOW_GB)
+        crit = (ram_free is not None and ram_free < RAM_CRIT_GB) or \
+            (commit_free is not None and commit_free < COMMIT_CRIT_GB)
+        self.ram_low, self.mem_crit = low, crit
+        cpu = 0.0 if self.away else (others or 0.0)  # kimse yokken başka programlar için işlemci bırakmaya gerek yok
+        mem_want = 2 if crit else 1 if low else 0
+        want = max(mem_want, 2 if cpu >= UP2_CPU else 1 if cpu >= UP1_CPU else 0)
         if want > self.level:
-            self._up += 1
             self._calm_since = None
+            if mem_want >= want:  # bellek beklemez: dolunca Windows programları kapatıyordu
+                old, self.level, self._up = self.level, want, 0
+                return f"bellek azaldı ({self._what()}): kademe {old} → {self.level} ({self.describe()})"
+            self._up += 1
             if self._up >= UP_SAMPLES:
                 old, self.level, self._up = self.level, want, 0
                 return f"başka programlar yükte ({self._what()}): kademe {old} → {self.level} ({self.describe()})"
             return ""
         self._up = 0
-        calm = cpu < CALM_CPU and (ram_free is None or ram_free >= RAM_OK_GB)
+        mem_ok = (ram_free is None or ram_free >= RAM_OK_GB) and (commit_free is None or commit_free >= COMMIT_OK_GB)
+        if self.level and self.away and mem_ok:  # kimse yok, bellek yeterli: beklemeden tam güç
+            old, self.level, self._calm_since = self.level, 0, None
+            return f"bilgisayar başında kimse yok ({self._what()}): kademe {old} → 0 ({self.describe()})"
+        calm = cpu < CALM_CPU and mem_ok
         if self.level == 0 or not calm:
             self._calm_since = None
             return ""
@@ -85,17 +115,48 @@ class Flex:
             parts.append(f"işlemci %{self.others:.0f}")
         if self.ram is not None:
             parts.append(f"boş RAM {self.ram:.1f} GB")
+        if self.commit is not None:
+            parts.append(f"boş sanal bellek {self.commit:.1f} GB")
+        if self.away:
+            parts.append("bilgisayar başında kimse yok")
         return ", ".join(parts) or "ölçülemedi"
 
     def describe(self) -> str:
-        return ("tam güç", "ikinci kart bekliyor", f"ikinci kart bekliyor, ana kart her işten sonra {REST_L2:.0f} sn "
-                                                  "dinleniyor")[self.level]
+        d = ("tam güç", "ikinci kart bekliyor", f"ikinci kart bekliyor, ana kart her işten sonra {REST_L2:.0f} sn "
+                                                "dinleniyor")[self.level]
+        return d + ("; bellek kritik: yeni video indirilmiyor" if self.mem_crit else "")
 
     def note(self) -> str:
         """Arayüz için kısa durum."""
         if self.level == 0:
-            return "tam güç"  # ölçüm her 10 sn: değer arayüzde bayatlamasın diye yazılmaz (yalnız kademe değişince olay)
+            # ölçüm her 10 sn: değer arayüzde bayatlamasın diye yazılmaz (yalnız kademe değişince olay)
+            return "tam güç" + (" · başında kimse yok" if self.away else "")
         return f"yavaşladı ({self._what()}): {self.describe()}"
+
+
+def idle_from_ticks(now_ms: int, last_ms: int) -> float:
+    """GetTickCount / GetLastInputInfo (32 bit ms, 49,7 günde bir başa döner) farkı, sn."""
+    return ((int(now_ms) - int(last_ms)) & 0xFFFFFFFF) / 1000.0
+
+
+def user_idle_s() -> float | None:
+    """Klavye / fare en son kaç sn önce kullanıldı (bu oturumda). Windows değilse ya da okunamazsa None (= kullanıcı
+    var sayılır; eski davranış)."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class LII(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.UINT), ("dwTime", wintypes.DWORD)]
+        lii = LII()
+        lii.cbSize = ctypes.sizeof(LII)
+        if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(lii)):
+            return None
+        return idle_from_ticks(ctypes.windll.kernel32.GetTickCount() & 0xFFFFFFFF, lii.dwTime)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # ------------------------------------------------------------------ ölçüm

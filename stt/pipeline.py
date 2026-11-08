@@ -15,7 +15,7 @@ from .audio import plan_chunks
 from .config import Config, diar_agc_on
 from .governor import NIGHT_PREP_AHEAD, SAMPLE_S, Governor
 from .flex import NOTE_L1 as FLEX_NOTE, PREP_AHEAD_L1 as FLEX_PREP_AHEAD, REST_L2 as FLEX_REST_S
-from .flex import SAMPLE_S as FLEX_SAMPLE_S, Flex
+from .flex import SAMPLE_S as FLEX_SAMPLE_S, Flex, user_idle_s
 from .fetch import Cancelled, DRMProtected, FetchError, LiveStream, SkipItem, is_transient, prepare_audio  # noqa: F401
 from .merge import apply_labels, assign_speakers, label_speakers, label_speakers_all, merge_chunks
 from .outputs import to_txt, write_all
@@ -24,7 +24,7 @@ from .state import State
 from .dataset import (MAX_PATH, classify, fpl_data, index_row, out_paths, set_team_manager, update_index,  # noqa: F401
                       write_match_json)
 from .match import looks_like_presser, parse_match
-from .util import fmt_clock, keep_awake, log, text_hash
+from .util import PAGEFILE_DUAL_HINT, fmt_clock, keep_awake, log, memory_status, text_hash
 from .workers import WorkerPool
 
 DIAR_MEM_MAX_WAIT_S = 600.0  # RAM yetmezse ayırma en çok bu kadar sırada tutulur (sonra işçi kendisi bekler/dener)
@@ -48,6 +48,12 @@ HELPER_SWITCH_S = 20.0    # yardımcı kart bu kadar sn işsiz kalırsa öbür i
 NIGHT_NOTE = "kapalı · gece modu (tek kart)"
 FLEX_RESERVE_GB = 1.0      # esnek ikinci kartta (monitörsüz) başka programlara bırakılan bellek: tarayıcı Intel'le çizer
 DISK_CHECK_S = 30.0       # diskteki boş yer en çok bu kadar sn'de bir ölçülür
+# ikinci karta (metin ya da konuşmacı ayırma) model yüklemek için bilgisayarda en az bu kadar boş bellek (GB; 1.9.27).
+# Model yüklenirken RAM ve sanal bellek birkaç GB artar; kullanıcıda sanal bellek dolunca Windows programları kapatıyordu.
+HELPER_OPEN_RAM_GB = 3.0
+HELPER_OPEN_COMMIT_GB = 6.0
+PAGEFILE_DUAL_GB = 40.0   # iki kart çalışacakken sanal bellek sınırı bundan küçükse açılışta bir kez uyarılır
+MEM_NOTICE_S = 3600.0     # bellek azaldı bildirimi en çok saatte bir
 
 
 @dataclass
@@ -321,6 +327,9 @@ class Pipeline:
         self._flex_rest_until = 0.0            # kademe 2: bu zamana dek ana karta yeni görev verilmez
         self._flex_card = False                # ikinci kart "esnek" düzende (monitörsüz; yardımcı düzeniyle)
         self._flex_card_possible = False       # iki kart monitörsüz ve "Önerilen": esnek düzen açılabilir
+        self._memstat = memory_status          # RAM / sanal bellek ölçümü (testlerde değiştirilir)
+        self._idle = user_idle_s               # klavye / fare en son kaç sn önce (Windows; bilinmiyorsa None)
+        self._mem_noticed = 0.0
         # gece modu (stt/governor.py): ısıya göre görev arası mola, soğuma molası, işçi yenileme, tek kart
         self.gov = Governor(cfg.night_temp)
         self._rest_until = 0.0                 # bu zamana dek ekran kartına yeni görev verilmez (gece modu molası)
@@ -382,6 +391,8 @@ class Pipeline:
                     self.emit("notice", text=why)
                 # ikinci kart esnek düzende mi (güç sınırı yüzünden düştüyse değil)
                 self._flex_card = bool(self.helper_devices) and self._flex_card_possible and flex
+                if len({d for d in list(devices) + list(self.helper_devices) if d.startswith("cuda")}) >= 2:
+                    self._pagefile_check()  # iki kart: sanal bellek küçükse kalıcı çözüm bir kez söylenir (1.9.27)
             ecfg["gpu_mem"] = {i: g["gb"] for i, g in gi.items()}
             ecfg["display_gpus"] = [i for i, g in gi.items() if g.get("display")]
             ecfg["display_batch"] = cfg.display_batch
@@ -639,6 +650,8 @@ class Pipeline:
         return not (self._cancelled(item) or self._closing)
 
     def _pending_ahead_ok(self) -> bool:
+        if self._mem_crit():
+            return False  # bellek kritik (1.9.27): yeni video indirilmez; çalışan işler biter, bellek açılınca sürer
         limit = NIGHT_PREP_AHEAD if getattr(self.cfg, "night_mode", False) else PREP_AHEAD
         if self._flex_level() >= 1:
             limit = min(limit, FLEX_PREP_AHEAD)  # bilgisayar kullanılıyor: indirme / ffmpeg işlemciyi doldurmasın
@@ -1231,11 +1244,65 @@ class Pipeline:
     def _flex_level(self) -> int:
         return self.flex.level if self._flex_on() else 0
 
-    def _flex_tick(self) -> None:
-        """``FLEX_SAMPLE_S``'de bir işlemci / RAM ölçümü (arka planda: snapshot ve süreç süreleri motor döngüsünü
-        bekletmesin). ``self.lock`` altında çağrılır."""
+    def _mem_watch_on(self) -> bool:
+        """Bellek koruması geçerli mi: ekran kartında çalışılıyor ve iş var. Esnek kapalı / gece modu / canlı yayında da
+        (ayar ne olursa olsun bilgisayarın belleği dolmasın; yalnız indirme durdurulur, kart düzeni değişmez)."""
+        if self.pool is None or getattr(self.pool, "threads", False):
+            return False
+        if not any(str(d).startswith("cuda") for d in self.devices):
+            return False
+        return any(j.status in ("prep", "run") for j in list(self.jobs.values()))
+
+    def _mem_crit(self) -> bool:
+        return bool(self.flex.mem_crit) and self._mem_watch_on()
+
+    def _sysmem_short(self) -> str:
+        """İkinci karta model yüklemeye bilgisayarın belleği yetmiyorsa sebep, yetiyorsa "" (ölçülemezse de "")."""
+        try:
+            m = self._memstat()
+        except Exception:  # noqa: BLE001
+            m = None
+        if not m:
+            return ""
+        if m["ram_free"] < HELPER_OPEN_RAM_GB or m["commit_free"] < HELPER_OPEN_COMMIT_GB:
+            return (f"bilgisayarın belleği az (boş RAM {m['ram_free']:.1f} GB, boş sanal bellek "
+                    f"{m['commit_free']:.1f} GB)")
+        return ""
+
+    def _mem_notice(self, m: dict | None) -> None:
+        """Bellek azaldı: arayüze en çok saatte bir bildirim (sanal bellek sınırı küçükse kalıcı çözümle)."""
         now = time.time()
-        on = self._flex_on()
+        if now - self._mem_noticed < MEM_NOTICE_S:
+            return
+        self._mem_noticed = now
+        msg = ("Bilgisayarın belleği azaldı (" + self.flex._what() + "): STT ikinci kartı bekletiyor"
+               + (" ve yeni video indirmiyor" if self.flex.mem_crit else "")
+               + "; bellek açılınca kendiliğinden tam güce döner. Tarayıcıda çok sekme / oyun varsa kapatmak yardımcı olur.")
+        if m and m.get("commit_total") is not None and m["commit_total"] < 48:
+            msg += f" Sanal bellek sınırı {m['commit_total']:.0f} GB (küçük); kalıcı çözüm: " + PAGEFILE_DUAL_HINT
+        log.warning("[esnek] %s", msg)
+        self.emit("notice", text=msg)
+
+    def _pagefile_check(self) -> None:
+        """İki kart birlikte çalışacak ve sanal bellek sınırı küçük: açılışta bir kez kalıcı çözümü söyle."""
+        try:
+            m = self._memstat()
+        except Exception:  # noqa: BLE001
+            m = None
+        if not m or m.get("commit_total") is None or m["commit_total"] >= PAGEFILE_DUAL_GB:
+            return
+        msg = (f"Sanal bellek sınırı {m['commit_total']:.0f} GB: iki ekran kartıyla uzun kuyrukta yetmeyebilir (dolunca "
+               "Windows programları kapatır; STT bellek azalınca ikinci kartı bekletir, işler yavaşlar). "
+               + PAGEFILE_DUAL_HINT)
+        log.warning("%s", msg)
+        self.emit("notice", text=msg)
+
+    def _flex_tick(self) -> None:
+        """``FLEX_SAMPLE_S``'de bir işlemci / RAM / sanal bellek ölçümü (arka planda: snapshot ve süreç süreleri motor
+        döngüsünü bekletmesin). Bellek koruması esnek kapalıyken de ölçer (``_mem_watch_on``); işlemciye göre yavaşlama
+        yalnız esnek açıkken. ``self.lock`` altında çağrılır."""
+        now = time.time()
+        on = self._mem_watch_on()
         if on != self._flex_was:
             self._flex_was = on
             if not on:  # iş bitti / gece modu / kapatıldı: sonraki kuyruk tam güçle başlasın, eski ölçüm kullanılmasın
@@ -1258,13 +1325,17 @@ class Pipeline:
         def run():
             try:
                 cpu = self._flex_sampler.sample()
-                from .util import memory_status
-                m = memory_status()
+                m = self._memstat()
+                idle = self._idle()
                 with self.lock:
-                    old = self.flex.level
-                    msg = self.flex.update(cpu[0] if cpu else None, m["ram_free"] if m else None, time.time())
+                    old, was_low = self.flex.level, self.flex.ram_low
+                    others = cpu[0] if cpu and self._flex_on() else None  # esnek kapalı: işlemci yavaşlatmaz
+                    msg = self.flex.update(others, m["ram_free"] if m else None, time.time(),
+                                           m["commit_free"] if m else None, idle)
                     if msg:
                         log.info("[esnek] %s", msg)
+                    if self.flex.ram_low and not was_low:
+                        self._mem_notice(m)
                     if self.flex.level != old:
                         if self.flex.level < 2:
                             self._flex_rest_until = 0.0
@@ -1561,6 +1632,9 @@ class Pipeline:
         free = (total - used) / 1024
         reserve = self._reserve()
         if parked:
+            short = self._sysmem_short()  # kartta yer olsa da bilgisayarın belleği yetmiyorsa açılmaz (1.9.27)
+            if short:
+                return short, 0
             for b in sizes:
                 if free - reserve >= foot[b]:
                     return "", b
@@ -1673,7 +1747,8 @@ class Pipeline:
                                 "kalsın), kart boşalınca yeniden açılacak", wid, (now - since) / 60, reason)
                     self._park_helper(wid, reason)  # sebep başka programlar: toplu boyut küçülmez
                 elif parked:
-                    self._helper_note(wid, "kapalı, kart boşalınca açılacak: " + reason)
+                    self._helper_note(wid, ("kapalı, bellek açılınca açılacak: " if reason.startswith("bilgisayarın belleği")
+                                            else "kapalı, kart boşalınca açılacak: ") + reason)
                 else:
                     self._helper_note(wid, reason)
                 continue
@@ -1772,6 +1847,11 @@ class Pipeline:
                 frac = min(0.9, max(0.2, room / (total / 1024)))  # torch bu kadarını aşmaz (ayrılan bellek kalsın)
             else:
                 frac = self.cfg.display_gpu_limit_pct / 100 if 0 < self.cfg.display_gpu_limit_pct < 100 else None
+            short = self._sysmem_short()  # bilgisayarın belleği yetmiyorsa ikinci ayırma süreci açılmaz (1.9.27)
+            if short:
+                self._h_ready[wid] = now + HELPER_RECHECK_S
+                self._helper_note(wid, "kapalı, bellek açılınca açılacak: " + short)
+                return
             self._open_hdiar(frac)
             return
         # açık: boştaysa iş ver ya da kapan

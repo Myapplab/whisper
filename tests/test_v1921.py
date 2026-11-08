@@ -259,8 +259,8 @@ def test_flex_levels_hysteresis():
 def test_flex_low_ram_and_unknown():
     from stt.flex import Flex
     f = Flex()
-    f.update(None, 1.5, 0)
-    assert f.update(None, 1.5, 10) and f.level == 1                    # RAM az: işlemci okunamasa da yavaşla
+    assert f.update(None, 1.5, 0) and f.level == 1                     # RAM az: işlemci okunamasa da, beklemeden (1.9.27)
+    assert f.update(None, 1.5, 10) == "" and f.level == 1
     assert f.update(None, None, 20) == "" and f.level == 1              # hiç ölçülemedi: son durum
     f.update(5, 3.0, 30)
     assert f.update(5, 3.0, 200) == "" and f.level == 1                 # RAM 'sakin' eşiğinin altında: inmez

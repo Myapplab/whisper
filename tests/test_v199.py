@@ -35,6 +35,7 @@ def _pipe(tmp_path: Path, n=6, **cfg):
     p.hpool = FakeHelperPool(["cuda:0"])
     p.helper_devices = ["cuda:0"]
     p._spawn = lambda fn: fn()          # ölçüm hemen (iş parçacığı yok)
+    p._memstat = lambda: None           # bilgisayarın belleği (1.9.27) bilinmiyor: testler makineye bağlı olmasın
     p.loads = []
     p._gpu_load = lambda idx: (p.loads.append(idx), p.load)[1]
     p.load = {"util": 5, "used_mb": 4000.0, "total_mb": 10240.0}
