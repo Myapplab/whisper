@@ -607,6 +607,10 @@ class App:
         it.extra.setdefault("uid", uuid.uuid4().hex[:10])
         it.extra.pop("_gen", None)
         self._items[it.extra["uid"]] = it
+        try:  # hemen diske: motor açılmamışken / hata durumundayken uygulama kapanırsa iş kaybolmasın (1.9.27)
+            self._state().queue_add(it.extra["uid"], it.kind, it.source, it.title, it.extra)
+        except Exception:  # noqa: BLE001
+            log.debug("kuyruk kaydı yazılamadı", exc_info=True)
         self._push({"type": "queued", "uid": it.extra["uid"], "source": it.source, "title": it.title,
                     "live": bool(it.extra.get("live")), "retry": retry})
         self._inbox.put(it)
@@ -1148,6 +1152,11 @@ class App:
                         "error": "Durduruldu.", "cancelled": True})
         if self._pipe is not None:
             n += self._pipe.cancel_all()
+        try:  # "Durdur": kalıcı kuyrukta da bir şey kalmasın (yoksa motor yeniden açılınca / açılışta sürerdi)
+            self._state().queue_clear()
+        except Exception:  # noqa: BLE001
+            log.debug("kuyruk temizlenemedi", exc_info=True)
+        self._pending = []
         return {"count": n}
 
     def cancel(self, uid: str) -> dict:
@@ -1168,6 +1177,10 @@ class App:
             self._inbox.put(it)
         if not hit and self._pipe is not None:
             hit = self._pipe.cancel(uid)
+        try:  # kalıcı kuyruktan da (motor ölse bile sonradan sürmesin)
+            self._state().queue_remove(uid)
+        except Exception:  # noqa: BLE001
+            log.debug("kuyruk kaydı silinemedi", exc_info=True)
         return {"ok": hit}
 
     def check(self) -> dict:

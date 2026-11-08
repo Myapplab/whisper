@@ -495,7 +495,10 @@ class Pipeline:
 
     # ---------------------------------------------------------- olaylar (GUI)
     def emit(self, typ: str, item: Item | None = None, **data) -> None:
-        if item is not None and typ in ("done", "failed", "skipped") and item.extra.get("uid"):
+        # motor kapanırken (hata / yeniden açılış) düşen iş kuyruktan silinmez: yeni motor onu sürdürür (1.9.27;
+        # eskiden kapanışta sıra bekleyen işler "Durduruldu" olayıyla kalıcı kuyruktan siliniyordu)
+        if item is not None and item.extra.get("uid") and (typ == "done" or (
+                typ in ("failed", "skipped") and not self._closing)):
             try:  # iş bitti (ya da kesin olarak başarısız): kalıcı kuyruktan çıkar
                 self.state.queue_remove(item.extra["uid"])
             except Exception:  # noqa: BLE001
@@ -730,6 +733,8 @@ class Pipeline:
             done_before = not cfg.force and self.state.is_done(item.key) \
                 and not (p0 and p0["status"] == "done" and self._redo_reason(item, p0))
             if not done_before and not self._wait_prep_turn(item):
+                if self._closing and not self._cancelled(item):
+                    return  # motor kapanıyor: iş kalıcı kuyrukta kalır, yeni motor sürdürür (iptal değil)
                 self.emit("failed", item, error="Durduruldu.", cancelled=True)
                 return
         prev = self.state.get(item.key) if not (cfg.force or item.extra.get("live")) else None
@@ -759,6 +764,11 @@ class Pipeline:
         with self.lock:
             self.jobs[item.key] = job
         self.state.set(item.key, source=item.source, status="running", title=item.title)
+        if item.extra.get("uid"):
+            try:  # işe başlandı: uygulama bu sırada çökerse sürdürmede deneme sayılır (sonsuz çökme döngüsü olmasın)
+                self.state.queue_started(item.extra["uid"], item.key)
+            except Exception:  # noqa: BLE001
+                log.debug("kuyruk kaydı güncellenemedi", exc_info=True)
         log.info("Hazırlanıyor: %s", item.source)
         self.emit("prep", item)
         if item.extra.get("live"):
@@ -2628,10 +2638,15 @@ class Pipeline:
 
     def kill(self) -> None:
         """Uygulama kapanıyor: canlı kayıtları ve işçi süreçlerini HEMEN durdur (beklemeden)."""
+        self._closing = True  # bu andan sonra düşen işler kalıcı kuyruktan silinmesin (sonraki açılışta sürer)
         try:  # düzgün kapanış: monitörlü kartın / iş yapmanın açık aralığı kapansın (ekran koruması)
             from .gpuguard import mark_busy, mark_helper_closed
             mark_helper_closed(self.out_root / ".stt")
             mark_busy(self.out_root / ".stt", False)
+        except Exception:  # noqa: BLE001
+            pass
+        try:  # temiz kapanış: yarım işler deneme sayılmaz
+            self.state.queue_unstart_all()
         except Exception:  # noqa: BLE001
             pass
         for job in list(self.jobs.values()):
@@ -2654,6 +2669,11 @@ class Pipeline:
             mark_busy(self.out_root / ".stt", False)
         except Exception:  # noqa: BLE001
             pass
+        if not getattr(self, "_dirty_stop", False):  # işçiler hep birlikte öldüyse (çökme) yarım işler deneme sayılır
+            try:
+                self.state.queue_unstart_all()
+            except Exception:  # noqa: BLE001
+                pass
         self.prep.shutdown(wait=False, cancel_futures=True)
         self.fin.shutdown(wait=True)
         for pool in self._pools():
