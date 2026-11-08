@@ -196,6 +196,15 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   sezon; tarih yoksa "Sezon bilinmiyor". Podcast / takımsız kayıtta sezon katmanı yok. index'te `season` sütunu,
   mac.json'da `season`. Eski kayıtlar "Yeniden sınıflandır"la taşınır: FPL sezonu dışındakiler yeniden
   sınıflandırılmaz, yalnız `<takım>/<sezon>/` araya girer (ad aynı, eski mac.json taşınır).
+  **1.9.26: sezon klasöründe o günkü teknik direktör** ("2025-2026 Pep Guardiola", "2026-2027 Enzo Maresca"; sezon
+  ortasında değişince aynı sezonda yeni klasör: Chelsea 2025-26 Maresca / McFarlane / Rosenior). `dataset.team_manager`:
+  maç tarihindeki hoca (yoksa toplantı tarihi; aynı maçın toplantıları aynı klasörde) — 1. `match.MANAGER_HISTORY`
+  (takım → [(başlama günü, ad | None)], geçici hocalar dahil, 2026-11-08'de haberlerden doğrulandı; doğrulama
+  gününden sonra konuşan başka bilinen hoca varsa o), 2. konuşan bilinen hoca (o gün başka takımda değilse), 3. aynı
+  takımın aynı sezondaki başka kayıtlarında konuşan bilinen hoca (index.jsonl). Bilinmiyorsa klasör yalnız sezon.
+  Oyuncunun / yardımcının toplantısı da hocanın klasörüne. index + mac.json `team_manager` (konuşan `manager` ayrı).
+  `manager_team` artık tarihli videoda tabloya bakar (eski sezonun Sky videosu da doğru takıma). Eski kayıtlar
+  "Yeniden sınıflandır"la hocalı klasöre taşınır (`reclassify._same_match`: yalnız sezon katmanı değişiyorsa).
   Maç + GW, FPL API fikstürlerinden (fantasy.premierleague.com/api/bootstrap-static, /fixtures) eşleşir
   (`stt/dataset.py`), önbellek `<out>/.stt/fpl_cache.json`.
 - Takım/TD adı başlık + YouTube kanal adından (`stt/match.py`; Türkçe/Azerice kalıplar dahil).
@@ -321,7 +330,8 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
 - Yerel dosyalarda kanal adı yok → başlıkta yalnızca "Everton vs Coventry City" varsa TD'nin takımı
   bilinemez (Lampard → Everton'a düştü). 1.9.8: TD→takım eşleştirmesi (`PL_MANAGERS`) bunu çözüyor; listede
   olmayan hocada sorun sürer (fikir: GUI'de takımı elle düzeltme).
-- Elle tutulan listeler, **her sezon başında** (ve hoca değişince) güncellenmeli: `match.PL_MANAGERS` +
+- Elle tutulan listeler, **her sezon başında** (ve hoca değişince) güncellenmeli: `match.MANAGER_HISTORY` (yeni
+  hoca tarihiyle; test PL_MANAGERS'la aynı olduğunu denetler, `MANAGER_HISTORY_CHECKED`'i de ilerlet) + `match.PL_MANAGERS` +
   `MANAGER_SEASON` (tarih aralığını da kaydır), `match.TEAMS`, `dataset.PL_FALLBACK` (FPL'ye ulaşılamazsa),
   `fpl.TEAM_NAMES`. Son güncelleme 2026-11-06 (2026-27; web aramasıyla doğrulandı).
 - setup.exe imzasız; paylaşım için kod imzalama (ör. Azure Trusted Signing) gerekir.

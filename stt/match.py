@@ -103,6 +103,76 @@ PL_MANAGERS = {
     "Michael Carrick": "Manchester United", "Matthias Jaissle": "Newcastle United",
     "Oliver Glasner": "Nottingham Forest", "Régis Le Bris": "Sunderland", "Roberto De Zerbi": "Tottenham",
 }
+# Takımların teknik direktör geçmişi (1.9.26): (göreve başladığı gün, ad), tarih sırasıyla. Bir gündeki hoca = o
+# günden önce başlayan son giriş; geçici (interim) hocalar dahil. Ad None: o günden sonrası bilinmiyor (küme düşen
+# takım). İlk girişten önceki günler bilinmiyor sayılır. Veri setinde sezon klasörü "<sezon> <hoca>" buradan gelir
+# (dataset.team_manager); tabloda olmayan takım / tarih için basın toplantısındaki bilinen hoca kullanılır.
+# MANAGER_HISTORY_CHECKED tarihinde haberlerden doğrulandı. Hoca değişince: buraya tarihiyle ekle + PL_MANAGERS'ı
+# güncelle (test ikisinin aynı olduğunu denetler), sonra kullanıcı "Veri seti > Yeniden sınıflandır".
+MANAGER_HISTORY_CHECKED = "2026-11-08"
+MANAGER_HISTORY: dict[str, list[tuple[str, str | None]]] = {
+    "Arsenal": [("2019-12-20", "Mikel Arteta")],
+    "Aston Villa": [("2022-11-01", "Unai Emery")],
+    "Bournemouth": [("2023-06-19", "Andoni Iraola"), ("2026-07-01", "Marco Rose")],
+    "Brentford": [("2018-10-16", "Thomas Frank"), ("2025-06-27", "Keith Andrews")],
+    "Brighton": [("2024-06-15", "Fabian Hürzeler")],
+    "Burnley": [("2024-07-04", "Scott Parker"), ("2026-04-30", "Mike Jackson"), ("2026-07-01", None)],
+    "Chelsea": [("2024-06-03", "Enzo Maresca"), ("2026-01-01", "Calum McFarlane"), ("2026-01-06", "Liam Rosenior"),
+                ("2026-04-22", "Calum McFarlane"), ("2026-07-01", "Xabi Alonso")],
+    "Coventry City": [("2024-11-28", "Frank Lampard")],
+    "Crystal Palace": [("2024-02-19", "Oliver Glasner"), ("2026-06-15", "Pierre Sage")],
+    "Everton": [("2023-01-30", "Sean Dyche"), ("2025-01-11", "David Moyes")],
+    "Fulham": [("2021-07-01", "Marco Silva"), ("2026-07-07", "Álvaro Arbeloa")],
+    "Hull City": [("2025-06-11", "Sergej Jakirović")],
+    "Ipswich Town": [("2021-12-16", "Kieran McKenna"), ("2026-06-23", "Gary O'Neil")],
+    "Leeds United": [("2023-07-04", "Daniel Farke")],
+    "Liverpool": [("2024-06-01", "Arne Slot"), ("2026-06-04", "Andoni Iraola")],
+    "Manchester City": [("2016-07-01", "Pep Guardiola"), ("2026-06-29", "Enzo Maresca")],
+    "Manchester United": [("2022-05-23", "Erik ten Hag"), ("2024-10-28", "Ruud van Nistelrooy"),
+                          ("2024-11-11", "Ruben Amorim"), ("2026-01-05", "Darren Fletcher"),
+                          ("2026-01-13", "Michael Carrick")],
+    "Newcastle United": [("2021-11-08", "Eddie Howe"), ("2026-08-05", "Matthias Jaissle")],
+    "Nottingham Forest": [("2023-12-20", "Nuno Espírito Santo"), ("2025-09-09", "Ange Postecoglou"),
+                          ("2025-10-21", "Sean Dyche"), ("2026-02-15", "Vítor Pereira"),
+                          ("2026-07-06", "Oliver Glasner")],
+    "Sunderland": [("2024-06-22", "Régis Le Bris")],
+    "Tottenham": [("2023-07-01", "Ange Postecoglou"), ("2025-06-12", "Thomas Frank"), ("2026-02-14", "Igor Tudor"),
+                  ("2026-03-31", "Roberto De Zerbi")],
+    "West Ham": [("2024-07-01", "Julen Lopetegui"), ("2025-01-09", "Graham Potter"),
+                 ("2025-09-27", "Nuno Espírito Santo"), ("2026-07-01", None)],
+    "Wolves": [("2023-08-09", "Gary O'Neil"), ("2024-12-19", "Vítor Pereira"), ("2025-11-02", "Jamie Collins"),
+               ("2025-11-12", "Rob Edwards"), ("2026-07-01", None)],
+}
+_ISO_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def history_manager(team: str | None, date: str | None) -> str | None:
+    """Geçmiş tablosuna göre o gün takımın hocası ("2026-01-20", Chelsea -> Liam Rosenior). Bilinmiyorsa None."""
+    rows = MANAGER_HISTORY.get(team or "")
+    if not rows or not _ISO_DAY.fullmatch(str(date or "")):
+        return None
+    cur = None
+    for start, name in rows:
+        if start > date:
+            break
+        cur = name
+    return cur
+
+
+def history_team(name: str | None, date: str | None) -> str | None:
+    """Geçmiş tablosuna göre o gün bu hocanın takımı. Eskisinden ayrılmadan yenisine imza atmışsa (Iraola, Haziran
+    2026) en son başladığı takım."""
+    if not name or not _ISO_DAY.fullmatch(str(date or "")):
+        return None
+    best = None
+    for team, rows in MANAGER_HISTORY.items():
+        for i, (start, n) in enumerate(rows):
+            end = rows[i + 1][0] if i + 1 < len(rows) else None
+            if n == name and start <= date and (end is None or date < end) and (best is None or start > best[0]):
+                best = (start, team)
+    return best[1] if best else None
+
+
 # Takımı bu listede tutulmayan bilinen hocalar: yalnız soyadı yazılınca tam ad + "basın toplantısı" tanıma
 OTHER_MANAGERS = (
     "Arne Slot", "Pep Guardiola", "Ruben Amorim", "Eddie Howe", "Sean Dyche", "Ange Postecoglou", "Liam Rosenior",
@@ -422,12 +492,17 @@ def find_manager(title: str, teams: list[str]) -> str | None:
 
 
 def manager_team(name: str | None, date: str | None = None) -> str | None:
-    """Bu sezon hocanın takımı (PL listesi). Sezon dışındaki tarihli videoda None."""
+    """O gün hocanın takımı: önce geçmiş tablosu (eski sezonun videosunda da doğru takım: 2025-12'de Maresca
+    Chelsea'de), yoksa bu sezonun PL listesi. Tabloda o gün takımı olmayan ve sezon dışındaki tarihli videoda None."""
     full = _known_manager(name.split()) if name else None
-    team = PL_MANAGERS.get(full or "")
-    if team and date and not (MANAGER_SEASON[0] <= date <= MANAGER_SEASON[1]):
+    if not full:
         return None
-    return team
+    if date:
+        if _ISO_DAY.fullmatch(str(date)) and any(n == full for rows in MANAGER_HISTORY.values() for _, n in rows):
+            return history_team(full, date)   # tabloda var: o gün takımı yoksa (henüz gelmemiş / ayrılmış) None
+        if not (MANAGER_SEASON[0] <= date <= MANAGER_SEASON[1]):
+            return None
+    return PL_MANAGERS.get(full)
 
 
 # Rakip adı yerine geçen yer / zaman / derbi sözcükleri: "Boxing Day clash", "North London Derby", "Emirates

@@ -18,7 +18,7 @@ from pathlib import Path
 
 from . import __version__
 from .config import SECRETS, TOOL_DIR, Config, env_secrets, load_config
-from .dataset import GENERAL_DIR, NO_SEASON, OTHER_DIR, PL_DIR, season_of
+from .dataset import GENERAL_DIR, NO_SEASON, OTHER_DIR, PL_DIR, season_folder, season_of
 from .match import safe_filename
 from .sources import expand_inputs, is_url
 from .util import console_python, log, read_jsonl
@@ -1231,9 +1231,12 @@ class App:
             folder = str((root / txt).parent) if txt else str(root)
             # sezon (1.9.25): takımı olan basın toplantısı; podcast / takımsız kayıtta sezon katmanı yok
             season = None if league == GENERAL_DIR or not r.get("team") else (r.get("season") or season_of(r) or NO_SEASON)
+            # 1.9.26: sezon klasörü o sezonki teknik direktörle ("2025-2026 Pep Guardiola"); eski satırda yalnız sezon
+            tm = (r.get("team_manager") or None) if season and season != NO_SEASON else None
             m = tree.setdefault(league, {}).setdefault(team, {}).setdefault(folder, {
                 "folder": folder, "name": Path(folder).name, "match_date": r.get("match_date"), "gw": r.get("gw"),
-                "season": season, "pressers": []})
+                "season": season, "team_manager": tm,
+                "season_dir": season_folder(season, tm) if season else None, "pressers": []})
             m["pressers"].append({"txt": str(root / txt) if txt else "", "manager": r.get("manager"),
                                   "phase": r.get("phase"), "date": r.get("presser_date"),
                                   "questions": r.get("questions"), "diarized": r.get("diarized")})
@@ -1248,13 +1251,17 @@ class App:
                     if t.is_dir():   # sezon klasörü (ya da elle taşınmış kayıt) olsa da takım klasörü açılsın
                         tfolder = t
                 seasons = {}
-                for m in matches:
+                for m in matches:   # maçlar yeniden eskiye: her grubun ilk maçı en yenisi
                     if m["season"]:
-                        seasons.setdefault(m["season"], []).append(m)
-                # en yeni sezon üstte; "Sezon bilinmiyor" en altta
-                order = sorted(seasons, key=lambda x: (x != NO_SEASON, x), reverse=True)
+                        seasons.setdefault(m["season_dir"], []).append(m)
+                # en yeni sezon üstte, sezon içinde son hoca üstte; "Sezon bilinmiyor" en altta
+                order = sorted(seasons, key=lambda x: (seasons[x][0]["season"] != NO_SEASON, seasons[x][0]["season"],
+                                                       seasons[x][0].get("match_date") or ""), reverse=True)
                 teams.append({"team": team, "folder": str(tfolder), "matches": matches,
-                              "seasons": [{"season": x, "folder": str(tfolder / x) if (tfolder / x).is_dir() else "",
+                              "seasons": [{"season": seasons[x][0]["season"], "manager": seasons[x][0]["team_manager"],
+                                           "label": " · ".join(y for y in (seasons[x][0]["season"],
+                                                                           seasons[x][0]["team_manager"]) if y),
+                                           "folder": str(tfolder / x) if (tfolder / x).is_dir() else "",
                                            "matches": seasons[x]} for x in order]})
             out.append({"league": league, "folder": str(root / ("Premier League" if league == "Premier League"
                                                                 else league if league == GENERAL_DIR

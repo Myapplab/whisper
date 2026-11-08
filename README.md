@@ -90,7 +90,7 @@ irm https://raw.githubusercontent.com/Myapplab/whisper/main/installer/guncelle.p
 cikti\
   Premier League\
     Arsenal\
-      2026-2027\                                    sezon (1 Temmuz - 30 Haziran, maç tarihine göre)
+      2026-2027 Mikel Arteta\                      sezon (1 Temmuz - 30 Haziran, maç tarihine göre) + o günkü teknik direktör
         2026-11-08 GW11 Arsenal vs Chelsea\
           mac.json                                    fikstür bilgisi (FPL); "ek_bilgiler" alanına maça ait başka veri eklenebilir
           2026-11-07 mac-oncesi - Mikel Arteta.txt    soru-cevap metni
@@ -98,14 +98,21 @@ cikti\
           2026-11-07 mac-oncesi - Mikel Arteta.srt
           2026-11-07 mac-oncesi - Mikel Arteta - ozet.md
         2026-11-04 Champions League Arsenal vs Slavia Prague\
-      2025-2026\ ...
+      2025-2026 Mikel Arteta\ ...
+    Chelsea\
+      2026-2027 Xabi Alonso\ ...
+      2025-2026 Liam Rosenior\ ...                  sezon ortasında hoca değişti: aynı sezonda yeni klasör
+      2025-2026 Enzo Maresca\ ...
   Diger Takimlar\
-    Galatasaray\2026-2027\ ...
+    Galatasaray\2026-2027 Okan Buruk\ ...
   index.csv / index.jsonl                           her basın toplantısı bir satır (model eğitimi için)
 ```
 
-- 1.9.25'ten önce işlenmiş kayıtlar sezon klasörüne "Veri seti > Yeniden sınıflandır" ile taşınır (bu sezonun
+- 1.9.26'dan önce işlenmiş kayıtlar "Veri seti > Yeniden sınıflandır" ile hocalı sezon klasörüne taşınır (bu sezonun
   kayıtları yeniden sınıflandırılır; eski sezonlar yalnız sezon klasörüne taşınır, adları değişmez).
+- Sezon klasöründeki hoca, maç günü takımın teknik direktörüdür (oyuncunun toplantısı da onun klasörüne gider):
+  Premier League takımları için programdaki hoca geçmişi listesinden (geçici hocalar dahil), diğer takımlarda
+  basın toplantısında konuşan bilinen hocadan. Bilinmiyorsa klasör yalnız sezon adını taşır.
 
 - Takım, YouTube kanal adından (ör. "Arsenal") ya da başlıktan bulunur; teknik direktör başlıktan.
 - **Maç ve GW** FPL'nin herkese açık fikstür verisinden otomatik eşleştirilir: takımın, basın

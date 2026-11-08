@@ -21,7 +21,8 @@ from .merge import apply_labels, assign_speakers, label_speakers, label_speakers
 from .outputs import to_txt, write_all
 from .sources import Item
 from .state import State
-from .dataset import MAX_PATH, classify, fpl_data, index_row, out_paths, update_index, write_match_json  # noqa: F401
+from .dataset import (MAX_PATH, classify, fpl_data, index_row, out_paths, set_team_manager, update_index,  # noqa: F401
+                      write_match_json)
 from .match import looks_like_presser, parse_match
 from .util import fmt_clock, keep_awake, log, text_hash
 from .workers import WorkerPool
@@ -2460,6 +2461,7 @@ class Pipeline:
         meta = classify(job.match, info, self.fpl())
         if mode == "herkes" and self._opt(job.item, "diarize"):
             meta["general"] = True  # podcast / film: veri setinin takım klasörlerine karışmasın
+        set_team_manager(self.out_root, meta, job.item.key)   # sezon klasörü "<sezon> <o günkü hoca>"
         doc["dataset"] = {k: v for k, v in meta.items() if k != "fixture"}
         fpl = item_fpl(job.item, cfg)
         if not fpl and not meta.get("general") and self._opt(job.item, "fpl_auto") and meta.get("gw") and meta.get("fpl_short") and cfg.fpl_repo \

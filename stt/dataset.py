@@ -3,7 +3,9 @@
     cikti/
       Premier League/
         Arsenal/
-          2026-2027/                                   <- sezon (1 Temmuz - 30 Haziran; 1.9.25'ten beri)
+          2026-2027 Mikel Arteta/                      <- sezon (1 Temmuz - 30 Haziran) + o sezonki hoca (1.9.26);
+                                                          sezon ortasında hoca değişirse yeni klasör:
+                                                          "2025-2026 Enzo Maresca", "2025-2026 Liam Rosenior"
             2026-11-08 GW11 Arsenal vs Chelsea/
               mac.json                                   <- fikstür bilgisi (FPL), maça ait ek veriler buraya
               2026-11-07 mac-oncesi - Mikel Arteta.txt   <- soru-cevap metni
@@ -11,9 +13,9 @@
               2026-11-07 mac-oncesi - Mikel Arteta.srt
               2026-11-07 mac-oncesi - Mikel Arteta - ozet.md
             2026-11-04 Champions League Arsenal vs Slavia Prague/
-          2025-2026/...
+          2025-2026 Mikel Arteta/...
       Diger Takimlar/
-        Galatasaray/2026-2027/...
+        Galatasaray/2026-2027 Okan Buruk/...
       index.csv / index.jsonl                          <- her basın toplantısı bir satır (model eğitimi için)
 
 Maç ve GW, FPL'nin herkese açık fikstür verisinden bulunur (fantasy.premierleague.com/api).
@@ -27,8 +29,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path, PurePath
 
-from .match import (_ALIAS_MAP, _ALIASES, _alias_norm, _known_manager, _norm, find_teams, is_team, opp_suffix_words,
-                    opp_words, safe_filename)
+from .match import (_ALIAS_MAP, _ALIASES, MANAGER_HISTORY_CHECKED, _alias_norm, _known_manager, _norm, find_teams,
+                    history_manager, is_team, manager_team, opp_suffix_words, opp_words, safe_filename)
 from .util import atomic_write_text, log, read_jsonl, write_jsonl_csv
 
 FPL_BASE = "https://fantasy.premierleague.com/api"
@@ -399,6 +401,100 @@ def season_of(meta: dict) -> str | None:
     return None
 
 
+def _meta_day(meta: dict) -> str | None:
+    """season_of ile aynı gün: maç tarihi, yoksa basın toplantısı tarihi (aynı maçın toplantıları aynı klasöre)."""
+    for k in ("match_date", "presser_date"):
+        d = str(meta.get(k) or "")
+        if re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])-\d{2}", d):
+            return d
+    return None
+
+
+def _speaker_manager(name, team: str, day: str) -> str | None:
+    """Konuşan bilinen bir hocaysa ve o gün başka takımın hocası değilse tam adı (Sky'daki "Guardiola on Arsenal"
+    videosu Arsenal'in hocası sayılmaz). Oyuncu / bilinmeyen ad: None."""
+    if not name:
+        return None
+    full = _known_manager(str(name).split(), [team])
+    if not full:
+        return None
+    return full if manager_team(full, day) in (None, team) else None
+
+
+_learn_cache: dict = {}
+
+
+def _index_rows(root: Path) -> list[dict]:
+    p = Path(root) / "index.jsonl"
+    try:
+        st = p.stat()
+    except OSError:
+        return []
+    sig = (str(p), st.st_mtime_ns, st.st_size)
+    if _learn_cache.get("sig") != sig:
+        _learn_cache.update(sig=sig, rows=read_jsonl(p))
+    return _learn_cache["rows"]
+
+
+def _learned_manager(root: Path, team: str, day: str, key: str | None) -> str | None:
+    """Geçmiş tablosunda olmayan takım: aynı takımın aynı sezondaki başka kayıtlarında konuşan bilinen hoca
+    (oyuncunun / yardımcının toplantısı hocanın klasörüne). Önce o günden önceki en yakın kayıt, yoksa sonraki."""
+    season = season_of({"match_date": day})
+    before, after = None, None
+    for r in _index_rows(root):
+        if r.get("team") != team or r.get("key") == key or r.get("league") == GENERAL_DIR:
+            continue
+        rd = _meta_day(r)
+        if not rd or season_of({"match_date": rd}) != season:
+            continue
+        who = _speaker_manager(r.get("manager"), team, rd)
+        if not who:
+            continue
+        if rd <= day:
+            if before is None or rd > before[0]:
+                before = (rd, who)
+        elif after is None or rd < after[0]:
+            after = (rd, who)
+    return (before or after or (None, None))[1]
+
+
+def team_manager(meta: dict, root: Path | None = None, key: str | None = None) -> str | None:
+    """Maç günü takımın teknik direktörü (sezon klasörünün adı: "2025-2026 Pep Guardiola"). Sıra:
+    1. hoca geçmişi tablosu (match.MANAGER_HISTORY; geçici hocalar dahil) — tablonun doğrulandığı günden sonra
+       konuşan başka bilinen bir hocaysa (tabloya henüz girilmemiş değişiklik) o;
+    2. konuşan bilinen hoca (o gün başka takımda değilse);
+    3. ``root`` verilirse aynı takımın aynı sezondaki başka kayıtlarında konuşan bilinen hoca.
+    Bilinmiyorsa None (klasör yalnız sezon)."""
+    team = meta.get("team")
+    day = _meta_day(meta)
+    if not team or meta.get("general") or not day:
+        return None
+    hist = history_manager(team, day)
+    speaker = _speaker_manager(meta.get("manager"), team, day)
+    if hist and (day <= MANAGER_HISTORY_CHECKED or not speaker):
+        return hist
+    if speaker:
+        return speaker
+    return _learned_manager(root, team, day, key) if root is not None else None
+
+
+def set_team_manager(root: Path, meta: dict, key: str | None = None) -> dict:
+    """``meta['team_manager']``'ı hesaplar (bitirmede ve yeniden sınıflandırmada, klasör hesaplanmadan önce)."""
+    meta["team_manager"] = team_manager(meta, root, key)
+    return meta
+
+
+def season_folder(season: str | None, manager: str | None = None) -> str:
+    """Takım klasöründeki sezon klasörü: "2025-2026 Pep Guardiola"; hoca bilinmiyorsa "2025-2026"."""
+    if not season or season == NO_SEASON:
+        return NO_SEASON
+    return safe_filename(f"{season} {manager}") if manager else season
+
+
+def season_dir_name(meta: dict) -> str:
+    return season_folder(season_of(meta), meta.get("team_manager"))
+
+
 def rel_path(p, root) -> str:
     """Veri seti köküne göre yol, her sistemde "/" ile (index.csv/jsonl'yi okuyan betik Windows'a bağlı kalmasın)."""
     return PurePath(p).relative_to(PurePath(root)).as_posix()
@@ -410,7 +506,7 @@ def target_dir(root: Path, meta: dict, fallback_title: str) -> Path:
     if not meta.get("team"):
         return Path(root) / OTHER_DIR / "Bilinmeyen" / safe_filename(fallback_title, 70)
     league = PL_DIR if meta.get("is_pl") else OTHER_DIR
-    return Path(root) / league / safe_filename(meta["team"]) / (season_of(meta) or NO_SEASON) / match_folder_name(meta)
+    return Path(root) / league / safe_filename(meta["team"]) / season_dir_name(meta) / match_folder_name(meta)
 
 
 MAX_PATH = 250  # Windows yol sınırı (260) altında kalmak için
@@ -454,6 +550,7 @@ def write_match_json(folder: Path, meta: dict) -> None:
                                           "fpl_short", "fixture_id", "kickoff_utc", "is_home", "opponent_short",
                                           "score")})
     data["season"] = season_of(meta)
+    data["team_manager"] = meta.get("team_manager")
     if meta.get("fixture"):
         data["fpl_fixture"] = meta["fixture"]
     data.setdefault("ek_bilgiler", {})  # maça ait başka veriler (kadro, sakatlık, skor...) buraya eklenebilir
@@ -467,7 +564,9 @@ INDEX_FIELDS = ["key", "presser_date", "phase", "league", "team", "opponent", "c
                 "fixture_id", "kickoff_utc", "is_home", "fpl_short", "opponent_short", "score", "speaker_role",
                 "speaker_source", "diar_model", "title",
                 # 1.9.25: sezon ("2026-2027"; klasör düzeniyle aynı)
-                "season"]
+                "season",
+                # 1.9.26: maç günü takımın teknik direktörü (sezon klasörü "<sezon> <hoca>"); konuşan "manager"dır
+                "team_manager"]
 
 
 def league_of(meta: dict) -> str:
@@ -494,7 +593,8 @@ def index_row(root: Path, key: str, meta: dict, doc: dict, paths: dict) -> dict:
         "speaker_role": "hoca" if mgr and _known_manager(str(mgr).split()) else None,
         "speaker_source": doc.get("speaker_source"),
         "diar_model": (doc.get("settings") or {}).get("diar_model"), "title": doc.get("title"),
-        "season": season_of(meta) if meta.get("team") and not meta.get("general") else None}
+        "season": season_of(meta) if meta.get("team") and not meta.get("general") else None,
+        "team_manager": meta.get("team_manager") if meta.get("team") and not meta.get("general") else None}
 
 
 def update_index(root: Path, row: dict) -> None:

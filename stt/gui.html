@@ -796,10 +796,10 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
         };
         const seasons = tm.seasons || [];
         if (!gen && seasons.length) {
-          // takım › sezon › maç (en yeni sezon açık); sezonsuz eski kayıtlar ("Bilinmeyen") düz listelenir
+          // takım › sezon (· teknik direktör) › maç (en yeni açık); sezonsuz eski kayıtlar ("Bilinmeyen") düz listelenir
           const flat = tm.matches.filter(m => !m.season);
           seasons.forEach((ss, i) => {
-            const sd = el("details", { class: "ss", open: i === 0 }, el("summary", {}, ss.season, el("span", { class: "count" }, ss.matches.length + " maç"),
+            const sd = el("details", { class: "ss", open: i === 0 }, el("summary", {}, ss.label || ss.season, el("span", { class: "count" }, ss.matches.length + " maç"),
               ss.folder ? el("button", { class: "linkbtn", type: "button", title: "Klasörü aç", onclick: e => { e.preventDefault(); call("open", ss.folder); } }, "↗") : null));
             sd.append(matchBox(ss.matches)); td.append(sd);
           });
