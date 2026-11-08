@@ -1283,6 +1283,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
       if (ev.error && ev.status !== "done_before") j.error = ev.error;
     }
     if (ev.type === "failed") { j.kind = ev.cancelled ? "warn" : "err"; j.status = ev.cancelled ? "Durduruldu" : "Hata"; j.error = ev.cancelled ? "" : ev.error; }
+    if (ev.type === "interrupted") { j.kind = "warn"; j.status = "Bekliyor · motor yeniden açılınca sürer"; j.error = ""; }
     if (ev.type === "skipped" && ev.status === "duplicate") { j.status = "Zaten sırada"; j.error = ""; }
     scheduleQueue();
   }

@@ -126,3 +126,132 @@ def test_cancel_all_clears_queue(tmp_path, monkeypatch):
     app._pending = [{"uid": "eski"}]
     app.cancel_all()                                                    # "Durdur": hiçbir şey sonra sürmesin
     assert app._state().queue_count() == 0 and app._pending == []
+
+
+# ---------------------------------------------------------------- 2. motor durunca işler sürer
+def test_all_workers_dead_interrupts_without_deleting(tmp_path):
+    import pytest
+    from test_stability import _job, _pipe
+    p = _pipe(tmp_path, ("cuda:1",))
+    ev = []
+    p.events = ev.append
+    job, tasks = _job(p, tmp_path)
+    p.state.queue_add("u1", "url", "https://x/1", "t", {})
+    p.state.queue_started("u1", "u_test")
+    p.pool.dead.add("cuda:1")
+    p.fatal.add("cuda:1")                                               # yeniden açılamıyor (bellek yok / sürücü)
+    with pytest.raises(RuntimeError):
+        p._health()
+    assert job.status == "interrupted"                                  # eskiden: "failed" + kalıcı kuyruktan silinirdi
+    assert p.state.queue_count() == 1 and p.state.get("u_test")["status"] == "interrupted"
+    assert any(e["type"] == "interrupted" for e in ev) and not any(e["type"] == "failed" for e in ev)
+    p.pool = None                                                       # sahte havuzun close'u yok
+    p.close()
+    assert p.state.queue_all()[0]["started"]                            # kirli kesinti: sürdürmede deneme sayılacak
+
+
+def test_resume_skips_inbox_pending_and_fails_poison(tmp_path, monkeypatch):
+    import stt.gui as g
+    monkeypatch.chdir(tmp_path)
+    app = g.App()
+    pushed = []
+    real_push = app._push
+    app._push = lambda ev: (pushed.append(ev), real_push(ev))
+    d = app.start("https://www.youtube.com/watch?v=dddddddddd1", [], {})["uids"][0]   # zaten sırada (inbox)
+    st = app._state()
+    for uid, n in (("a", "aaaaaaaaaa1"), ("b", "bbbbbbbbbb1"), ("c", "cccccccccc1"), ("e", "eeeeeeeeee1")):
+        st.queue_add(uid, "url", f"https://www.youtube.com/watch?v={n}", uid, {"lang": "en"})
+    st.queue_add("f", "file", str(tmp_path / "silinmis.mp4"), "f", {})
+    st.queue_started("a", "u_a")                                        # çökme anında işleniyordu
+    st.queue_started("c", "u_c")
+    st.queue_bump("c")
+    st.queue_bump("c")
+    st.queue_started("c", "u_c")                                        # 3. kez yarıda: zehirli video
+    app._pending = [r for r in st.queue_all() if r["uid"] == "e"]       # kullanıcının "Devam et" kararını bekliyor
+    app._resume_after_failure = True
+    app._after_engine_start(first=False)
+    inbox = [it.extra["uid"] for it in list(app._inbox.queue)]
+    assert inbox == [d, "a", "b"]                                       # inbox'taki ikinci kez girmez, e beklemede
+    rows = {r["uid"]: r for r in st.queue_all()}
+    assert set(rows) == {d, "a", "b", "e"}                              # c (zehirli) ve f (dosya yok) çıktı
+    assert rows["a"]["tries"] == 1 and rows["a"]["started"] is None and rows["b"]["tries"] == 0
+    assert st.get("u_c")["status"] == "failed" and "3 kez" in st.get("u_c")["error"]
+    assert any(e.get("type") == "failed" and e.get("uid") == "c" for e in pushed)
+    assert app._inbox.queue[-1].extra["lang"] == "en"                   # iş ayarları korunur
+
+
+class _FakePipe:
+    made: list = []
+
+    def __init__(self, cfg):
+        from pathlib import Path
+
+        from stt.state import State
+        self.cfg, self.events, self.failed_reason = cfg, None, None
+        self.state = State(Path(cfg.out_dir).resolve() / ".stt")
+        self.devices, self.helper_devices, self._h_note, self.got = ["cpu"], [], {}, []
+        _FakePipe.made.append(self)
+
+    def start(self):
+        pass
+
+    def submit(self, it):
+        self.got.append(it.extra["uid"])
+        self.state.queue_started(it.extra["uid"], it.compute_key())
+
+    def pump(self, t):
+        time.sleep(0.005)
+        if len(_FakePipe.made) == 1 and self.got:
+            raise RuntimeError("Tüm işçiler durdu: test")               # ilk motor: işçiler öldü
+
+    def active(self):
+        return bool(self.got)
+
+    def close(self):
+        pass
+
+    def kill(self):
+        pass
+
+
+def test_runner_restarts_engine_and_resumes(tmp_path, monkeypatch):
+    import threading
+
+    import stt.engines as eng
+    import stt.gui as g
+    import stt.pipeline as pl
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(pl, "Pipeline", _FakePipe)
+    monkeypatch.setattr(eng, "gpu_info", lambda *a, **k: {})
+    monkeypatch.setattr(g, "ENGINE_RETRY_S", (0.05, 0.05))
+    monkeypatch.setattr(g, "RECOVER_POLL_S", 0.01)
+    _FakePipe.made = []
+    app = g.App()
+    states = []
+    real_engine = app._engine
+    app._engine = lambda **kw: (states.append(kw.get("state")), real_engine(**kw))
+    uid = app.start("https://www.youtube.com/watch?v=abcdefghijk", [], {})["uids"][0]
+    th = threading.Thread(target=app._runner, daemon=True)
+    th.start()
+    for _ in range(400):
+        if len(_FakePipe.made) >= 2 and _FakePipe.made[1].got:
+            break
+        time.sleep(0.01)
+    app._stop.set()
+    app._restart.set()
+    th.join(5)
+    assert len(_FakePipe.made) >= 2 and _FakePipe.made[1].got == [uid]  # yeni motor işi kaldığı yerden aldı
+    assert "error" in states and states[-1] in ("ready", "loading", "error")
+    assert app._state().queue_all()[0]["tries"] == 1                    # kirli kesinti bir deneme sayıldı
+
+
+def test_close_stops_downloads_of_old_engine(tmp_path):
+    from stt import fetch
+    from stt.pipeline import Job, Pipeline
+    p = Pipeline(Config(out_dir=tmp_path))
+    it = Item("url", "https://x/dl", key="u_dl")
+    job = Job(it, tmp_path / "w_dl", status="prep")
+    p.jobs[it.key] = job
+    p.close()                                                           # eski motorun indirmesi yenisiyle çakışmasın
+    assert str(job.work) in fetch.CANCELLED
+    fetch.CANCELLED.discard(str(job.work))

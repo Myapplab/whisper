@@ -2300,14 +2300,17 @@ class Pipeline:
         alive = main_alive
         if not alive and self.active():
             why = next(iter(self.worker_errors.values()), "") or "GPU/model hatası"
+            # işler başarısız sayılıp silinmez (1.9.27; kullanıcıda bellek dolunca "sıradaki işlerin hepsi silindi"):
+            # kalıcı kuyrukta kalır, uygulama motoru yeniden açınca kaldığı yerden sürer. Yarıda kalanlar deneme sayılır
+            # (_dirty_stop): aynı video motoru hep düşürüyorsa sonsuz döngü olmasın.
+            self._dirty_stop = True
             for job in list(self.jobs.values()):
                 if job.status in ("run", "prep", "queued"):
-                    job.status, job.error = "failed", f"Çalışan işçi kalmadı: {why}"
-                    self.emit("failed", job.item, error=job.error)
-                    self.state.set(job.item.key, source=job.item.source, status="failed", title=job.item.title,
+                    job.status = "interrupted"
+                    job.error = f"Motor durdu ({why[:160]}); yeniden açılınca kaldığı yerden sürecek"
+                    self.emit("interrupted", job.item, error=job.error)
+                    self.state.set(job.item.key, source=job.item.source, status="interrupted", title=job.item.title,
                                    error=job.error)
-                    with self.lock:
-                        self.results.append(job)
             self.failed_reason = self.failed_reason or f"Tüm işçiler durdu: {why}"
             self.emit("fatal", error=self.failed_reason)
             raise RuntimeError(self.failed_reason)
@@ -2674,6 +2677,11 @@ class Pipeline:
                 self.state.queue_unstart_all()
             except Exception:  # noqa: BLE001
                 pass
+        from . import fetch as _fetch
+        with self.lock:  # sürmekte olan indirmeler kesilsin: yeni motor aynı işi sürdürürken aynı klasöre yazmasın
+            for job in self.jobs.values():
+                if job.status == "prep":
+                    _fetch.CANCELLED.add(str(job.work))
         self.prep.shutdown(wait=False, cancel_futures=True)
         self.fin.shutdown(wait=True)
         for pool in self._pools():

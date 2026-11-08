@@ -26,6 +26,12 @@ from .util import console_python, log, read_jsonl
 HTML_PATH = Path(__file__).with_name("gui.html")
 URL_RE = re.compile(r"https?://[^\s<>\"']+")
 UI_STATE = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "stt" / "pencere.json"
+# motor hata verince (işçiler öldü, model yüklenemedi) kendiliğinden yeniden açılma aralıkları (sn; 1.9.27). Eskiden
+# kullanıcı "Yeniden başlat"a basana dek bekliyordu: gece / ajanla çalışırken kuyruk saatlerce dururdu.
+ENGINE_RETRY_S = (60, 180, 600, 1800, 3600)
+ENGINE_OK_S = 1800          # bu kadar sorunsuz çalışan motorda hata sayacı baştan başlar
+RECOVER_POLL_S = 5.0
+MAX_RESUME_TRIES = 3        # aynı iş bu kadar kez kirli kesintiyle (çökme / motor durdu) yarıda kalırsa kalıcı hata
 
 
 def _redirect_std() -> Path:
@@ -173,7 +179,7 @@ class App:
             j["title"] = ev["title"]
         st = {"queued": "queued", "prep": "downloading", "planned": "running", "progress": "running",
               "retrying": "retrying", "done": "done", "failed": "cancelled" if ev.get("cancelled") else "failed",
-              "skipped": "skipped"}.get(typ)
+              "skipped": "skipped", "interrupted": "interrupted"}.get(typ)
         if typ == "live":
             st = "live" if ev.get("state") in ("start", "info", "text") else "finalizing"
             if ev.get("txt"):
@@ -233,6 +239,7 @@ class App:
     def _runner(self) -> None:
         from .pipeline import Pipeline
         from .engines import gpu_info
+        fails, first = 0, True
         while not self._stop.is_set():
             self._restart.clear()
             self._engine(state="loading", error=None, devices=[], spare=[])
@@ -271,8 +278,16 @@ class App:
             except Exception as e:  # noqa: BLE001
                 log.exception("Motor başlatılamadı")
                 self._engine(state="error", error=f"{type(e).__name__}: {e}")
-                self._restart.wait()
+                fails += 1
+                self._wait_recover(fails)
                 continue
+            t_start = time.time()
+            try:
+                self._after_engine_start(first)
+            except Exception:  # noqa: BLE001
+                log.exception("Yarım kalan işler sürdürülemedi")
+            first = False
+            failed = False
             try:
                 while not self._stop.is_set():
                     while True:
@@ -289,14 +304,90 @@ class App:
             except Exception as e:  # noqa: BLE001
                 log.error("Motor durdu: %s", e)
                 self._engine(state="error", error=str(e))
-                self._restart.clear()  # 'Yeniden başlat' düğmesini bekle
+                self._restart.clear()
+                failed = True
             finally:
                 try:
                     self._pipe.close()
                 except Exception:  # noqa: BLE001
                     pass
-            if not self._restart.is_set() and not self._stop.is_set():
+            if failed:
+                fails = 1 if time.time() - t_start >= ENGINE_OK_S else fails + 1
+                self._resume_after_failure = True  # yeni motor kuyruktaki (yarım kalan) işleri sürdürür
+                self._wait_recover(fails)
+            elif not self._restart.is_set() and not self._stop.is_set():
                 self._restart.wait()
+
+    def _has_work(self) -> bool:
+        """Motoru kendiliğinden yeniden açmaya değer iş var mı (sıradaki ya da kalıcı kuyrukta yarım kalan; kullanıcının
+        "Devam et" kararını bekleyenler sayılmaz)."""
+        if not self._inbox.empty():
+            return True
+        try:
+            return self._state().queue_count() > len(self._pending)
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _wait_recover(self, fails: int) -> None:
+        """Motor hata verdi: "Yeniden başlat"a basılana ya da geri çekilme süresi (ENGINE_RETRY_S) dolana dek bekle.
+        Süre dolunca yalnız bekleyen iş varsa ya da ajan modu açıksa yeniden açılır (iş yokken model boşuna yüklenmesin;
+        yeni iş gelince açılır)."""
+        delay = ENGINE_RETRY_S[min(max(fails, 1), len(ENGINE_RETRY_S)) - 1]
+        due = time.time() + delay
+        log.warning("[motor] hata verdi (%d. kez); %s sonra kendiliğinden yeniden açılacak (iş varsa)", fails,
+                    f"{delay / 60:.0f} dk" if delay >= 60 else f"{delay:g} sn")
+        while not self._stop.is_set():
+            if self._restart.wait(RECOVER_POLL_S):
+                return
+            if time.time() >= due and (self._has_work() or bool(getattr(self._cfg, "auto_mode", False))):
+                log.info("[motor] kendiliğinden yeniden açılıyor")
+                return
+
+    def _inbox_uids(self) -> set:
+        with self._inbox.mutex:
+            return {it.extra.get("uid") for it in list(self._inbox.queue)}
+
+    def _after_engine_start(self, first: bool) -> None:
+        """Motor açıldı: hata sonrası yeniden açıldıysa kalıcı kuyrukta yarım kalan işler kaldığı yerden sürer (sıradakiler
+        ve kullanıcının "Devam et" kararını bekleyenler hariç)."""
+        if getattr(self, "_resume_after_failure", False):
+            self._resume_after_failure = False
+            skip = {r["uid"] for r in self._pending} | self._inbox_uids()
+            rows = [r for r in self._state().queue_all() if r["uid"] not in skip]
+            n = self._resume(rows, "motor yeniden açıldı")
+            if n:
+                log.info("[motor] yeniden açıldı: %d iş kaldığı yerden sürüyor", n)
+
+    def _resume(self, rows: list[dict], why: str) -> int:
+        """Kalıcı kuyruktaki işleri yeniden sıraya koy (biten parçalar korunur). İşe başlanmışken kirli kesintiyle (çökme,
+        motor durdu) yarıda kalan iş bir deneme sayılır; MAX_RESUME_TRIES'a ulaşırsa kalıcı hata olur (aynı video
+        uygulamayı hep çökertiyorsa sonsuz döngü olmasın). Dönüş: sıraya konan iş sayısı."""
+        from .sources import Item
+        st = self._state()
+        n = 0
+        for row in rows:
+            tries = int(row.get("tries") or 0)
+            if row.get("started"):
+                tries = st.queue_bump(row["uid"])
+            title = row.get("title") or row["source"]
+            if tries >= MAX_RESUME_TRIES:
+                err = (f"STT bu videoyu işlerken {tries} kez beklenmedik durdu (çökme, bellek ya da motor hatası); sonsuz "
+                       "döngü olmasın diye atlandı. Linki yeniden ekleyerek tekrar deneyebilirsiniz.")
+                st.queue_remove(row["uid"])
+                if row.get("key"):
+                    st.set(row["key"], source=row["source"], status="failed", title=title, error=err)
+                log.warning("Atlandı (%s): %s — %s", why, title[:70], err)
+                self._push({"type": "failed", "uid": row["uid"], "source": row["source"], "title": title, "error": err})
+                continue
+            if row["kind"] == "file" and not Path(row["source"]).exists():
+                st.queue_remove(row["uid"])  # dosya silinmiş / taşınmış: her açılışta yeniden önerilmesin
+                log.warning("Sürdürülemedi (dosya yok): %s", row["source"])
+                continue
+            it = Item(row["kind"], row["source"], title=title, extra=dict(row.get("extra") or {}))
+            it.extra["uid"] = row["uid"]
+            self._enqueue(it, retry=True)
+            n += 1
+        return n
 
     # ---------------------------------------------------------- API (JS'ten)
     def hello(self) -> dict:
@@ -683,16 +774,8 @@ class App:
         msg = self._busy_msg()
         if msg:
             return {"ok": False, "count": 0, "error": msg}
-        from .sources import Item
-        n = 0
-        for row in self._pending:
-            it = Item(row["kind"], row["source"], title=row["title"] or row["source"], extra=dict(row["extra"]))
-            it.extra["uid"] = row["uid"]
-            if it.kind == "file" and not Path(it.source).exists():
-                continue
-            self._enqueue(it)
-            n += 1
-        self._pending = []
+        rows, self._pending = self._pending, []
+        n = self._resume(rows, "Devam et")
         return {"count": n}
 
     def clear_pending(self) -> dict:
