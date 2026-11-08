@@ -30,19 +30,21 @@ pyannote konuşmacı ayırma). Amaç: Fantasy Premier League için veri seti (ta
 ## Yayınlama
 - Yeni sürüm = `stt/__init__.py` sürümünü artır + `main`'e push. Kullanıcıya "uygulamada Güncelle'ye basın" de;
   zip/exe/PowerShell gönderme. (`pyproject.toml` değişirse güncellemede pip çalışır; gereksiz değiştirme.)
-- Testler: `pip install pytest numpy jiwer && python -m pytest -q tests` (666 test, ~13 sn; arayüz betiği için node varsa sözdizimi testi de çalışır). Commit mesajında model adı yazma.
+- Testler: `pip install pytest numpy jiwer && python -m pytest -q tests` (700+ test, ~15 sn; arayüz betiği için node varsa sözdizimi testi de çalışır). Commit mesajında model adı yazma.
 
 ## Haritası
 - `pipeline.py` kuyruk/işçi yönetimi, iptal (`cancel`, `cancel_all`), bitirme · `workers.py` işçi süreçleri ·
   `engines.py` Whisper/Diarizer/GPU bilgisi · `merge.py` kelime→konuşmacı · `outputs.py` dosyalar ·
   `fetch.py` indirme zinciri · `gui.py`+`gui.html` arayüz (pywebview) · `config.py` ayarlar (`stt.toml`) ·
   `updater.py` uygulama içi güncelleme · `match.py`/`dataset.py`/`fpl.py` takım-maç-FPL · `llm.py` yapay zekâ ·
-  `live.py` canlı · `channel.py` kanal/liste · `doctor.py` "Kontrol" · `voices.py` ses kütüphanesi / konuşmacı düzeltme · `governor.py` gece modu (ısıya göre görev arası mola) · `power.py` güç / saat sınırı · `tune.py` konuşmacı ayırmayı düzeltilmiş videolarla eğitme (`stt egit`) ·
+  `live.py` canlı · `channel.py` kanal/liste · `doctor.py` "Kontrol" · `autostart.py` Windows açılışında başlatma ("Otomatik çalışma (ajan)") · `flex.py` esnek güç (işlemci + bellek + kullanıcı yokken) · `voices.py` ses kütüphanesi / konuşmacı düzeltme · `governor.py` gece modu (ısıya göre görev arası mola) · `power.py` güç / saat sınırı · `tune.py` konuşmacı ayırmayı düzeltilmiş videolarla eğitme (`stt egit`) ·
   `reclassify.py` veri setini metni yeniden çevirmeden yeniden sınıflandırma ("Veri seti > Yeniden sınıflandır",
   `stt yeniden-siniflandir`). Sezonluk elle tutulan listeler: `match.PL_MANAGERS` + `MANAGER_SEASON` + `MANAGER_HISTORY` (hoca değişince tarihiyle),
   `dataset.PL_FALLBACK`, `fpl.TEAM_NAMES` (her sezon başında güncelle).
 - GUI kuralı: `App`'in `_` ile başlamayan metotları JS'e açık; olaylar yalnızca `App._push` ile (evaluate_js'i
   başka yerden çağırma, WebView2 takılıyordu).
+- Hermes ajanı (`Myapplab/hermes-agent-`, `scripts/stt_client.py`) yerel API'yi kullanır: `/api/jobs` (meşgulken 503),
+  `/api/status`, `/api/lookup`. API sözleşmesini değiştirirsen Hermes tarafını da güncelle.
 
 ## Değişmez kurallar
 - Monitörlü karta (RTX 3080) kendiliğinden yük verme; konuşmacı ayırma yalnızca GPU'da (`diar_cpu`=false),
@@ -52,7 +54,8 @@ pyannote konuşmacı ayırma). Amaç: Fantasy Premier League için veri seti (ta
 - `installer/kur.ps1` UTF-8 BOM'lu kalmalı. `installer/guncelle.ps1` yalnız ASCII.
 
 ## Kullanıcının makinesi
-Windows 11, RTX 3090 24 GB (cuda:1, işler burada) + RTX 3080 10 GB (cuda:0, monitörlü), i3-10100, 24 GB RAM,
+Windows 11, RTX 3090 24 GB (cuda:1, ana kart) + RTX 3080 10 GB (cuda:0; 2026-11'den beri monitör anakartta,
+Intel HD 630: iki NVIDIA kart da boş, esnek düzen), i3-10100, 24 GB RAM (sanal bellek sınırı ~32 GB, küçük),
 kurulum `C:\stt` (venv `.venv`, Python 3.11, torch 2.8.0+cu128, pyannote.audio 4.0.7 (community-1; 1.7.0'dan beri),
 faster-whisper 1.2.1).
 Smart App Control açık. Günlük: `%LOCALAPPDATA%\stt\stt_app.log`.

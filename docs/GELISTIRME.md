@@ -147,6 +147,41 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   altyaş işareti hocası da başlıktaysa atmaz); çok aranan olunca sonuncunun sorguları kesiliyordu (sırayla). Bilerek
   bırakılan: tarafsız kanalda hoca adı olmayan "A vs B | Post-match press conference" iki takıma da seçilir; Defender'ın
   bizim dosyalarımızı taraması ve sürücü (DPC) süresi "başka program" sayılabilir (kullanıcıda ölçülmeli: `[esnek]`).
+- **1.9.27 esnek güç 2 + ajanla (Hermes) otomatik çalışma** (tasarım `docs/superpowers/specs/2026-11-08-esnek-guc-ajan-design.md`,
+  plan `docs/superpowers/plans/2026-11-08-esnek-guc-ajan.md`). Kullanıcı: monitör Intel HD 630'da, oda soğuk; "esnek
+  güç açıkken uygulamaları kapattı, kendisi kapandı, bilgisayar kastı, sıradaki işlerin hepsi silindi"; Hermes ajanı
+  (`Myapplab/hermes-agent-`) linkleri otomatik çekiyor. (1) **Bellek** (`flex.py`): `Flex.update(..., commit_free,
+  idle_s)`; boş sanal bellek < 4 GB / RAM < 2 GB → HEMEN kademe 1 (`ram_low`: boştaki ikinci kart 20 sn'de kapanır),
+  < 2 GB / < 1 GB → kademe 2 + `mem_crit` (`_pending_ahead_ok` yeni indirme vermez; esnek kapalı / gece modunda da:
+  `_mem_watch_on`); sakin = işlemci < %20, RAM ≥ 3.5, sanal bellek ≥ 6. İkinci kart (metin `_helper_check`, ayırma
+  `_helper_diar_dispatch`) yalnız boş RAM ≥ 3 ve sanal bellek ≥ 6 GB iken açılır (`_sysmem_short`). İki kart + sanal
+  bellek sınırı < 40 GB → açılışta bir kez `PAGEFILE_DUAL_HINT` (özel boyut 16384-32768 MB); bellek azalınca saatte en
+  çok bir bildirim. Kök neden tahmini: kullanıcıda sınır ~32 GB (1.8.7 ölçümü), 3-4 CUDA süreci + tarayıcı.
+  (2) **Kullanıcı yokken** (`user_idle_s`, GetLastInputInfo): 5 dk fare / klavye yoksa işlemci yüzünden yavaşlama yok,
+  hemen kademe 0; bellek koruması sürer. (3) **Uzun çalışma**: `recycle_min` (180) gece modu dışında da boştaki tek
+  işçili havuzları yeniler, ikinci kart işçisini kapatır (`_recycle`, günlük `[yenileme]`); saatte bir `[verim]` satırı
+  (`stats()`: biten / hata / ses dk, en düşük boş bellek, kademe süreleri). (4) **İşler kaybolmaz**: `_enqueue` hemen
+  kalıcı kuyruğa; `emit` kapanırken failed/skipped'i kuyruktan silmez; `_prepare` kapanışta sessiz döner; `_health`
+  bütün işçiler ölünce işleri `interrupted` yapar (eskiden "failed" + kuyruktan silme = "hepsi silindi"); App
+  `_runner` geri çekilmeyle (`ENGINE_RETRY_S` 60/180/600/1800/3600 sn; iş varsa ya da ajan modunda) motoru yeniden
+  açar, `_resume` kalıcı kuyruktan sürdürür; kuyruk satırında `key / started / tries`: işe başlanmışken kirli kesinti
+  (çökme, işçiler öldü) = deneme, 3'te kalıcı hata; temiz kapanış (`kill`, `close`) deneme sayılmaz; kapanışta süren
+  indirmeler `fetch.CANCELLED`. "Durdur" kalıcı kuyruğu da temizler. (5) **Ajan modu** (`auto_mode`, Ayarlar >
+  "Otomatik çalışma (ajan)", `App.set_auto_mode`): API kapalıysa 8765, `stt/autostart.py` HKCU Run
+  "STT Basin Odasi" = `pythonw.exe -m stt.gui --baslangic` (küçültülmüş; Görev Yöneticisi'nde kapatılmışsa `ensure`
+  dokunmaz), ilk motor açılışında yarım işler kendiliğinden (`_auto_resume`). `gpuguard.note_unclean_end`: açılışta
+  "isleme" aralığı açıksa kirli kapanış (aralık kapatılır); son 24 saatte ≥ 2 → sürdürmez, `_auto_paused`, API 503,
+  "Devam et" / "Temizle" kaldırır. Kuyruk doluyken Güncelle: motor durdurulur (`kill`), güncellenir, yeniden açılınca
+  sürer (`_health` kapanırken çalışmaz). Arayüz: 300'den çok işte çalışanlar + hatalar (100) + sıradakilerin ilk 50'si +
+  son 150 biten. (6) **Yerel API**: `foreign_request` (Host 127.0.0.1/localhost, Origin, Sec-Fetch-Site: web
+  sayfaları 403; TARAMA C2); `/api/jobs` meşgul / duraklatılmışken 503 (`retry: true`; eskiden 200 + ok:false ve
+  Hermes linki kaybediyordu), kanal linki 422, boş / bozuk 400; `/api/status` (`App.api_status`: kuyruk total / working
+  / waiting, accepting, busy, paused, auto_mode, flex, memory, stats, notices); `/api/lookup` (`App.lookup`: done /
+  failed / waiting / working / interrupted / cancelled / missing / unknown + `retryable` = `api.retryable_error`).
+  Hermes tarafı: `scripts/stt_client.py` (STT'yi açar, `max_queue` 40, 503'te gönderildi saymaz, sonuçları bildirir,
+  geçici hatayı 6 saat sonra bir kez yeniden gönderir). DENENMEDİ: Windows (winreg, GetLastInputInfo, küçültülmüş
+  WebView2, gerçek bellek baskısı), gerçek kartlar; eşikler (4 / 2 / 6 GB, 5 dk) tahmin, `[verim]` / `[esnek]` satırlarıyla
+  ayarlanmalı.
 - **1.9.20 monitör Intel'e geçiş:** kullanıcı Intel sürücüsünü kurdu (Ayarlar'da artık Intel adı görünüyor) ama liste hâlâ "Monitör RTX 3080 bağlı" diyordu. `igpu_advice` artık üç durumu ayırır: Intel kurulu ama masaüstünde değil (= kablo hâlâ NVIDIA'da; "sürücü ✓, kalan tek adım kablo"), Intel masaüstünde + NVIDIA da (ikinci monitör/TV/kablo), yalnız Intel (✓). `mark_display`: Windows masaüstünü Intel çiziyorsa listede olmayan NVIDIA kart, nvidia-smi "Enabled" dese de boş sayılır (eskiden korunuyordu; kablo anakarttayken 3080 hiç kullanılmayabilirdi). Windows'ta denenmedi.
 - **1.9.19 gece modu (`stt/governor.py`, `cfg.night_mode`):** kullanıcı "uyurken 200+ video, bilgisayar çökmesin, GPU
   az harcasın, yavaş ama stabil, Afterburner gibi ama uygulama kendi ayarlasın" dedi. Fan eğrisi / hız aşırtma yazılımdan

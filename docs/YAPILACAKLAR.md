@@ -38,6 +38,26 @@ E.2 (C5) ve aşağıdaki K5 planı. **(1.9.5'ten kalan):** kullanıcı Güncelle
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
+- 1.9.27 (Claude; esnek güç 2 + Hermes ajanıyla otomatik çalışma; ayrıntı GELISTIRME "1.9.27"): kullanıcı: "monitör
+  HD 630'da, oda soğuk; esnek güç bu iş için gelişsin, sorunsuz çalışsın" + "Hermes ajanıyla linkleri otomatik çeken
+  sistem kurdum, programı ajanla otomatik çalışmaya müsait hâle getir". Soru üzerine anlattı: esnek güç açıkken
+  "uygulamaları kapattı, kendisi kapandı, bilgisayar kastı, sıradaki işlerin hepsi silindi" → kök neden büyük olasılıkla
+  sanal bellek (commit) dolması + `_health`'in işleri silmesi. Yapılan: bellek bilinçli esnek güç, başında kimse yokken
+  tam hız, işler asla silinmez (motor kendini yeniden açar, kaldığı yerden), Ayarlar > "Otomatik çalışma (ajan)"
+  (Windows açılışında küçültülmüş başlatma + yarım işler kendiliğinden + çökme döngüsü koruması), kuyruk doluyken
+  güncelleme, yerel API güvenliği + 503 + /api/status + /api/lookup, binlerce işte arayüz sınırı. Hermes reposu da
+  güncellendi (`scripts/stt_client.py`; hermes HANDOFF.md'de). DENENMEDİ: Windows (açılış kaydı, GetLastInputInfo,
+  küçültülmüş pencere), gerçek bellek baskısı; eşikler tahmin. KULLANICIDAN: Güncelle → Ayarlar > "Otomatik çalışma
+  (ajan)" aç → ekran görüntüsü; Hermes PC'de `git pull` + `install.ps1`; birkaç saat sonra günlükte `[esnek]`,
+  `[verim]`, `[motor]`, `[ajan]` satırları. İsteğe bağlı (sebebi kesinleştirmek): PowerShell'de
+  Resource-Exhaustion-Detector olayları + `Win32_PageFileUsage` ekran görüntüsü (sanal bellek sınırı küçükse
+  PAGEFILE_DUAL_HINT). Güç düzeni önerisi: en çok "Dengeli" (yeniden başlamalar ısıdan değil güç sıçramasındandı).
+  **SIRADAKİ (kullanıcı istedi, bu işten sonra):** eski sezonlar: 2023-24 / 2024-25 / 2025-26 basın toplantılarında maç
+  + GW (FPL API yalnız güncel sezon; geçmiş fikstür kaynağı gerekir, ör. vaastav/Fantasy-Premier-League CSV) ve küme
+  düşmüş takımlar "Diğer Takımlar"a gitmesin; **yeni düzen: `Premier League/<sezon>/<takım>/...`** (kullanıcı:
+  "Premier League ilk olarak sezonlar, yani 2023-2024, 2024-2025; sezonlar içinde takımlar"). Hoca klasörü (1.9.26)
+  takımın altında kalsın mı sorulmalı. Yeniden sınıflandır eski kayıtları yeni düzene taşımalı. Hermes geçmiş sezonları
+  bu bitince göndersin (`backfill.py send`).
 - 1.9.26 (Claude; 666 test; bağımsız inceleme 5 bulgu, düzeltildi: tarafsız kanaldaki başka hoca sahte klasör açmasın, Haziran ataması 1 Temmuz'dan, elle açılmış sezon klasörüne dokunma, kısaltılmış maç adı): kullanıcı: "aynı takımda sezon ortasında ya da yeni sezonda yeni teknik direktör varsa
   dosya o sezon hocanın adıyla devam etsin (2025-2026 Manchester City Guardiola, 2026-2027 Manchester City Maresca)".
   Sezon klasörü artık `<sezon> <maç günkü hoca>` (`dataset.team_manager`, ayrıntı GELISTIRME "1.9.26"). Kaynak:
