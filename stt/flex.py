@@ -80,17 +80,20 @@ class Flex:
         cpu = 0.0 if self.away else (others or 0.0)  # kimse yokken başka programlar için işlemci bırakmaya gerek yok
         mem_want = 2 if crit else 1 if low else 0
         want = max(mem_want, 2 if cpu >= UP2_CPU else 1 if cpu >= UP1_CPU else 0)
-        if want > self.level:
+        msg = ""
+        if mem_want > self.level:  # bellek beklemez (işlemci de yüksek olsa): dolunca Windows programları kapatıyordu
+            old, self.level, self._calm_since = self.level, mem_want, None
+            msg = f"bellek azaldı ({self._what()}): kademe {old} → {self.level} ({self.describe()})"
+        if want > self.level:  # işlemci daha yüksek kademe istiyor: ardışık ölçümle (tek sıçrama yetmez)
             self._calm_since = None
-            if mem_want >= want:  # bellek beklemez: dolunca Windows programları kapatıyordu
-                old, self.level, self._up = self.level, want, 0
-                return f"bellek azaldı ({self._what()}): kademe {old} → {self.level} ({self.describe()})"
             self._up += 1
             if self._up >= UP_SAMPLES:
                 old, self.level, self._up = self.level, want, 0
                 return f"başka programlar yükte ({self._what()}): kademe {old} → {self.level} ({self.describe()})"
-            return ""
+            return msg
         self._up = 0
+        if msg:
+            return msg
         mem_ok = (ram_free is None or ram_free >= RAM_OK_GB) and (commit_free is None or commit_free >= COMMIT_OK_GB)
         if self.level and self.away and mem_ok:  # kimse yok, bellek yeterli: beklemeden tam güç
             old, self.level, self._calm_since = self.level, 0, None
@@ -132,6 +135,28 @@ class Flex:
             # ölçüm her 10 sn: değer arayüzde bayatlamasın diye yazılmaz (yalnız kademe değişince olay)
             return "tam güç" + (" · başında kimse yok" if self.away else "")
         return f"yavaşladı ({self._what()}): {self.describe()}"
+
+
+def media_active() -> bool | None:
+    """Klavyeye / fareye dokunmadan bir şey izleniyor / sunuluyor mu (bu durumda bilgisayar başında biri var sayılır;
+    inceleme: maç izleyen kullanıcı 5 dk sonra "yok" sayılıp iki kart tam güce çıkıyordu): tam ekran uygulama
+    (SHQueryUserNotificationState: meşgul / D3D tam ekran / sunum) ya da ekranı açık tutan istek (video oynatıcı:
+    ES_DISPLAY_REQUIRED). Windows değilse ya da okunamazsa None."""
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        st = ctypes.c_int(0)
+        if ctypes.windll.shell32.SHQueryUserNotificationState(ctypes.byref(st)) == 0 and st.value in (2, 3, 4):
+            return True
+        flags = ctypes.c_ulong(0)
+        # SystemExecutionState (16): sistemin o anki "uyanık tut" bayrakları; 0x2 = ekran açık kalsın (oynatıcı)
+        if ctypes.windll.powrprof.CallNtPowerInformation(16, None, 0, ctypes.byref(flags), ctypes.sizeof(flags)) == 0 \
+                and flags.value & 0x2:
+            return True
+        return False
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def idle_from_ticks(now_ms: int, last_ms: int) -> float:

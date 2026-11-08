@@ -19,7 +19,9 @@ kendisi kapandı, bilgisayar kastı, işler durdu, sıradaki işlerin hepsi sili
 1. **Bellek bilinçli esnek güç** (`flex.py`): boş sanal bellek < 4 GB ya da boş RAM < 2 GB → hemen kademe 1 (ikinci kart
    yeni iş almaz, boşta 20 sn sonra kapanır); sanal bellek < 2 GB ya da RAM < 1 GB → kademe 2 + yeni indirme durur.
    Sakin = işlemci < %20, RAM ≥ 3.5, sanal bellek ≥ 6 GB. Bellek koruması esnek kapalı / gece modunda da (yalnız
-   indirme durdurma). İkinci kart (metin ya da ayırma) yalnız boş RAM ≥ 3 GB ve boş sanal bellek ≥ 6 GB iken açılır.
+   indirme durdurma). İkinci kart (metin ya da ayırma) yalnız boş RAM ≥ 3.5 + kartın payı ve boş sanal bellek ≥ 6 +
+   kartın payı iken açılır (pay ölçülür; inceleme sonrası: aksi hâlde aç-kapa döngüsü), bellek yüzünden kapanınca
+   15-60 dk açılmaz.
 2. **Kullanıcı yokken tam hız**: 5 dk fare / klavye yok (`GetLastInputInfo`) → işlemci yüzünden yavaşlama yok (bellek
    koruması sürer). Kullanıcı dönünce eski esnek davranış.
 3. **Uzun çalışma**: işçiler `recycle_min` (180) dakikada bir boştayken yenilenir (gece modunda `night_recycle_min`);

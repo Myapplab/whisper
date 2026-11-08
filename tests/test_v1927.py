@@ -71,7 +71,7 @@ def test_closing_pipeline_keeps_waiting_items(tmp_path):
     p.close()
 
 
-def test_prepare_marks_queue_started(tmp_path, monkeypatch):
+def test_prepare_does_not_count_as_try(tmp_path, monkeypatch):
     import stt.pipeline as pl
     p = pl.Pipeline(Config(out_dir=tmp_path))
     p.events = lambda e: None
@@ -85,7 +85,7 @@ def test_prepare_marks_queue_started(tmp_path, monkeypatch):
         raise pl.SkipItem("ses yok")
     monkeypatch.setattr(pl, "prepare_audio", fake_prepare)
     p._prepare(it)
-    assert seen["started"] and seen["key"] == it.key                     # iş başladı: kirli kesintide deneme sayılır
+    assert seen["started"] is None                                      # yalnız indiriliyor: çökmede suçlanmaz (inceleme)
     assert p.state.queue_count() == 0                                   # kalıcı hata: kuyruktan çıktı
     p.close()
 
@@ -594,7 +594,7 @@ def test_update_while_busy_keeps_queue(tmp_path, monkeypatch):
         if shut:
             break
         time.sleep(0.01)
-    assert r["ok"] and killed == [1] and app._stop.is_set() and relaunched == [1] and shut == [1]
+    assert r["ok"] and killed == [1] and app._halt.is_set() and relaunched == [1] and shut == [1]
     from stt.state import State
     assert [x["uid"] for x in State(tmp_path / "cikti" / ".stt").queue_all()] == [uid]   # kuyruk korundu
 
@@ -726,3 +726,414 @@ def test_api_lookup_statuses(tmp_path, monkeypatch):
         assert code == 200 and r["items"][0]["status"] == "failed"
     finally:
         srv.shutdown()
+
+
+# ================================================================ bağımsız inceleme düzeltmeleri (1.9.27)
+class _Clock:
+    def __init__(self):
+        self.t = 1_000_000.0
+
+    def time(self):
+        return self.t
+
+    def sleep(self, s):
+        self.t += s
+
+
+def _card_sim(tmp_path, monkeypatch, base_commit, helper_commit, away=True, seconds=3600, peak=None):
+    """Sahte saatle bir saat: ikinci kart sürekli isteniyor; kapalıyken boş sanal bellek base_commit, açıkken
+    helper_commit (yüklenirken peak) kadar az. Dönüş: (açılış sayısı, ikinci kartın bitirdiği görev)."""
+    import stt.pipeline as pl
+    from test_v199 import _pipe, _ready
+
+    from stt.pipeline import HELPER_OFF
+    clk = _Clock()
+    monkeypatch.setattr(pl, "time", clk)
+    p, job, tasks = _pipe(tmp_path, n=2000)
+    p.devices = ["cuda:1"]
+    p._h_parked["cuda:0"] = HELPER_OFF
+    p._h_parked["diar2"] = HELPER_OFF
+    p.load = {"util": 5, "used_mb": 500.0, "total_mb": 10240.0}
+    p._flex_sampler = type("S", (), {"sample": lambda s: (5.0, 50.0), "reset": lambda s: None})()
+    p._idle = lambda: 400.0 if away else 5.0
+    p._media = lambda: False
+    st = {"loading": False}
+
+    def mem():
+        used = 0 if "cuda:0" in p._h_parked else (peak if (peak and st["loading"]) else helper_commit)
+        return {"ram_total": 24, "ram_free": 12.0, "commit_total": 32, "commit_free": base_commit - used}
+    p._memstat = mem
+    p._flex_at = 0
+    events = []
+    _ready(p, "cuda:1")
+    sm = sh = sr = 0
+    for _ in range(seconds):
+        clk.t += 1
+        for due, m in [e for e in events if e[0] <= clk.t]:
+            events.remove((due, m))
+            if m.get("type") == "ready" and m["wid"] == "cuda:0":
+                st["loading"] = False
+            p._on_msg(m)
+        p._dispatch()
+        while sm < len(p.pool.put_q):
+            t = p.pool.put_q[sm]
+            sm += 1
+            events.append((clk.t, {"type": "start", "wid": "cuda:1", "tid": t["id"]}))
+            events.append((clk.t + 10, {"type": "done", "wid": "cuda:1", "tid": t["id"],
+                                        "payload": {"segments": [], "language": "en"}, "elapsed": 10}))
+        while sh < len(p.hpool.put_q):
+            t = p.hpool.put_q[sh]
+            sh += 1
+            events.append((clk.t, {"type": "start", "wid": "cuda:0", "tid": t["id"]}))
+            events.append((clk.t + 15, {"type": "done", "wid": "cuda:0", "tid": t["id"],
+                                        "payload": {"segments": [], "language": "en"}, "elapsed": 15}))
+        while sr < len(p.hpool.respawned):
+            sr += 1
+            st["loading"] = True
+            events.append((clk.t + 40, {"type": "ready", "wid": "cuda:0"}))   # model ~40 sn'de yüklenir
+    return len(p.hpool.respawned), sh
+
+
+def test_second_card_does_not_thrash_when_memory_tight(tmp_path, monkeypatch):
+    # inceleme (kritik): kart kendi belleğiyle boş sanal belleği 4 GB'ın altına itiyordu -> bekle, kapan, aç: saatte 40 yükleme
+    for i, (base, foot, away, peak) in enumerate(((6.5, 3.0, True, None), (6.5, 3.0, False, None), (8.0, 4.5, True, None),
+                                                  (6.5, 1.5, True, 4.5), (11.0, 6.5, True, None))):
+        opens, done = _card_sim(tmp_path / str(i), monkeypatch, base, foot, away, peak=peak)
+        assert opens <= 2, (base, foot, away, peak, opens)
+
+
+def test_second_card_runs_when_memory_has_room(tmp_path, monkeypatch):
+    opens, done = _card_sim(tmp_path, monkeypatch, 14.0, 3.0)
+    assert opens == 1 and done >= 100
+
+
+def test_helper_open_checks_memory_even_if_gpu_unreadable(tmp_path):
+    from test_v199 import _pipe, _ready
+
+    from stt.pipeline import HELPER_OFF
+    p, job, tasks = _pipe(tmp_path, n=6)
+    p._h_parked["cuda:0"] = HELPER_OFF
+    p.load = None                                                       # nvidia-smi zaman aşımı (bellek baskısında olası)
+    p._memstat = lambda: dict(MEM_LOW)
+    _ready(p, "cuda:1")
+    p._dispatch()
+    p._dispatch()
+    assert p.hpool.respawned == [] and "bellek" in p._h_note["cuda:0"]
+
+
+def test_flex_memory_escalates_at_once_even_with_busy_cpu():
+    from stt.flex import Flex
+    f = Flex()
+    assert "bellek" in f.update(80, 8.0, 0, commit_free=3.0) and f.level == 1   # işlemci sayacını beklemez
+    f.update(80, 8.0, 10, commit_free=3.0)
+    assert f.level == 2                                                 # işlemci de yüksek: ikinci ölçümde kademe 2
+
+
+def test_no_recycle_while_memory_low(tmp_path):
+    from test_stability import _job, _pipe
+    p = _pipe(tmp_path)
+    _job(p, tmp_path)
+    p.backlog.clear()
+    p.devices = ["cuda:1"]
+    p._on_msg({"type": "ready", "wid": "cuda:1"})
+    p._born["cuda:1"] = time.time() - 300 * 60
+    p.flex.ram_low = True                                               # bellek az: model yeniden yüklenmesin
+    p._recycle_tick()
+    assert p.pool.respawned == []
+    p.flex.ram_low = False
+    p._recycle_tick()
+    assert p.pool.respawned == ["cuda:1"]
+
+
+def test_pagefile_hint_once_and_same_threshold(tmp_path):
+    from test_v1921 import _flex_pipe
+
+    from stt.pipeline import PAGEFILE_DUAL_GB
+    p, job, tasks = _flex_pipe(tmp_path, 0)
+    ev = []
+    p.events = ev.append
+    p._memstat = lambda: {"ram_total": 24, "ram_free": 9, "commit_total": 40.0, "commit_free": 12}
+    p._pagefile_check()
+    p._pagefile_check()                                                 # motor yeniden açıldı: yine söylenmez
+    p._mem_notice({"ram_total": 24, "ram_free": 1.5, "commit_total": PAGEFILE_DUAL_GB, "commit_free": 3})
+    notes = [e["text"] for e in ev if e["type"] == "notice"]
+    assert len(notes) == 1 and "16384" not in notes[0]                  # 40 GB = önerilen yapıldı: ipucu tekrar edilmez
+
+
+def test_away_but_watching_video_counts_as_present(tmp_path):
+    from test_v1921 import _flex_pipe
+    p, job, tasks = _flex_pipe(tmp_path, 0)
+    p._flex_sampler = type("S", (), {"sample": lambda s: (80.0, 10.0)})()
+    p._memstat = lambda: dict(MEM_OK)
+    p._idle = lambda: 900.0                                             # 15 dk klavye / fare yok
+    p._media = lambda: True                                             # ama tam ekran video / ekranı açık tutan oynatıcı
+    for _ in range(2):
+        p._flex_at = 0
+        p._flex_tick()
+    assert not p.flex.away and p.flex.level == 2                       # izleyen var: esnek davranış sürer
+    p._media = lambda: False
+    p._flex_at = 0
+    p._flex_tick()
+    assert p.flex.away and p.flex.level == 0
+
+
+def test_strike_only_for_jobs_with_gpu_task(tmp_path):
+    from test_stability import _job, _pipe
+    p = _pipe(tmp_path)
+    job, tasks = _job(p, tmp_path)
+    p.state.queue_add("u1", "url", "https://x/1", "t", {})
+    p.state.queue_add("u2", "url", "https://x/2", "t2", {})             # yalnız indiriliyor
+    p._on_msg({"type": "ready", "wid": "cuda:1"})
+    p._on_msg({"type": "start", "wid": "cuda:1", "tid": tasks[0]["id"]})
+    rows = {r["uid"]: r for r in p.state.queue_all()}
+    assert rows["u1"]["started"] and rows["u2"]["started"] is None
+    p._on_msg({"type": "done", "wid": "cuda:1", "tid": tasks[0]["id"], "payload": {"segments": [], "language": "en"},
+               "elapsed": 1})
+    assert p.state.queue_all()[0]["started"] is None                    # görev bitti: çökse de bu iş suçlanmaz
+
+
+def test_crash_loop_ack_and_clean_start(tmp_path, monkeypatch):
+    from stt.gpuguard import mark_busy
+    g, app, store = _auto_app(tmp_path, monkeypatch, auto_mode=True)
+    sd = app._state_dir()
+    for _ in range(2):
+        mark_busy(sd, True)
+        g.App()
+    mark_busy(sd, True)
+    a = g.App()
+    a._after_engine_start(first=True)
+    assert a._auto_paused
+    a.resume_pending()                                                  # kullanıcı baktı
+    b = g.App()                                                         # temiz kapanıştan sonra açılış
+    b._after_engine_start(first=True)
+    assert not b._auto_paused
+    mark_busy(sd, True)
+    c = g.App()                                                         # onaydan sonra tek kirli kapanış
+    c._after_engine_start(first=True)
+    assert not c._auto_paused
+
+
+def test_clear_pending_keeps_new_jobs(tmp_path, monkeypatch):
+    import stt.gui as g
+    monkeypatch.chdir(tmp_path)
+    app = g.App()
+    app._state().queue_add("old", "url", "https://www.youtube.com/watch?v=oldoldoldol", "old", {})
+    app2 = g.App()
+    new = app2.start("https://www.youtube.com/watch?v=newnewnewne", [], {})["uids"][0]   # ajan yeni link gönderdi
+    app2.clear_pending()                                                # "Temizle": yalnız eski işler
+    assert [r["uid"] for r in app2._state().queue_all()] == [new]
+    assert app2.lookup(["https://www.youtube.com/watch?v=oldoldoldol"])[0]["status"] == "cancelled"
+
+
+def test_same_uid_twice_keeps_running_row(tmp_path):
+    import stt.pipeline as pl
+    p = pl.Pipeline(Config(out_dir=tmp_path))
+    p.events = lambda e: None
+    it = Item("url", "https://www.youtube.com/watch?v=abcdefghijk", title="t")
+    it.extra["uid"] = "same"
+    it.compute_key()
+    p.state.queue_add("same", "url", it.source, "t", {})
+    p.jobs[it.key] = pl.Job(it, tmp_path / "w", status="run")
+    dup = Item("url", it.source, title="t")
+    dup.extra["uid"] = "same"
+    dup.extra["_gen"] = 0
+    p._prepare(dup)
+    assert p.state.queue_count() == 1                                   # çalışan işin kaydı silinmez
+    p.close()
+
+
+def test_cancel_is_recorded_for_lookup(tmp_path, monkeypatch):
+    import stt.gui as g
+    monkeypatch.chdir(tmp_path)
+    app = g.App()
+    url = "https://www.youtube.com/watch?v=abcdefghijk"
+    uid = app.start(url, [], {})["uids"][0]
+    app.cancel(uid)                                                     # kullanıcı durdurdu: ajan yeniden göndermesin
+    assert app.lookup([url])[0]["status"] == "cancelled"
+    url2 = "https://www.youtube.com/watch?v=bbbbbbbbbbb"
+    app.start(url2, [], {})
+    app.cancel_all()
+    assert app.lookup([url2])[0]["status"] == "cancelled"
+
+
+def test_resume_continues_after_bad_row(tmp_path, monkeypatch):
+    import stt.gui as g
+    monkeypatch.chdir(tmp_path)
+    app = g.App()
+    st = app._state()
+    for uid in ("a", "b"):
+        st.queue_add(uid, "url", f"https://www.youtube.com/watch?v={uid * 11}", uid, {})
+    rows = st.queue_all()
+    rows[0]["kind"] = None                                              # bozuk satır
+    assert app._resume(rows, "test") == 1 and [it.extra["uid"] for it in list(app._inbox.queue)] == ["b"]
+
+
+def test_gui_mode_drops_results_and_prunes_finished(tmp_path):
+    from test_stability import _pipe
+
+    from stt.pipeline import Job
+    p = _pipe(tmp_path)
+    p.keep_results = False                                              # arayüz: bitenin metni bellekte tutulmaz
+    job = Job(Item("url", "https://x/r", key="u_r"), tmp_path / "wr", status="finalize")
+    p._finalize = lambda j: setattr(j, "result", {"segments": ["x" * 1000]})
+    p._finalize_safe(job)
+    assert job.result is None
+    for i in range(300):
+        k = f"u_{i}"
+        p.jobs[k] = Job(Item("url", f"https://x/{i}", key=k), tmp_path / k, status="done")
+        p.tasks[f"{k}:t:0000"] = {"id": f"{k}:t:0000", "job": k}
+        p.results.append(p.jobs[k])
+    p.jobs["u_live"] = Job(Item("url", "https://x/live", key="u_live"), tmp_path / "l", status="run")
+    p._prune()
+    assert len(p.jobs) <= 201 and "u_live" in p.jobs and "u_299" in p.jobs and "u_0" not in p.jobs
+    assert "u_0:t:0000" not in p.tasks and len(p.results) <= 200
+
+
+def test_api_status_does_not_wait_for_pipeline_lock(tmp_path, monkeypatch):
+    import threading
+
+    import stt.gui as g
+    from test_stability import _pipe
+    monkeypatch.chdir(tmp_path)
+    app = g.App()
+    app._pipe = _pipe(tmp_path / "p")
+    got = []
+    with app._pipe.lock:                                                # motor uzun bir işte kilidi tutuyor
+        th = threading.Thread(target=lambda: got.append((app.api_status(), app.lookup(["https://x/1"]))))
+        th.start()
+        th.join(3)
+    assert got and got[0][0]["queue"]["working"] == 0
+
+
+def test_mark_clean_exit_on_window_close(tmp_path, monkeypatch):
+    import json as _j
+
+    import stt.gui as g
+    from stt.gpuguard import mark_busy
+    monkeypatch.chdir(tmp_path)
+    app = g.App()
+    sd = app._state_dir()
+    app._state().queue_add("k", "url", "https://x/k", "k", {})
+    app._state().queue_started("k", "u_k")
+    mark_busy(sd, True)
+    app._mark_clean_exit()                                              # pencere kapanıyor (Windows kapanırken de)
+    assert _j.loads((sd / "isleme.json").read_text())["windows"][-1][1] is not None
+    assert app._state().queue_all()[0]["started"] is None
+
+
+def test_api_channel_start_busy_is_503(tmp_path, monkeypatch):
+    import stt.gui as g
+    monkeypatch.chdir(tmp_path)
+    app = g.App()
+    app.list_channel = lambda url, opts: {"ok": True, "items": [{"url": "https://www.youtube.com/watch?v=abcdefghijk",
+                                                                 "match": True}], "collection": "c"}
+    srv, req = _api(app)
+    try:
+        app._auto_paused = "çökme döngüsü"
+        assert req("/api/channel", {"url": "https://www.youtube.com/@x", "start": True})[0] == 503
+        app._auto_paused = ""
+        app._training = True
+        assert req("/api/channel", {"url": "https://www.youtube.com/@x", "start": True})[0] == 503
+        assert app._inbox.empty()
+        app._training = False
+        assert req("/api/channel", {"url": "https://www.youtube.com/@x", "start": False})[0] == 200
+    finally:
+        srv.shutdown()
+
+
+def test_set_auto_mode_warns_when_api_cannot_open(tmp_path, monkeypatch):
+    from stt import autostart as a
+    monkeypatch.setattr(a, "REG", _FakeReg())
+    g, app, store = _auto_app(tmp_path, monkeypatch)
+    app._start_api = lambda: setattr(app, "_api", None)                 # port başka programda
+    r = app.set_auto_mode(True)
+    assert r["ok"] and "8765" in r["warning"] and "açılamadı" in r["warning"]
+
+
+def test_autostart_waits_before_engine(tmp_path, monkeypatch):
+    import threading
+
+    import stt.engines as eng
+    import stt.gui as g
+    import stt.pipeline as pl
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(pl, "Pipeline", _FakePipe)
+    monkeypatch.setattr(eng, "gpu_info", lambda *a, **k: {})
+    _FakePipe.made = []
+    app = g.App()
+    app._start_delay = 0.4                                              # Windows açılışı: önce bilgisayar açılsın
+    t0 = time.time()
+    th = threading.Thread(target=app._runner, daemon=True)
+    th.start()
+    for _ in range(200):
+        if _FakePipe.made:
+            break
+        time.sleep(0.01)
+    took = time.time() - t0
+    app._stop.set()
+    app._restart.set()
+    th.join(5)
+    assert _FakePipe.made and took >= 0.35
+
+
+def test_update_while_busy_shows_progress_and_waits_engine(tmp_path, monkeypatch):
+    import threading
+
+    import stt.updater as up
+    g, app, store = _auto_app(tmp_path, monkeypatch, auto_mode=True)
+    app.start("https://www.youtube.com/watch?v=abcdefghijk", [], {})
+    order = []
+
+    class P:
+        def active(self):
+            return True
+
+        def kill(self):
+            order.append("kill")
+    app._pipe = P()
+
+    def engine():                                                       # motor iş parçacığı: durdurulunca kapanır
+        app._halt.wait(5)
+        time.sleep(0.2)
+        order.append("engine-closed")
+    app._runner_thread = threading.Thread(target=engine, daemon=True)
+    app._runner_thread.start()
+    monkeypatch.setattr(up, "apply", lambda progress: (progress("download", "iniyor"), {"ok": True, "version": "9"})[1])
+    monkeypatch.setattr(up, "relaunch", lambda: order.append("relaunch"))
+    monkeypatch.setattr(g, "_shutdown", lambda a: order.append("exit"))
+    monkeypatch.setattr(g, "RELAUNCH_DELAY_S", 0.0)
+    pushed = []
+    app._push = pushed.append
+    app.update_apply()
+    for _ in range(300):
+        if "exit" in order:
+            break
+        time.sleep(0.01)
+    assert not app._stop.is_set()                                       # arayüz iş parçacığı sürüyor: ilerleme görünür
+    assert any(e.get("type") == "update" and e.get("stage") == "download" for e in pushed)
+    assert order.index("engine-closed") < order.index("relaunch")       # biten işin çıktısı yazılmadan kapanmaz
+
+
+def test_new_engine_waits_for_old_download(tmp_path, monkeypatch):
+    import threading
+
+    import stt.pipeline as pl
+    monkeypatch.setattr(pl, "PREP_POLL_S", 0.01)
+    p = pl.Pipeline(Config(out_dir=tmp_path))
+    p.events = lambda e: None
+    it = Item("url", "https://www.youtube.com/watch?v=abcdefghijk", title="t")
+    it.extra["uid"] = "w"
+    it.compute_key()
+    work = p.out_root / ".stt" / "is" / it.key[:18]
+    pl._prep_enter(str(work))                                           # eski motorun indirmesi hâlâ bu klasörde
+    calls = []
+    monkeypatch.setattr(pl, "prepare_audio", lambda item, w, cfg: (calls.append(time.time()), (_ for _ in ()).throw(pl.SkipItem("x")))[1])
+    th = threading.Thread(target=p._prepare, args=(it,), daemon=True)
+    th.start()
+    time.sleep(0.2)
+    assert calls == []                                                  # aynı klasöre iki indirme yazmasın
+    t_exit = time.time()
+    pl._prep_exit(str(work))
+    th.join(3)
+    assert calls and calls[0] >= t_exit
+    p.close()

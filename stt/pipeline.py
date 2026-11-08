@@ -15,7 +15,7 @@ from .audio import plan_chunks
 from .config import Config, diar_agc_on
 from .governor import NIGHT_PREP_AHEAD, SAMPLE_S, Governor
 from .flex import NOTE_L1 as FLEX_NOTE, PREP_AHEAD_L1 as FLEX_PREP_AHEAD, REST_L2 as FLEX_REST_S
-from .flex import SAMPLE_S as FLEX_SAMPLE_S, Flex, user_idle_s
+from .flex import AWAY_S, COMMIT_OK_GB, RAM_OK_GB, SAMPLE_S as FLEX_SAMPLE_S, Flex, media_active, user_idle_s
 from .fetch import Cancelled, DRMProtected, FetchError, LiveStream, SkipItem, is_transient, prepare_audio  # noqa: F401
 from .merge import apply_labels, assign_speakers, label_speakers, label_speakers_all, merge_chunks
 from .outputs import to_txt, write_all
@@ -48,10 +48,41 @@ HELPER_SWITCH_S = 20.0    # yardımcı kart bu kadar sn işsiz kalırsa öbür i
 NIGHT_NOTE = "kapalı · gece modu (tek kart)"
 FLEX_RESERVE_GB = 1.0      # esnek ikinci kartta (monitörsüz) başka programlara bırakılan bellek: tarayıcı Intel'le çizer
 DISK_CHECK_S = 30.0       # diskteki boş yer en çok bu kadar sn'de bir ölçülür
-# ikinci karta (metin ya da konuşmacı ayırma) model yüklemek için bilgisayarda en az bu kadar boş bellek (GB; 1.9.27).
-# Model yüklenirken RAM ve sanal bellek birkaç GB artar; kullanıcıda sanal bellek dolunca Windows programları kapatıyordu.
-HELPER_OPEN_RAM_GB = 3.0
-HELPER_OPEN_COMMIT_GB = 6.0
+OLD_PREP_WAIT_S = 120.0   # yeni motor aynı işin klasöründe eski motorun indirmesi bitene dek en çok bu kadar bekler
+PREP_POLL_S = 1.0
+_PREP_LOCK = threading.Lock()
+_PREP_ACTIVE: dict[str, int] = {}  # çalışma klasörü -> süren hazırlık (motorlar arası: kapanan motorun indirmesi)
+
+
+def _prep_enter(path: str) -> None:
+    with _PREP_LOCK:
+        _PREP_ACTIVE[path] = _PREP_ACTIVE.get(path, 0) + 1
+
+
+def _prep_exit(path: str) -> None:
+    with _PREP_LOCK:
+        n = _PREP_ACTIVE.get(path, 0) - 1
+        if n > 0:
+            _PREP_ACTIVE[path] = n
+        else:
+            _PREP_ACTIVE.pop(path, None)
+
+
+def _prep_busy(path: str) -> bool:
+    with _PREP_LOCK:
+        return path in _PREP_ACTIVE
+# ikinci kart (metin ya da konuşmacı ayırma) kendi belleğiyle bilgisayarı "bellek az" eşiğinin altına itmesin (1.9.27):
+# açılmak için boş RAM >= RAM_OK_GB + kartın payı, boş sanal bellek >= COMMIT_OK_GB + kartın payı. Pay ölçülür
+# (açılıştan sonraki ilk HELPER_FOOT_LEARN_S'de boş bellekteki en büyük düşüş), bilinmiyorsa HELPER_FOOT_DEFAULT.
+# İnceleme: eşikler payı hesaba katmayınca kart aç -> bellek az -> bekle -> kapan -> aç döngüsünde saatte 40 model
+# yüklüyordu. Bellek yüzünden kapatılan kart HELPER_MEM_COOL_S (tekrarında iki katı, en çok saat) açılmaz.
+HELPER_FOOT_DEFAULT = {"ram": 2.0, "commit": 3.5}
+HELPER_FOOT_LEARN_S = 600.0
+HELPER_MEM_COOL_S = 900.0
+HELPER_MEM_COOL_MAX_S = 3600.0
+PRUNE_S = 60.0            # biten işlerin belleği en çok bu kadar sn'de bir temizlenir (arayüz modu)
+KEEP_FINISHED = 200       # arayüz modunda bellekte tutulan son biten iş
+_PAGEFILE_WARNED: set = set()  # sayfa dosyası uyarısı her veri klasörü için uygulama açıkken bir kez
 PAGEFILE_DUAL_GB = 40.0   # iki kart çalışacakken sanal bellek sınırı bundan küçükse açılışta bir kez uyarılır
 MEM_NOTICE_S = 3600.0     # bellek azaldı bildirimi en çok saatte bir
 STATS_S = 3600.0          # günlüğe "[verim]" satırı aralığı
@@ -331,6 +362,15 @@ class Pipeline:
         self._memstat = memory_status          # RAM / sanal bellek ölçümü (testlerde değiştirilir)
         self._idle = user_idle_s               # klavye / fare en son kaç sn önce (Windows; bilinmiyorsa None)
         self._mem_noticed = 0.0
+        self._media = media_active             # tam ekran / video oynatılıyor mu (kullanıcı dokunmadan izliyor olabilir)
+        self._h_memfoot: dict[str, dict] = {}  # ikinci kart işçisi -> ölçülen bellek payı {"ram", "commit"} (GB)
+        self._h_memopen: dict[str, tuple] = {}  # açılış: (zaman, boş RAM, boş sanal bellek, en büyük düşüş {ram, commit})
+        self._h_cool_until = 0.0               # bellek yüzünden kapatılan ikinci kart bu zamana dek açılmaz
+        self._h_cool_s = 0.0
+        self._h_cool_last = 0.0
+        self._q_marked: set[str] = set()       # ekran kartında görevi süren işler (kalıcı kuyrukta "started")
+        self.keep_results = True               # komut satırı özet yazar; arayüz False: biten metinler bellekte birikmesin
+        self._prune_at = 0.0
         # verim (1.9.27): biten / hatalı işler (zaman, ses sn) ve saatlik özet (günlükte "[verim]", yerel API'de stats)
         self._stat_done: deque = deque(maxlen=20000)
         self._stat_failed: deque = deque(maxlen=20000)
@@ -745,9 +785,37 @@ class Pipeline:
     def _cancelled(self, item: Item) -> bool:
         return bool(item.extra.get("_cancel")) or item.extra.get("_gen", 0) < self.cancel_gen
 
+    def _note_cancelled(self, item: Item) -> None:
+        """Kullanıcının durdurduğu iş kalıcı kayıtta "cancelled" olsun (yerel API /api/lookup: ajan yeniden göndermesin;
+        eskiden işe başlanmadan durdurulan link "unknown" görünüyordu)."""
+        if item.kind != "url":
+            return  # dosyanın anahtarı içerik özeti: yalnız bunun için okunmasın
+        try:
+            key = item.key or item.compute_key()
+            prev = self.state.get(key)
+            if not (prev and prev["status"] == "done"):
+                self.state.set(key, source=item.source, status="cancelled", title=item.title)
+        except Exception:  # noqa: BLE001
+            log.debug("durdurma kaydı yazılamadı", exc_info=True)
+
+    def _wait_old_prep(self, work: Path, item: Item) -> bool:
+        """Kapanan (hata veren) motorun aynı işteki indirmesi / dönüştürmesi bitene dek bekle: ikisi aynı klasöre
+        yazmasın. Dönüş: False = bu arada durduruldu / kapanıyor."""
+        key, t0 = str(work), time.time()
+        while _prep_busy(key):
+            if self._cancelled(item) or self._closing:
+                return False
+            if time.time() - t0 >= OLD_PREP_WAIT_S:
+                log.warning("Önceki motorun indirmesi %.0f sn'dir bitmedi; yine de başlanıyor: %s", OLD_PREP_WAIT_S,
+                            item.title[:70])
+                break
+            time.sleep(PREP_POLL_S)
+        return True
+
     def _prepare(self, item: Item):
         cfg = self.cfg
         if self._cancelled(item):
+            self._note_cancelled(item)
             self.emit("failed", item, error="Durduruldu.", cancelled=True)
             return
         if item.kind == "file" and not item.key:
@@ -762,6 +830,7 @@ class Pipeline:
             if not done_before and not self._wait_prep_turn(item):
                 if self._closing and not self._cancelled(item):
                     return  # motor kapanıyor: iş kalıcı kuyrukta kalır, yeni motor sürdürür (iptal değil)
+                self._note_cancelled(item)
                 self.emit("failed", item, error="Durduruldu.", cancelled=True)
                 return
         prev = self.state.get(item.key) if not (cfg.force or item.extra.get("live")) else None
@@ -783,26 +852,34 @@ class Pipeline:
             return
         with self.lock:
             if item.key in self.jobs and self.jobs[item.key].status in ("queued", "prep", "run", "finalize"):
+                if self.jobs[item.key].item.extra.get("uid") == item.extra.get("uid"):
+                    return  # aynı iş ikinci kez geldi (yarış): sessizce bırak; "duplicate" çalışanın kaydını silerdi
                 self.emit("skipped", item, status="duplicate", error="Bu video zaten sırada / işleniyor.")
                 return
         job = Job(item, self.out_root / ".stt" / "is" / item.key[:18], status="prep")
+        if not self._wait_old_prep(job.work, item):
+            if not self._closing:
+                self._note_cancelled(item)
+                self.emit("failed", item, error="Durduruldu.", cancelled=True)
+            return
         from . import fetch as _fetch
         _fetch.CANCELLED.discard(str(job.work))  # daha önce durdurulduysa yeni deneme indirebilsin
         with self.lock:
             self.jobs[item.key] = job
         self.state.set(item.key, source=item.source, status="running", title=item.title)
-        if item.extra.get("uid"):
-            try:  # işe başlandı: uygulama bu sırada çökerse sürdürmede deneme sayılır (sonsuz çökme döngüsü olmasın)
-                self.state.queue_started(item.extra["uid"], item.key)
-            except Exception:  # noqa: BLE001
-                log.debug("kuyruk kaydı güncellenemedi", exc_info=True)
         log.info("Hazırlanıyor: %s", item.source)
         self.emit("prep", item)
         if item.extra.get("live"):
             self._start_live(item, job, {})
             return
         try:
-            job.wav, job.info = prepare_audio(item, job.work, cfg)
+            _prep_enter(str(job.work))
+            try:
+                job.wav, job.info = prepare_audio(item, job.work, cfg)
+            finally:
+                _prep_exit(str(job.work))
+            if self._closing:
+                return  # motor kapandı (hata / yeniden açılış): ses hazır, yeni motor kuyruktan sürdürür
             if self._cancelled(item):
                 with self.lock:
                     job.status = "cancelled"
@@ -1270,18 +1347,61 @@ class Pipeline:
     def _mem_crit(self) -> bool:
         return bool(self.flex.mem_crit) and self._mem_watch_on()
 
-    def _sysmem_short(self) -> str:
-        """İkinci karta model yüklemeye bilgisayarın belleği yetmiyorsa sebep, yetiyorsa "" (ölçülemezse de "")."""
+    def _sysmem_short(self, wid: str | None = None) -> str:
+        """İkinci karta (``wid``) model yüklemeye bilgisayarın belleği yetmiyorsa sebep, yetiyorsa "" (ölçülemezse de "").
+        Kartın kendi payı hesaba katılır: açıldıktan sonra da boş bellek "az" eşiğinin üstünde kalmalı (yoksa aç-kapa)."""
+        now = time.time()
+        if now < self._h_cool_until:
+            return (f"bilgisayarın belleği azaldığı için ikinci kart {max(1, round((self._h_cool_until - now) / 60))} "
+                    "dk bekliyor")
         try:
             m = self._memstat()
         except Exception:  # noqa: BLE001
             m = None
         if not m:
             return ""
-        if m["ram_free"] < HELPER_OPEN_RAM_GB or m["commit_free"] < HELPER_OPEN_COMMIT_GB:
-            return (f"bilgisayarın belleği az (boş RAM {m['ram_free']:.1f} GB, boş sanal bellek "
-                    f"{m['commit_free']:.1f} GB)")
+        foot = self._h_memfoot.get(wid or "") or HELPER_FOOT_DEFAULT
+        need_ram, need_commit = RAM_OK_GB + foot["ram"], COMMIT_OK_GB + foot["commit"]
+        if m["ram_free"] < need_ram or m["commit_free"] < need_commit:
+            return (f"bilgisayarın belleği az (boş RAM {m['ram_free']:.1f} / {need_ram:.1f} GB, boş sanal bellek "
+                    f"{m['commit_free']:.1f} / {need_commit:.1f} GB)")
         return ""
+
+    def _foot_open(self, wid: str) -> None:
+        """İkinci kart açılıyor: kendi bellek payını ölçmek için açılıştaki boş bellek."""
+        try:
+            m = self._memstat()
+        except Exception:  # noqa: BLE001
+            m = None
+        if m:
+            self._h_memopen[wid] = (time.time(), m["ram_free"], m["commit_free"], {"ram": 0.0, "commit": 0.0})
+
+    def _foot_sample(self, m: dict | None, now: float) -> None:
+        """Esnek ölçümünden: açık ikinci kartın payı = açılıştaki boş bellek - şimdiki (ilk HELPER_FOOT_LEARN_S içindeki
+        en büyük düşüş). Kart kapanınca ya da süre dolunca öğrenilir (başka programların artışı da girer: temkinli)."""
+        for wid, (t0, ram0, commit0, peak) in list(self._h_memopen.items()):
+            closed = wid in self._h_parked or wid in self.fatal
+            if m and not closed:
+                peak["ram"] = max(peak["ram"], ram0 - m["ram_free"])
+                peak["commit"] = max(peak["commit"], commit0 - m["commit_free"])
+            if closed or now - t0 >= HELPER_FOOT_LEARN_S:
+                del self._h_memopen[wid]
+                if peak["commit"] >= 0.5 or peak["ram"] >= 0.5:
+                    old = self._h_memfoot.get(wid) or HELPER_FOOT_DEFAULT
+                    new = {k: round(min(10.0, max(0.5, peak[k] + 0.3)), 1) for k in ("ram", "commit")}
+                    if closed:  # bellek yüzünden kapandıysa küçük ölçüm eskisini düşürmesin
+                        new = {k: max(new[k], old[k]) for k in new}
+                    self._h_memfoot[wid] = new
+                    log.info("[esnek] %s ikinci kart işçisi bellekte ~%.1f GB RAM, ~%.1f GB sanal bellek kaplıyor: "
+                             "sonraki açılış buna göre", wid, new["ram"], new["commit"])
+
+    def _mem_cooldown(self, now: float) -> None:
+        """İkinci kart bellek yüzünden kapatıldı: bir süre açılmasın (tekrarında süre iki katı, en çok saat)."""
+        self._h_cool_s = min(HELPER_MEM_COOL_MAX_S, self._h_cool_s * 2) \
+            if now - self._h_cool_last < HELPER_MEM_COOL_MAX_S and self._h_cool_s else HELPER_MEM_COOL_S
+        self._h_cool_last = now
+        self._h_cool_until = now + self._h_cool_s
+        log.info("[esnek] bellek az: ikinci kart %.0f dk açılmayacak", self._h_cool_s / 60)
 
     def _mem_notice(self, m: dict | None) -> None:
         """Bellek azaldı: arayüze en çok saatte bir bildirim (sanal bellek sınırı küçükse kalıcı çözümle)."""
@@ -1292,7 +1412,7 @@ class Pipeline:
         msg = ("Bilgisayarın belleği azaldı (" + self.flex._what() + "): STT ikinci kartı bekletiyor"
                + (" ve yeni video indirmiyor" if self.flex.mem_crit else "")
                + "; bellek açılınca kendiliğinden tam güce döner. Tarayıcıda çok sekme / oyun varsa kapatmak yardımcı olur.")
-        if m and m.get("commit_total") is not None and m["commit_total"] < 48:
+        if m and m.get("commit_total") is not None and m["commit_total"] < PAGEFILE_DUAL_GB:
             msg += f" Sanal bellek sınırı {m['commit_total']:.0f} GB (küçük); kalıcı çözüm: " + PAGEFILE_DUAL_HINT
         log.warning("[esnek] %s", msg)
         self.emit("notice", text=msg)
@@ -1303,8 +1423,10 @@ class Pipeline:
             m = self._memstat()
         except Exception:  # noqa: BLE001
             m = None
-        if not m or m.get("commit_total") is None or m["commit_total"] >= PAGEFILE_DUAL_GB:
+        if not m or m.get("commit_total") is None or m["commit_total"] >= PAGEFILE_DUAL_GB \
+                or str(self.out_root) in _PAGEFILE_WARNED:
             return
+        _PAGEFILE_WARNED.add(str(self.out_root))  # motor yeniden açılınca tekrar söylenmez
         msg = (f"Sanal bellek sınırı {m['commit_total']:.0f} GB: iki ekran kartıyla uzun kuyrukta yetmeyebilir (dolunca "
                "Windows programları kapatır; STT bellek azalınca ikinci kartı bekletir, işler yavaşlar). "
                + PAGEFILE_DUAL_HINT)
@@ -1341,6 +1463,8 @@ class Pipeline:
                 cpu = self._flex_sampler.sample()
                 m = self._memstat()
                 idle = self._idle()
+                if idle is not None and idle >= AWAY_S and self._media():
+                    idle = 0.0  # dokunmadan izliyor (tam ekran / video): bilgisayar başında biri var
                 with self.lock:
                     old, was_low = self.flex.level, self.flex.ram_low
                     others = cpu[0] if cpu and self._flex_on() else None  # esnek kapalı: işlemci yavaşlatmaz
@@ -1351,6 +1475,7 @@ class Pipeline:
                     if self.flex.ram_low and not was_low:
                         self._mem_notice(m)
                     self._stat_sample(m, self.flex.level, time.time())
+                    self._foot_sample(m, time.time())
                     if self.flex.level != old:
                         if self.flex.level < 2:
                             self._flex_rest_until = 0.0
@@ -1396,6 +1521,8 @@ class Pipeline:
                 log.info("[%s] esnek: ikinci kart %d sn'dir bekliyor, kapatıldı (bellek boşalsın; gerekince açılır)",
                          wid, int(now - self._h_last.get(wid, now)))
                 self._park_helper(wid, HELPER_OFF)
+                if self.flex.ram_low:  # bellek yüzünden: hemen yeniden açılıp aynı döngüye girmesin
+                    self._mem_cooldown(now)
                 continue
             self._helper_note(wid, FLEX_NOTE)
 
@@ -1560,6 +1687,8 @@ class Pipeline:
         kapatılır; iş birikince yeniden açılır."""
         if mins <= 0:
             return
+        if self.flex.ram_low and self._mem_watch_on():
+            return  # bellek az: yenileme model yüklemesiyle bir an daha çok bellek ister; bellek açılınca
         for pool in (self.pool, self.dpool):
             if pool is None or getattr(pool, "threads", False) or len(pool.workers) != 1:
                 continue
@@ -1613,8 +1742,11 @@ class Pipeline:
 
     def _stats_tick(self) -> None:
         """Saatte bir günlüğe "[verim]" satırı (o saatte iş olduysa): bir sonraki oturumda hız / bellek / esnek kademe
-        ölçümle ayarlansın."""
+        ölçümle ayarlansın. Arayüz modunda biten işler bellekten temizlenir."""
         now = time.time()
+        if not self.keep_results and now - self._prune_at >= PRUNE_S:
+            self._prune_at = now
+            self._prune()
         h = self._stat_hour
         span = now - h["t0"]
         if span < STATS_S:
@@ -1704,15 +1836,18 @@ class Pipeline:
         cap = self._h_cap.get(wid) or 4
         foot = self._h_foot.get(wid) or HELPER_FOOT_GB
         sizes = [b for b in sorted(HELPER_FOOT_GB, reverse=True) if b <= cap] or [min(HELPER_FOOT_GB)]
+        if parked:
+            # kartta yer olsa da (ya da kart okunamasa da: nvidia-smi bellek baskısında zaman aşımına uğrayabilir)
+            # bilgisayarın belleği yetmiyorsa açılmaz (1.9.27)
+            short = self._sysmem_short(wid)
+            if short:
+                return short, 0
         used, total = (load or {}).get("used_mb"), (load or {}).get("total_mb")
         if not (isinstance(used, (int, float)) and isinstance(total, (int, float)) and total > 0):
             return "", sizes[-1]
         free = (total - used) / 1024
         reserve = self._reserve()
         if parked:
-            short = self._sysmem_short()  # kartta yer olsa da bilgisayarın belleği yetmiyorsa açılmaz (1.9.27)
-            if short:
-                return short, 0
             for b in sizes:
                 if free - reserve >= foot[b]:
                     return "", b
@@ -1848,6 +1983,7 @@ class Pipeline:
                 if isinstance(getattr(hp, "_ecfg", None), dict):
                     hp._ecfg = {**hp._ecfg, "helper_batch": batch}  # yeni süreç bu toplu boyutla yükler
                 self._mark_helper()
+                self._foot_open(wid)
                 hp.respawn(wid)
                 self.emit("worker", wid=wid, state="loading")
                 continue
@@ -1925,7 +2061,7 @@ class Pipeline:
                 frac = min(0.9, max(0.2, room / (total / 1024)))  # torch bu kadarını aşmaz (ayrılan bellek kalsın)
             else:
                 frac = self.cfg.display_gpu_limit_pct / 100 if 0 < self.cfg.display_gpu_limit_pct < 100 else None
-            short = self._sysmem_short()  # bilgisayarın belleği yetmiyorsa ikinci ayırma süreci açılmaz (1.9.27)
+            short = self._sysmem_short(wid)  # bilgisayarın belleği yetmiyorsa ikinci ayırma süreci açılmaz (1.9.27)
             if short:
                 self._h_ready[wid] = now + HELPER_RECHECK_S
                 self._helper_note(wid, "kapalı, bellek açılınca açılacak: " + short)
@@ -2078,6 +2214,7 @@ class Pipeline:
         log.info("[%s] yardımcı kartta konuşmacı ayırma açılıyor (%s, bellek sınırı %s; %.1f GB YouTube / tarayıcıya "
                  "ayrıldı)", wid, dev, f"%{round(frac * 100)}" if frac else "yok", self._reserve())
         self._mark_helper()
+        self._foot_open(wid)
         if self.hdpool is None:
             self.hdpool = WorkerPool([dev], ecfg, names=[wid])
             self.hdpool.start()
@@ -2171,11 +2308,13 @@ class Pipeline:
                 self.queued_n = max(0, self.queued_n - 1)
             t = self.tasks.get(m["tid"]) or {}
             j = self.jobs.get(t.get("job", ""))
+            self._q_mark(j, True)
             self.emit("worker", wid=wid, state="busy", task=t.get("kind"),
                       title=j.item.title if j else "", uid=j.item.extra.get("uid") if j else None)
             return
         tid = m["tid"]
         self.inflight.pop(wid, None)
+        self._q_mark(self.jobs.get((self.tasks.get(tid) or {}).get("job", "")), False)
         if typ == "done":
             self.restarts[wid] = 0  # çalışıyor: yeniden başlatma sayacı sıfırlanır
         self.idle.add(wid)
@@ -2342,6 +2481,24 @@ class Pipeline:
         job.pending.discard(tid)
         self._maybe_finalize(job)
 
+    def _q_mark(self, job, on: bool) -> None:
+        """Kalıcı kuyrukta "started": işin ekran kartında görevi sürüyor. Uygulama / motor bu sırada çökerse sürdürmede
+        bu iş bir deneme sayılır (3'te kalıcı hata). İnceleme: indirme başında işaretlenince her kirli kesintide sırada
+        hazırlanan 6 masum video da suçlanıyordu; artık yalnız görevi süren işler."""
+        uid = job.item.extra.get("uid") if job is not None else None
+        if not uid:
+            return
+        try:
+            if on and uid not in self._q_marked:
+                self._q_marked.add(uid)
+                self.state.queue_started(uid, job.item.key)
+            elif not on and uid in self._q_marked and not any(
+                    (self.tasks.get(t) or {}).get("job") == job.item.key for t, _ in list(self.inflight.values())):
+                self._q_marked.discard(uid)
+                self.state.queue_unstart(uid)
+        except Exception:  # noqa: BLE001
+            log.debug("kuyruk işareti yazılamadı", exc_info=True)
+
     def _respawn_diar(self, wid: str) -> None:
         """Hatadan sonra boştaki ayırma sürecini yeniden aç (kapanma işaretiyle: kuyruk kilidi bırakılsın)."""
         pool = self._pool_of(wid) if wid in ("diar", HELPER_DIAR) else None
@@ -2483,8 +2640,32 @@ class Pipeline:
             self.emit("failed", job.item, error=job.error)
             self.state.set(job.item.key, source=job.item.source, status="failed", title=job.item.title,
                            error=job.error)
+        if not self.keep_results:
+            # arayüz modu (1.9.27 inceleme): metin + kelime zamanları iş başına ~2 MB; günlerce süren kuyrukta 1000 işte
+            # ~2 GB bellekte kalıyordu. Metin diskte; komut satırı özeti için yalnız orada tutulur.
+            job.result = None
+            job.chunks, job.live_buf = [], {}
         with self.lock:
             self.results.append(job)
+
+    def _prune(self) -> None:
+        """Arayüz modu: biten işlerin son KEEP_FINISHED'i dışındakiler bellekten (iş, görevleri, sonuç listesi)."""
+        if self.keep_results:
+            return
+        with self.lock:
+            done = [k for k, j in self.jobs.items()
+                    if j.status not in ("queued", "prep", "run", "finalize") and not j.live_active]
+            drop = set(done[:-KEEP_FINISHED]) if len(done) > KEEP_FINISHED else set()
+            for k in drop:
+                job = self.jobs.pop(k)
+                uid = job.item.extra.get("uid")
+                if uid and self.items.get(uid) is job.item:
+                    self.items.pop(uid, None)
+            if drop:
+                for tid in [t for t, task in self.tasks.items() if task.get("job") in drop]:
+                    del self.tasks[tid]
+            if len(self.results) > KEEP_FINISHED:
+                del self.results[:-KEEP_FINISHED]
 
     def _fpl_from_previous(self, prev: dict, fpl: tuple[int, str]):
         """Metin zaten var: yalnızca FPL adımını (yeniden) çalıştır."""
@@ -2742,6 +2923,9 @@ class Pipeline:
                         self.state.set(job.item.key, source=job.item.source, status="cancelled",
                                        title=job.item.title)
                     self.emit("failed", job.item, error="Durduruldu.", cancelled=True)
+        for it in list(self.items.values()):  # sırada bekleyip hazırlanmamışlar: ajan bunları yeniden göndermesin
+            if not it.key or it.key not in self.jobs:
+                self._note_cancelled(it)
         log.warning("Durduruldu: %d iş. Çalışan parça bitince işçiler boşa çıkar.", n)
         return n
 
@@ -2808,6 +2992,7 @@ class Pipeline:
             pass
         try:  # temiz kapanış: yarım işler deneme sayılmaz
             self.state.queue_unstart_all()
+            self._q_marked.clear()
         except Exception:  # noqa: BLE001
             pass
         for job in list(self.jobs.values()):
@@ -2833,6 +3018,7 @@ class Pipeline:
         if not getattr(self, "_dirty_stop", False):  # işçiler hep birlikte öldüyse (çökme) yarım işler deneme sayılır
             try:
                 self.state.queue_unstart_all()
+                self._q_marked.clear()
             except Exception:  # noqa: BLE001
                 pass
         from . import fetch as _fetch

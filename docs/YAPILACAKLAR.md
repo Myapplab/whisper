@@ -46,7 +46,12 @@ E.2 (C5) ve aşağıdaki K5 planı. **(1.9.5'ten kalan):** kullanıcı Güncelle
   tam hız, işler asla silinmez (motor kendini yeniden açar, kaldığı yerden), Ayarlar > "Otomatik çalışma (ajan)"
   (Windows açılışında küçültülmüş başlatma + yarım işler kendiliğinden + çökme döngüsü koruması), kuyruk doluyken
   güncelleme, yerel API güvenliği + 503 + /api/status + /api/lookup, binlerce işte arayüz sınırı. Hermes reposu da
-  güncellendi (`scripts/stt_client.py`; hermes HANDOFF.md'de). DENENMEDİ: Windows (açılış kaydı, GetLastInputInfo,
+  güncellendi (`scripts/stt_client.py`; hermes HANDOFF.md'de). Bağımsız inceleme (1 kritik, 7 önemli, 14 küçük):
+  kritik = bellek sınırdayken ikinci kart aç-kapa döngüsü (saatte 40 model yüklemesi, sahte saatli simülasyonla) →
+  kartın kendi payı + soğuma süresi; önemliler (bellek denetimi nvidia-smi okunamazken atlanıyordu, 3 kirli kesinti
+  masum işleri düşürüyordu, çökme döngüsü onaydan sonra da duruyordu, "Temizle" bütün kuyruğu siliyordu, Hermes
+  yeniden gönderimi kuyruk sınırını aşıyordu, biten metinler bellekte birikiyordu, video izleyen "yok" sayılıyordu) ve
+  küçüklerin çoğu testle düzeltildi (721 test; Hermes 11). DENENMEDİ: Windows (açılış kaydı, GetLastInputInfo,
   küçültülmüş pencere), gerçek bellek baskısı; eşikler tahmin. KULLANICIDAN: Güncelle → Ayarlar > "Otomatik çalışma
   (ajan)" aç → ekran görüntüsü; Hermes PC'de `git pull` + `install.ps1`; birkaç saat sonra günlükte `[esnek]`,
   `[verim]`, `[motor]`, `[ajan]` satırları. İsteğe bağlı (sebebi kesinleştirmek): PowerShell'de

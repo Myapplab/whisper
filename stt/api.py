@@ -168,6 +168,10 @@ def make_handler(app):
                 if name == "live/stop":
                     return self._send(200, {"ok": app.stop_live(body.get("uid", ""))})
                 if name == "channel":
+                    if body.get("start"):  # iş eklenecek: meşgul / duraklatılmışken /api/jobs gibi 503
+                        why = getattr(app, "_auto_paused", "") or app._busy_msg()
+                        if why:
+                            return self._send(503, {"ok": False, "error": why, "retry": True})
                     res = app.list_channel(body.get("url", ""), body)
                     if body.get("start") and res.get("items"):
                         urls = [e["url"] for e in res["items"] if e.get("match")]

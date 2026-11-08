@@ -131,6 +131,10 @@ class App:
         self._st = None
         self._pending: list[dict] = []
         self._auto_paused = ""                 # ajan modu çökme döngüsü yüzünden durdu (sebep); "Devam et" kaldırır
+        self._unclean_now = False              # bu açılış iş yaparken kirli kapanıştan sonra mı
+        self._halt = threading.Event()         # motoru durdur (güncelleme); _stop'tan farkı: arayüz iş parçacıkları sürer
+        self._start_delay = 0.0                # Windows açılışında (ajan modu) motor biraz sonra açılır
+        self._runner_thread = None
         from collections import deque
         self._notices: deque = deque(maxlen=20)  # son uyarılar (yerel API /api/status: ajan Telegram'a iletebilsin)
         self._unclean_24h = 0
@@ -139,8 +143,9 @@ class App:
         except Exception:  # noqa: BLE001
             log.debug("bekleyen işler okunamadı", exc_info=True)
         try:  # önceki oturum iş yaparken kirli bittiyse (çökme / elektrik) say: ajan modunda çökme döngüsü koruması
-            from .gpuguard import note_unclean_end
-            self._unclean_24h = note_unclean_end(self._state_dir())
+            from .gpuguard import unclean_status
+            u = unclean_status(self._state_dir())
+            self._unclean_now, self._unclean_24h = u["now"], u["count"]
         except Exception:  # noqa: BLE001
             log.debug("kirli kapanış denetlenemedi", exc_info=True)
 
@@ -221,9 +226,8 @@ class App:
         from .util import memory_status
         pipe = self._pipe
         working = 0
-        if pipe is not None:
-            with pipe.lock:
-                working = sum(1 for j in pipe.jobs.values() if j.status in ("prep", "run", "finalize"))
+        if pipe is not None:  # motor kilidi beklenmez (kart kapatılırken 15 sn tutulabilir; ajan zaman aşımına düşmesin)
+            working = sum(1 for j in list(pipe.jobs.values()) if j.status in ("prep", "run", "finalize"))
         try:
             total = self._state().queue_count()
         except Exception:  # noqa: BLE001
@@ -258,8 +262,7 @@ class App:
         working: set = set()
         pipe = self._pipe
         if pipe is not None:
-            with pipe.lock:
-                working = {k for k, j in pipe.jobs.items() if j.status in ("prep", "run", "finalize")}
+            working = {k for k, j in list(pipe.jobs.items()) if j.status in ("prep", "run", "finalize")}
         out = []
         for u in list(urls or [])[:2000]:
             u = str(u or "").strip()
@@ -332,11 +335,15 @@ class App:
         from .pipeline import Pipeline
         from .engines import gpu_info
         fails, first = 0, True
-        while not self._stop.is_set():
+        if self._start_delay:  # Windows açılışı: önce bilgisayar açılsın, sonra model yüklensin
+            log.info("[ajan] Windows açılışında başladı: motor %.0f sn sonra açılacak", self._start_delay)
+            self._restart.wait(self._start_delay)
+        while not self._stop.is_set() and not self._halt.is_set():
             self._restart.clear()
             self._engine(state="loading", error=None, devices=[], spare=[])
             try:
                 self._pipe = Pipeline(self._cfg)
+                self._pipe.keep_results = False  # biten metinler bellekte birikmesin (günlerce süren kuyruk)
                 self._pipe.events = self._push
                 self._pipe.start()
                 gi = gpu_info()
@@ -381,7 +388,7 @@ class App:
             first = False
             failed = False
             try:
-                while not self._stop.is_set():
+                while not self._stop.is_set() and not self._halt.is_set():
                     while True:
                         try:
                             item = self._inbox.get_nowait()
@@ -403,6 +410,8 @@ class App:
                     self._pipe.close()
                 except Exception:  # noqa: BLE001
                     pass
+            if self._halt.is_set():
+                return  # güncelleme: motor kapandı, uygulama yeniden açılacak
             if failed:
                 fails = 1 if time.time() - t_start >= ENGINE_OK_S else fails + 1
                 self._resume_after_failure = True  # yeni motor kuyruktaki (yarım kalan) işleri sürdürür
@@ -428,7 +437,7 @@ class App:
         due = time.time() + delay
         log.warning("[motor] hata verdi (%d. kez); %s sonra kendiliğinden yeniden açılacak (iş varsa)", fails,
                     f"{delay / 60:.0f} dk" if delay >= 60 else f"{delay:g} sn")
-        while not self._stop.is_set():
+        while not self._stop.is_set() and not self._halt.is_set():
             if self._restart.wait(RECOVER_POLL_S):
                 return
             if time.time() >= due and (self._has_work() or bool(getattr(self._cfg, "auto_mode", False))):
@@ -455,7 +464,7 @@ class App:
     def _auto_resume(self) -> None:
         """Ajan modu, uygulama açılışı: yarım kalan işler kendiliğinden sürer. Son 24 saatte iki kez iş yaparken kirli
         kapandıysa (çökme döngüsü) sürmez ve ajandan yeni iş alınmaz (yerel API 503): kullanıcı bakıp "Devam et"e basar."""
-        if self._unclean_24h >= CRASH_LOOP_N:
+        if self._unclean_now and self._unclean_24h >= CRASH_LOOP_N:
             self._auto_paused = (f"STT son 24 saatte {self._unclean_24h} kez iş yaparken beklenmedik kapandı (bellek "
                                  "dolması, çökme ya da elektrik). Döngüye girmesin diye yarım işler kendiliğinden "
                                  "sürdürülmedi ve ajandan yeni iş alınmıyor. Sebebe bakıp (Kontrol, günlük) üstteki "
@@ -469,7 +478,7 @@ class App:
         self._push({"type": "pending", "pending": [], "paused": ""})
         if n:
             log.info("[ajan] açılışta %d yarım iş kendiliğinden sürdü", n)
-        if self._unclean_24h:
+        if self._unclean_now:
             msg = "STT geçen sefer iş yaparken beklenmedik kapandı; yarım kalan işler kaldığı yerden sürüyor."
             log.warning("[ajan] %s", msg)
             self._push({"type": "notice", "text": msg})
@@ -485,28 +494,37 @@ class App:
         st = self._state()
         n = 0
         for row in rows:
-            tries = int(row.get("tries") or 0)
-            if row.get("started"):
-                tries = st.queue_bump(row["uid"])
-            title = row.get("title") or row["source"]
-            if tries >= MAX_RESUME_TRIES:
-                err = (f"STT bu videoyu işlerken {tries} kez beklenmedik durdu (çökme, bellek ya da motor hatası); sonsuz "
-                       "döngü olmasın diye atlandı. Linki yeniden ekleyerek tekrar deneyebilirsiniz.")
-                st.queue_remove(row["uid"])
-                if row.get("key"):
-                    st.set(row["key"], source=row["source"], status="failed", title=title, error=err)
-                log.warning("Atlandı (%s): %s — %s", why, title[:70], err)
-                self._push({"type": "failed", "uid": row["uid"], "source": row["source"], "title": title, "error": err})
-                continue
-            if row["kind"] == "file" and not Path(row["source"]).exists():
-                st.queue_remove(row["uid"])  # dosya silinmiş / taşınmış: her açılışta yeniden önerilmesin
-                log.warning("Sürdürülemedi (dosya yok): %s", row["source"])
-                continue
-            it = Item(row["kind"], row["source"], title=title, extra=dict(row.get("extra") or {}))
-            it.extra["uid"] = row["uid"]
-            self._enqueue(it, retry=True)
-            n += 1
+            try:
+                n += self._resume_row(st, row, why, Item)
+            except Exception:  # noqa: BLE001  (tek bozuk satır öbürlerini durdurmasın)
+                log.exception("Yarım iş sürdürülemedi: %s", str(row.get("source"))[:120])
         return n
+
+    def _resume_row(self, st, row: dict, why: str, Item) -> int:
+        """Tek kuyruk satırını sürdür (1) ya da kalıcı hata / dosya yok (0)."""
+        tries = int(row.get("tries") or 0)
+        if row.get("started"):
+            tries = st.queue_bump(row["uid"])
+        title = row.get("title") or row["source"]
+        if tries >= MAX_RESUME_TRIES:
+            err = (f"STT bu videoyu işlerken {tries} kez beklenmedik durdu (çökme, bellek ya da motor hatası); sonsuz "
+                   "döngü olmasın diye atlandı. Linki yeniden ekleyerek tekrar deneyebilirsiniz.")
+            st.queue_remove(row["uid"])
+            if row.get("key"):
+                st.set(row["key"], source=row["source"], status="failed", title=title, error=err)
+            log.warning("Atlandı (%s): %s — %s", why, title[:70], err)
+            self._push({"type": "failed", "uid": row["uid"], "source": row["source"], "title": title, "error": err})
+            return 0
+        if row["kind"] not in ("url", "file"):
+            raise ValueError(f"bilinmeyen tür: {row['kind']!r}")
+        if row["kind"] == "file" and not Path(row["source"]).exists():
+            st.queue_remove(row["uid"])  # dosya silinmiş / taşınmış: her açılışta yeniden önerilmesin
+            log.warning("Sürdürülemedi (dosya yok): %s", row["source"])
+            return 0
+        it = Item(row["kind"], row["source"], title=title, extra=dict(row.get("extra") or {}))
+        it.extra["uid"] = row["uid"]
+        self._enqueue(it, retry=True)
+        return 1
 
     # ---------------------------------------------------------- API (JS'ten)
     def hello(self) -> dict:
@@ -621,7 +639,7 @@ class App:
                 # güncellenemezdi). İşler kalıcı kuyrukta, biten parçalar diskte; motor durdurulur (kütüphaneler değişirse
                 # işçiler dosyaları kilitlemesin), STT yeniden açılınca kaldığı yerden sürer.
                 log.info("[güncelleme] kuyrukta iş var: motor durduruluyor; işler güncellemeden sonra kaldığı yerden sürer")
-                self._stop.set()
+                self._halt.set()  # yalnız motor (arayüze ilerleme gitmeye devam etsin)
                 self._restart.set()
                 try:
                     if self._pipe is not None:
@@ -641,6 +659,9 @@ class App:
 
             def later():
                 time.sleep(RELAUNCH_DELAY_S)
+                rt = self._runner_thread
+                if busy and rt is not None and rt is not threading.current_thread():
+                    rt.join(90)  # motor kapansın: bitmek üzere olan işin çıktısı yazılsın
                 try:
                     updater.relaunch()
                 finally:
@@ -782,9 +803,16 @@ class App:
         st = autostart.status()
         if err and st["supported"]:
             log.warning("[ajan] %s", err)
+        if not st["supported"]:
+            err = ""
+        if on and self._cfg.api_port and self._api is None:  # port başka programda: ajan bağlanamaz
+            api_err = (f"Yerel API {self._cfg.api_port} portunda açılamadı (başka bir program kullanıyor olabilir): "
+                       "Ayarlar > Yerel API portunu değiştirin, Hermes'in config.json'unda da aynı portu yazın.")
+            log.warning("[ajan] %s", api_err)
+            err = "; ".join(x for x in (err, api_err) if x)
         log.info("[ajan] otomatik çalışma %s (yerel API: %s)", "açıldı" if on else "kapatıldı",
                  f"http://127.0.0.1:{self._cfg.api_port}" if self._cfg.api_port else "kapalı")
-        return {"ok": True, "warning": err if (err and st["supported"]) else "", "settings": self.get_settings()}
+        return {"ok": True, "warning": err, "settings": self.get_settings()}
 
     # ---------------------------------------------------------- yapay zekâ
     def llm(self):
@@ -945,18 +973,55 @@ class App:
         if msg:
             return {"ok": False, "count": 0, "error": msg}
         rows, self._pending = self._pending, []
-        self._auto_paused = ""  # kullanıcı baktı: ajan modu yeniden iş alır
+        self._ack_unclean()  # kullanıcı baktı: ajan modu yeniden iş alır, eski kirli kapanışlar döngü sayılmaz
         n = self._resume(rows, "Devam et")
         return {"count": n}
 
     def clear_pending(self) -> dict:
-        try:
-            self._state().queue_clear()
-        except Exception:  # noqa: BLE001
-            log.debug("kuyruk temizlenemedi", exc_info=True)
-        self._pending = []
-        self._auto_paused = ""
+        """Şeritteki "Temizle": yalnız uygulama kapanmadan kalan (şeritte sayılan) işler silinir; bu arada eklenen /
+        çalışan işler kalıcı kuyrukta kalır (inceleme: bütün kuyruk siliniyordu)."""
+        rows, self._pending = self._pending, []
+        st = self._state()
+        for r in rows:
+            try:
+                st.queue_remove(r["uid"])
+                self._note_cancelled(r.get("kind"), r.get("source"), r.get("title"))
+            except Exception:  # noqa: BLE001
+                log.debug("kuyruk kaydı silinemedi", exc_info=True)
+        self._ack_unclean()
         return {"ok": True}
+
+    def _ack_unclean(self) -> None:
+        self._auto_paused = ""
+        try:
+            from .gpuguard import ack_unclean
+            ack_unclean(self._state_dir())
+        except Exception:  # noqa: BLE001
+            log.debug("kirli kapanış onayı yazılamadı", exc_info=True)
+
+    def _note_cancelled(self, kind, source, title="") -> None:
+        """Kullanıcının durdurduğu / sildiği link kalıcı kayıtta "cancelled" (yerel API: ajan yeniden göndermesin)."""
+        if kind != "url" or not source:
+            return
+        try:
+            from .sources import Item
+            key = Item("url", source).compute_key()
+            st = self._state()
+            prev = st.get(key)
+            if not (prev and prev["status"] == "done"):
+                st.set(key, source=source, status="cancelled", title=title or "")
+        except Exception:  # noqa: BLE001
+            log.debug("durdurma kaydı yazılamadı", exc_info=True)
+
+    def _mark_clean_exit(self) -> None:
+        """Pencere kapanıyor (kullanıcı ya da Windows kapanırken): iş yapma aralığı kapansın, yarım işler deneme sayılmasın.
+        Windows kapanırken süreç _shutdown'a varmadan öldürülebiliyor; o zaman bu iş çökme sanılırdı."""
+        try:
+            from .gpuguard import mark_busy
+            mark_busy(self._state_dir(), False)
+            self._state().queue_unstart_all()
+        except Exception:  # noqa: BLE001
+            log.debug("temiz kapanış işaretlenemedi", exc_info=True)
 
     def stop_live(self, uid: str) -> bool:
         return bool(self._pipe is not None and self._pipe.stop_live(uid))
@@ -1403,8 +1468,11 @@ class App:
             except queue.Empty:
                 break
             n += 1
+            self._note_cancelled(it.kind, it.source, it.title)
             self._push({"type": "failed", "uid": it.extra.get("uid"), "source": it.source, "title": it.title,
                         "error": "Durduruldu.", "cancelled": True})
+        for r in self._pending:
+            self._note_cancelled(r.get("kind"), r.get("source"), r.get("title"))
         if self._pipe is not None:
             n += self._pipe.cancel_all()
         try:  # "Durdur": kalıcı kuyrukta da bir şey kalmasın (yoksa motor yeniden açılınca / açılışta sürerdi)
@@ -1424,6 +1492,7 @@ class App:
                 break
             if it.extra.get("uid") == uid:
                 hit = True
+                self._note_cancelled(it.kind, it.source, it.title)
                 self._push({"type": "failed", "uid": uid, "source": it.source, "title": it.title,
                             "error": "Durduruldu.", "cancelled": True})
             else:
@@ -1702,6 +1771,7 @@ def main() -> int:
 
     def on_closing():
         _save_ui_state(size)
+        app._mark_clean_exit()  # Windows kapanırken süreç öldürülse de çökme sayılmasın
         app._stop.set()
         app._restart.set()
 
@@ -1725,7 +1795,10 @@ def main() -> int:
             log.debug("sürükle-bırak etkin değil", exc_info=True)
 
     app._window.events.loaded += on_loaded
-    threading.Thread(target=app._runner, name="motor", daemon=True).start()
+    if start_min:
+        app._start_delay = 90.0  # Windows açılışı: model yüklemesi bilgisayarın açılmasını yavaşlatmasın
+    app._runner_thread = threading.Thread(target=app._runner, name="motor", daemon=True)
+    app._runner_thread.start()
     webview.start(debug=bool(os.environ.get("STT_DEBUG")))
     _shutdown(app)
     return 0

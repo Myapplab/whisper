@@ -124,6 +124,11 @@ class State:
             self._db.execute("UPDATE queue SET started=?, key=COALESCE(?, key) WHERE uid=?", (time.time(), key, uid))
             self._db.commit()
 
+    def queue_unstart(self, uid: str) -> None:
+        with self._lock:
+            self._db.execute("UPDATE queue SET started=NULL WHERE uid=?", (uid,))
+            self._db.commit()
+
     def queue_unstart_all(self) -> None:
         """Temiz kapanış (uygulama kapatıldı, güncelleme, motor yeniden açılışı): yarım işler deneme sayılmaz."""
         with self._lock:
