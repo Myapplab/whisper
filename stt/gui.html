@@ -440,7 +440,9 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
       <div class="sec">Kanal takibi</div>
       <div id="sFollows" class="hint">Takip edilen kanal yok. “Kanal · liste” sekmesinden ekleyin.</div>
       <div class="row"><label class="hint">Kontrol aralığı <input type="text" id="sFollowH" style="width:60px" class="txt"> saat</label><span class="spacer"></span><button class="btn small" id="sFollowNow" type="button">Şimdi kontrol et</button></div>
-      <div class="sec">Dış programlar (haber sitesi / haber radarı)</div>
+      <div class="sec">Otomatik çalışma (Hermes ajanı) / dış programlar</div>
+      <label class="toggle"><input type="checkbox" id="sAuto"><span>Otomatik çalışma (ajan)<small>Hermes gibi bir ajan linkleri kendisi gönderir. Açınca: Yerel API açılır (8765), Windows açılınca STT küçültülmüş başlar, yarım kalan işler kendiliğinden sürer, motor hata verirse birkaç dakikada kendini yeniden açar. Hemen geçerli.</small></span></label>
+      <span class="hint" id="sAutoState"></span>
       <div class="field"><label for="sApiPort">Yerel API portu (0 = kapalı, ör. 8765)</label><input type="text" id="sApiPort" inputmode="numeric"><span class="hint" id="sApiState"></span></div>
       <div class="field"><label for="sApiTok">API anahtarı (isteğe bağlı)</label><input type="password" id="sApiTok" placeholder="boş = mevcut kalsın"><span class="hint" id="sApiTokState"></span></div>
       <div class="field"><label for="sHook">Webhook adresi (her biten iş JSON olarak gönderilir)</label><input type="text" id="sHook" placeholder="https://…"></div>
@@ -657,12 +659,24 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     }
     return j;
   }
+  // binlerce işte (ajan) her olayda bütün kartlar çizilirse zayıf işlemci yorulur: çalışanlar + hatalar + sıradakilerin
+  // başı + son bitenler gösterilir (1.9.27)
+  const MAX_CARDS = 300;
+  function visibleJobs(all) {
+    if (all.length <= MAX_CARDS) return { arr: all, more: "" };
+    const busy = [], err = [], queued = [], done = [];
+    for (const j of all) (j.kind === "busy" || j.liveOn ? busy : j.kind === "err" ? err : j.kind === "ok" || j.kind === "warn" ? done : queued).push(j);
+    const arr = [...busy, ...err.slice(0, 100), ...queued.slice(-50).reverse(), ...done.slice(0, 150)];
+    return { arr, more: "Toplam " + all.length + " iş: " + busy.length + " çalışıyor, " + queued.length + " sırada, " + done.length + " bitti / atlandı, " + err.length + " hata. Arayüz yavaşlamasın diye " + arr.length + " tanesi gösteriliyor." };
+  }
   function renderQueue() {
     const q = $("#queue"); q.replaceChildren();
-    const arr = [...state.jobs.values()].reverse();
-    $("#qcount").textContent = arr.length ? arr.filter(j => j.kind === "ok").length + " / " + arr.length + " bitti" : "";
-    $("#btnRetryAll").hidden = !arr.some(j => j.kind === "err");
-    if (!arr.length) { q.append($("#qempty") || el("div", { class: "empty" }, "Henüz iş yok")); return; }
+    const all = [...state.jobs.values()].reverse();
+    $("#qcount").textContent = all.length ? all.filter(j => j.kind === "ok").length + " / " + all.length + " bitti" : "";
+    $("#btnRetryAll").hidden = !all.some(j => j.kind === "err");
+    if (!all.length) { q.append($("#qempty") || el("div", { class: "empty" }, "Henüz iş yok")); return; }
+    const { arr, more } = visibleJobs(all);
+    if (more) q.append(el("div", { class: "empty" }, more));
     for (const j of arr) {
       const pct = j.kind === "ok" ? 100 : j.total ? Math.round(100 * j.done / j.total) : 0;
       const ds = j.dataset || {};
@@ -1063,6 +1077,13 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
   }
 
   // ---------- ayarlar
+  function autoText(s) {
+    if (!s.auto_mode) return "";
+    const a = s.autostart || {};
+    const boot = !a.supported ? "" : a.approved === false ? " · Windows açılışında başlama Görev Yöneticisi'nde kapatılmış (Başlangıç uygulamaları › STT Basin Odasi › Etkinleştir)"
+      : a.enabled ? " · Windows açılınca başlar" : " · Windows açılış kaydı yazılamadı";
+    return "Açık · " + (s.api_port ? "API http://127.0.0.1:" + s.api_port : "API kapalı") + boot;
+  }
   function fillSettings(s) {
     state.settings = s;
     const g = $("#sGpu"); g.replaceChildren(el("option", { value: "auto" }, "Önerilen: monitörün bağlı olmadığı kart(lar)"));
@@ -1093,6 +1114,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     const u = s.llm || {}; $("#sLlmUse").textContent = u.provider ? "Bu ay: ~$" + (u.month_usd || 0).toFixed(3) + " (" + (u.calls || 0) + " çağrı)" + (u.ready ? "" : " — anahtar yok") : "";
     $("#sApiPort").value = s.api_port || 0; $("#sHook").value = s.webhook_url || ""; $("#sFollowH").value = s.follow_interval_h || 6;
     $("#sApiState").textContent = s.api_port ? "Açık: http://127.0.0.1:" + s.api_port + "/api/status" : "";
+    $("#sAuto").checked = !!s.auto_mode; $("#sAutoState").textContent = autoText(s);
     showLlmFields();
     $("#chAiRow").hidden = !(u.ready); $("#optNews").closest("label").hidden = !(u.ready);
     $("#sHf").value = ""; keyState("#sHfState", s.hf_token_set, "hf_token", dzTokenFree(s)
@@ -1249,6 +1271,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
       case "dropped": state.files.push(...ev.paths); renderChips(); setMode("links"); toast(ev.paths.length + " dosya eklendi"); return;
       case "follows": renderFollows(ev.follows); return;
       case "night": state.night = ev; renderNight(); return;
+      case "pending": showPending(ev.pending || [], ev.paused || ""); return;
     }
     if (!ev.uid) return;
     const j = job(ev.uid, ev);
@@ -1308,6 +1331,16 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     if (r && !r.ok) { upd.busy = false; $("#btnUpd").disabled = false; showUpd("Güncellenemedi: " + r.error, { err: true }); }
   };
   $("#btnUpdHide").onclick = () => $("#upd").classList.remove("show");
+  $("#sAuto").onchange = async () => {
+    const on = $("#sAuto").checked; const r = await call("set_auto_mode", on);
+    if (r && r.settings) fillSettings(r.settings);
+    if (r) toast(r.warning || (on ? "Otomatik çalışma açıldı: Windows açılınca STT başlar, yarım işler sürer." : "Otomatik çalışma kapatıldı."));
+  };
+  function showPending(list, paused) {
+    if (!list.length && !paused) { $("#pend").classList.remove("show"); return; }
+    $("#pendText").textContent = (paused ? paused + " " : "") + (list.length ? "Uygulama kapanmadan önce bitmemiş " + list.length + " iş var (" + list.slice(0, 2).map(x => x.title || x.source).join(", ") + (list.length > 2 ? "…" : "") + "). Kaldığı yerden devam edilsin mi?" : "");
+    $("#pend").classList.add("show");
+  }
   $("#btnPendGo").onclick = async () => { const r = await call("resume_pending"); if (r && r.ok === false) { toast(r.error || "Şu an yapılamıyor."); return; } $("#pend").classList.remove("show"); if (r) toast(r.count + " iş yeniden sıraya kondu (biten parçalar korunur)."); };
   $("#btnPendClear").onclick = async () => { await call("clear_pending"); $("#pend").classList.remove("show"); };
   $("#sUpd").onclick = async () => { $("#sUpdState").textContent = "Denetleniyor…"; await call("update_check"); };
@@ -1330,10 +1363,7 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
     renderDataset(h.dataset);
     renderFollows(h.follows);
     state.night = h.night || { on: !!h.settings.night_mode }; renderNight();
-    if (h.pending && h.pending.length) {
-      $("#pendText").textContent = "Uygulama kapanmadan önce bitmemiş " + h.pending.length + " iş var (" + h.pending.slice(0, 2).map(x => x.title || x.source).join(", ") + (h.pending.length > 2 ? "…" : "") + "). Kaldığı yerden devam edilsin mi?";
-      $("#pend").classList.add("show");
-    }
+    showPending(h.pending || [], h.paused || "");
   }
   if (window.pywebview && window.pywebview.api) boot(); else window.addEventListener("pywebviewready", boot);
   renderQueue();

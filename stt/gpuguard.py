@@ -184,6 +184,38 @@ def crash_while_busy(state_dir: Path, events: list[dict]) -> list[dict]:
     return out
 
 
+UNCLEAN_KEEP_S = 7 * 86400
+
+
+def note_unclean_end(state_dir: Path, now: float | None = None) -> int:
+    """Açılışta: önceki oturum STT iş yaparken kirli bittiyse (çökme, bellek dolunca kapanma, elektrik, zorla yeniden
+    başlatma: "isleme" aralığı açık kalmış) kaydet ve açık aralığı kapat (bir sonraki iş yeni aralık açsın, aynı kesinti
+    iki kez sayılmasın). Dönüş: son 24 saatteki kirli bitiş sayısı (bu dahil). Ajan modu bununla kendiliğinden
+    sürdürmeyi durdurur (sonsuz çökme döngüsü olmasın)."""
+    now = time.time() if now is None else float(now)
+    busy = _mark_path(state_dir, "isleme")
+    marks = _mark_path(state_dir, "kirli_kapanis")
+    try:
+        wins = json.loads(busy.read_text(encoding="utf-8")).get("windows") or []
+    except Exception:  # noqa: BLE001
+        wins = []
+    try:
+        ends = [float(t) for t in json.loads(marks.read_text(encoding="utf-8")).get("t") or []]
+    except Exception:  # noqa: BLE001
+        ends = []
+    try:
+        if wins and wins[-1][1] is None:
+            wins[-1][1] = int(now)
+            busy.write_text(json.dumps({"windows": wins[-50:]}), encoding="utf-8")
+            ends.append(now)
+        ends = [t for t in ends if now - t <= UNCLEAN_KEEP_S][-50:]
+        marks.parent.mkdir(parents=True, exist_ok=True)
+        marks.write_text(json.dumps({"t": ends}), encoding="utf-8")
+    except OSError:
+        log.debug("kirli kapanış kaydı yazılamadı", exc_info=True)
+    return sum(1 for t in ends if now - t <= 86400)
+
+
 def reset_busy_marks(state_dir: Path) -> None:
     try:
         _mark_path(state_dir, "isleme").unlink()

@@ -108,7 +108,10 @@ class Config:
     llm_budget_usd: float = 5.0          # aylık harcama sınırı (tahmini); aşılınca yapay zekâ adımları atlanır
     llm_news: bool = False               # her metin için haber taslağı + alıntılar (haber.md)
     llm_qa: bool = True                  # konuşmacı ayrılamazsa soru-cevabı yapay zekâyla ayır
-    # dış programlar (haber sitesi / haber radarı)
+    # dış programlar (haber sitesi / haber radarı / Hermes ajanı)
+    # 1.9.27 "Otomatik çalışma (ajan)": Yerel API açık, Windows açılınca STT küçültülmüş başlar (stt/autostart.py),
+    # açılışta yarım işler kendiliğinden sürer (son 24 saatte iki kez çalışırken çöktüyse sürmez, kullanıcıya sorar)
+    auto_mode: bool = False
     api_port: int = 0                    # 0 = kapalı; ör. 8765 -> http://127.0.0.1:8765/api
     api_token: str | None = None
     webhook_url: str | None = None       # her biten iş için JSON POST

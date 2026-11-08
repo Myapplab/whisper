@@ -32,6 +32,8 @@ ENGINE_RETRY_S = (60, 180, 600, 1800, 3600)
 ENGINE_OK_S = 1800          # bu kadar sorunsuz çalışan motorda hata sayacı baştan başlar
 RECOVER_POLL_S = 5.0
 MAX_RESUME_TRIES = 3        # aynı iş bu kadar kez kirli kesintiyle (çökme / motor durdu) yarıda kalırsa kalıcı hata
+CRASH_LOOP_N = 2            # ajan modu: son 24 saatte bu kadar kirli kapanış -> açılışta kendiliğinden sürdürme yok
+RELAUNCH_DELAY_S = 1.5      # güncellemeden sonra yeniden açılmadan önce (arayüz "açılıyor" yazsın)
 
 
 def _redirect_std() -> Path:
@@ -128,10 +130,17 @@ class App:
         self._llm = None
         self._st = None
         self._pending: list[dict] = []
-        try:  # uygulama kapanınca yarım kalan işler: açılışta "Devam et" önerilir
+        self._auto_paused = ""                 # ajan modu çökme döngüsü yüzünden durdu (sebep); "Devam et" kaldırır
+        self._unclean_24h = 0
+        try:  # uygulama kapanınca yarım kalan işler: açılışta "Devam et" önerilir (ajan modunda kendiliğinden sürer)
             self._pending = self._state().queue_all()
         except Exception:  # noqa: BLE001
             log.debug("bekleyen işler okunamadı", exc_info=True)
+        try:  # önceki oturum iş yaparken kirli bittiyse (çökme / elektrik) say: ajan modunda çökme döngüsü koruması
+            from .gpuguard import note_unclean_end
+            self._unclean_24h = note_unclean_end(self._state_dir())
+        except Exception:  # noqa: BLE001
+            log.debug("kirli kapanış denetlenemedi", exc_info=True)
 
     def _state_dir(self) -> Path:
         return Path(self._cfg.out_dir).resolve() / ".stt"
@@ -357,6 +366,33 @@ class App:
             n = self._resume(rows, "motor yeniden açıldı")
             if n:
                 log.info("[motor] yeniden açıldı: %d iş kaldığı yerden sürüyor", n)
+        if first and getattr(self._cfg, "auto_mode", False):
+            self._auto_resume()
+
+    def _auto_resume(self) -> None:
+        """Ajan modu, uygulama açılışı: yarım kalan işler kendiliğinden sürer. Son 24 saatte iki kez iş yaparken kirli
+        kapandıysa (çökme döngüsü) sürmez ve ajandan yeni iş alınmaz (yerel API 503): kullanıcı bakıp "Devam et"e basar."""
+        if self._unclean_24h >= CRASH_LOOP_N:
+            self._auto_paused = (f"STT son 24 saatte {self._unclean_24h} kez iş yaparken beklenmedik kapandı (bellek "
+                                 "dolması, çökme ya da elektrik). Döngüye girmesin diye yarım işler kendiliğinden "
+                                 "sürdürülmedi ve ajandan yeni iş alınmıyor. Sebebe bakıp (Kontrol, günlük) üstteki "
+                                 "'Devam et'e basın.")
+            log.warning("[ajan] %s", self._auto_paused)
+            self._push({"type": "notice", "text": self._auto_paused})
+            self._push({"type": "pending", "pending": self._pending_view(), "paused": self._auto_paused})
+            return
+        rows, self._pending = self._pending, []
+        n = self._resume(rows, "açılışta (ajan modu)")
+        self._push({"type": "pending", "pending": [], "paused": ""})
+        if n:
+            log.info("[ajan] açılışta %d yarım iş kendiliğinden sürdü", n)
+        if self._unclean_24h:
+            msg = "STT geçen sefer iş yaparken beklenmedik kapandı; yarım kalan işler kaldığı yerden sürüyor."
+            log.warning("[ajan] %s", msg)
+            self._push({"type": "notice", "text": msg})
+
+    def _pending_view(self) -> list[dict]:
+        return [{"uid": x["uid"], "title": x["title"], "source": x["source"]} for x in self._pending]
 
     def _resume(self, rows: list[dict], why: str) -> int:
         """Kalıcı kuyruktaki işleri yeniden sıraya koy (biten parçalar korunur). İşe başlanmışken kirli kesintiyle (çökme,
@@ -405,9 +441,8 @@ class App:
             threading.Thread(target=self._display_guard_loop, name="ekran-koruma", daemon=True).start()
             threading.Thread(target=self._card_log_loop, name="kart-durumu", daemon=True).start()
         return {"version": __version__, "settings": self.get_settings(), "engine": self._engine_state,
-                "dataset": self.dataset(), "pending": [{"uid": x["uid"], "title": x["title"], "source": x["source"]}
-                                                       for x in self._pending],
-                "follows": self.follow_list(), "night": self._night_state()}
+                "dataset": self.dataset(), "pending": self._pending_view(),
+                "follows": self.follow_list(), "night": self._night_state(), "paused": self._auto_paused}
 
     # ---------------------------------------------------------- güncelleme
     def _display_guard_loop(self) -> None:
@@ -491,20 +526,38 @@ class App:
 
     def update_apply(self) -> dict:
         from . import updater
-        if self._pipe is not None and self._pipe.active():
-            return {"ok": False, "error": "Önce kuyruktaki işlerin bitmesini bekleyin (ya da Durdur'a basın), sonra güncelleyin."}
         if getattr(self, "_updating", False):
             return {"ok": False, "error": "Güncelleme zaten sürüyor."}
+        if getattr(self, "_training", False) or getattr(self, "_reclassifying", False):
+            return {"ok": False, "error": "Konuşmacı eğitimi / yeniden sınıflandırma sürüyor; bitince güncelleyin."}
+        busy = (self._pipe is not None and self._pipe.active()) or not self._inbox.empty()
         self._updating = True
         try:
+            if busy:
+                # 1.9.27: kuyruk doluyken de güncellenir (ajan sürekli iş gönderiyor; eskiden kuyruk hiç boşalmadığı için
+                # güncellenemezdi). İşler kalıcı kuyrukta, biten parçalar diskte; motor durdurulur (kütüphaneler değişirse
+                # işçiler dosyaları kilitlemesin), STT yeniden açılınca kaldığı yerden sürer.
+                log.info("[güncelleme] kuyrukta iş var: motor durduruluyor; işler güncellemeden sonra kaldığı yerden sürer")
+                self._stop.set()
+                self._restart.set()
+                try:
+                    if self._pipe is not None:
+                        self._pipe.kill()
+                except Exception:  # noqa: BLE001
+                    log.debug("motor durdurulamadı", exc_info=True)
             res = updater.apply(lambda stage, text: self._push({"type": "update", "stage": stage, "text": text}))
         finally:
             self._updating = False
-        if res.get("ok"):
-            self._push({"type": "update", "stage": "restart", "text": f"STT {res['version']} açılıyor…"})
+        if res.get("ok") or busy:
+            if res.get("ok"):
+                self._push({"type": "update", "stage": "restart", "text": f"STT {res['version']} açılıyor…"})
+            else:  # motor durduruldu: aynı sürümle yeniden açılır, işler sürer
+                log.error("Güncelleme yapılamadı (%s); STT yeniden açılıyor, işler kaldığı yerden sürecek", res.get("error"))
+                self._push({"type": "update", "stage": "error",
+                            "text": f"{res.get('error')} — STT yeniden açılıyor, işler kaldığı yerden sürecek."})
 
             def later():
-                time.sleep(1.5)
+                time.sleep(RELAUNCH_DELAY_S)
                 try:
                     updater.relaunch()
                 finally:
@@ -546,6 +599,7 @@ class App:
                 "webhook_url": c.webhook_url or "", "follow_interval_h": c.follow_interval_h,
                 "diar_engine": c.diar_engine or "pyannote", "diarizen_installed": _diarizen_installed(),
                 "diar_agc": "auto" if c.diar_agc is None else ("on" if c.diar_agc else "off"),
+                "auto_mode": bool(getattr(c, "auto_mode", False)), "autostart": self._autostart_status(),
                 "secret_env": env_secrets()}  # {ayar: ortam değişkeni}: bunlar arayüzden silinemez
 
     def save_settings(self, s: dict) -> dict:
@@ -615,6 +669,39 @@ class App:
         if self._cfg.api_port != old_port:
             self._start_api()
         return self.get_settings()
+
+    @staticmethod
+    def _autostart_status() -> dict:
+        try:
+            from . import autostart
+            return autostart.status()
+        except Exception:  # noqa: BLE001
+            return {"supported": False, "enabled": False, "current": False, "approved": None, "command": ""}
+
+    def set_auto_mode(self, on: bool) -> dict:
+        """Ayarlar > "Otomatik çalışma (ajan)": Yerel API (kapalıysa 8765), Windows açılınca küçültülmüş başlatma,
+        açılışta yarım işleri kendiliğinden sürdürme. Kapatınca Windows açılışında başlamaz (API açık kalır)."""
+        from . import autostart
+        on = bool(on)
+        upd: dict = {"auto_mode": on}
+        if on and not self._cfg.api_port:
+            upd["api_port"] = 8765
+        save_settings(upd)
+        old_port = self._cfg.api_port
+        self._cfg = load_config()
+        self._llm = None
+        if self._pipe is not None:
+            self._pipe.cfg = self._cfg
+            self._pipe._llm = None
+        if self._cfg.api_port != old_port:
+            self._start_api()
+        err = autostart.set_enabled(on)
+        st = autostart.status()
+        if err and st["supported"]:
+            log.warning("[ajan] %s", err)
+        log.info("[ajan] otomatik çalışma %s (yerel API: %s)", "açıldı" if on else "kapatıldı",
+                 f"http://127.0.0.1:{self._cfg.api_port}" if self._cfg.api_port else "kapalı")
+        return {"ok": True, "warning": err if (err and st["supported"]) else "", "settings": self.get_settings()}
 
     # ---------------------------------------------------------- yapay zekâ
     def llm(self):
@@ -775,6 +862,7 @@ class App:
         if msg:
             return {"ok": False, "count": 0, "error": msg}
         rows, self._pending = self._pending, []
+        self._auto_paused = ""  # kullanıcı baktı: ajan modu yeniden iş alır
         n = self._resume(rows, "Devam et")
         return {"count": n}
 
@@ -784,6 +872,7 @@ class App:
         except Exception:  # noqa: BLE001
             log.debug("kuyruk temizlenemedi", exc_info=True)
         self._pending = []
+        self._auto_paused = ""
         return {"ok": True}
 
     def stop_live(self, uid: str) -> bool:
@@ -1484,7 +1573,14 @@ def main() -> int:
 
     app._logpath = logpath
     log.addHandler(_UiLogHandler(app))
-    log.info("STT %s başlıyor (günlük: %s)", __version__, logpath)
+    start_min = "--baslangic" in sys.argv[1:]  # Windows açılışında (ajan modu): küçültülmüş
+    log.info("STT %s başlıyor (günlük: %s)%s", __version__, logpath, " — Windows açılışında" if start_min else "")
+    if app._cfg.auto_mode:
+        try:  # kurulum klasörü değiştiyse açılış kaydı düzelsin (kullanıcı Görev Yöneticisi'nde kapattıysa dokunulmaz)
+            from .autostart import ensure
+            ensure()
+        except Exception:  # noqa: BLE001
+            log.debug("Windows açılış kaydı denetlenemedi", exc_info=True)
     if app._cfg.ytdlp_autoupdate and not (TOOL_DIR / ".git").exists():
         from .fetch import start_ytdlp_update
         start_ytdlp_update(Path(app._cfg.out_dir).resolve() / ".stt")
@@ -1499,7 +1595,8 @@ def main() -> int:
     wkw = dict(url=str(HTML_PATH), js_api=app, width=geo["width"], height=geo["height"], min_size=geo["min_size"],
                resizable=True, background_color="#0f1318", text_select=True)
     try:
-        app._window = webview.create_window("STT — Basın Odası", maximized=bool(ui.get("max")), **wkw)
+        app._window = webview.create_window("STT — Basın Odası", maximized=bool(ui.get("max")) and not start_min,
+                                            minimized=start_min, **wkw)
     except TypeError:  # eski pywebview
         app._window = webview.create_window("STT — Basın Odası", **wkw)
     size = {"w": geo["width"], "h": geo["height"], "max": bool(ui.get("max"))}

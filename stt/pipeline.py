@@ -2386,8 +2386,8 @@ class Pipeline:
             self.idle.discard(wid)
 
     def _health(self):
-        if not self.pool:
-            return
+        if not self.pool or self._closing:
+            return  # kapanıyor (uygulama kapandı / güncelleme): ölen işçiler yeniden açılmasın
         now = time.time()
         for wid, (tid, t0) in list(self.inflight.items()):  # takılan görev: işçiyi yeniden başlat
             task = self.tasks.get(tid) or {}

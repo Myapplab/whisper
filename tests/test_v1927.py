@@ -453,3 +453,147 @@ def test_stats_and_hourly_line(tmp_path, caplog):
         p._stats_tick()
     assert any("[verim]" in r.message and "2 video" in r.message for r in caplog.records)
     assert time.time() - p._stat_hour["t0"] < 5                         # yeni saat başladı
+
+
+# ---------------------------------------------------------------- 5. ajan modu, Windows açılışı, güncelleme
+class _FakeReg:
+    def __init__(self):
+        self.d = {}
+
+    def get(self, key, name):
+        return self.d.get((key, name))
+
+    def set(self, key, name, value):
+        self.d[(key, name)] = value
+
+    def delete(self, key, name):
+        self.d.pop((key, name), None)
+
+
+def test_autostart_toggle_with_fake_registry(monkeypatch):
+    import os
+
+    from stt import autostart as a
+    reg = _FakeReg()
+    monkeypatch.setattr(a, "REG", reg)
+    assert a.status()["enabled"] is False
+    assert a.set_enabled(True) == ""
+    st = a.status()
+    assert st["enabled"] and st["current"] and st["approved"] is None
+    assert st["command"].endswith('" -m stt.gui --baslangic') and st["command"].startswith('"')
+    reg.d[(a.APPROVED_KEY, a.VALUE)] = bytes([3] + [0] * 11)            # Görev Yöneticisi'nde kapatıldı
+    assert a.status()["approved"] is False
+    reg.d[(a.RUN_KEY, a.VALUE)] = '"C:\\eski\\pythonw.exe" -m stt.gui --baslangic'
+    a.ensure()
+    assert reg.d[(a.RUN_KEY, a.VALUE)].startswith('"C:\\eski')          # kullanıcının kapattığına dokunulmaz
+    reg.d[(a.APPROVED_KEY, a.VALUE)] = bytes([2] + [0] * 11)
+    a.ensure()
+    assert reg.d[(a.RUN_KEY, a.VALUE)] == a.command()                   # kurulum yolu değişmişse düzeltilir
+    assert a.set_enabled(False) == "" and a.status()["enabled"] is False
+    monkeypatch.setattr(a, "REG", None)
+    if os.name != "nt":
+        assert a.status()["supported"] is False and a.set_enabled(True)
+
+
+def _auto_app(tmp_path, monkeypatch, **cfg):
+    import stt.gui as g
+    monkeypatch.chdir(tmp_path)
+    store = {"out_dir": tmp_path / "cikti", **cfg}
+    monkeypatch.setattr(g, "save_settings", lambda d: store.update(d))
+    monkeypatch.setattr(g, "load_config", lambda: Config(**store))
+    app = g.App()
+    app._start_api = lambda: setattr(app, "_api_started", app._cfg.api_port)
+    return g, app, store
+
+
+def test_set_auto_mode_opens_api_and_autostart(tmp_path, monkeypatch):
+    from stt import autostart as a
+    reg = _FakeReg()
+    monkeypatch.setattr(a, "REG", reg)
+    g, app, store = _auto_app(tmp_path, monkeypatch)
+    r = app.set_auto_mode(True)
+    assert r["ok"] and store["auto_mode"] is True and store["api_port"] == 8765 and app._api_started == 8765
+    assert reg.d[(a.RUN_KEY, a.VALUE)] == a.command()                   # Windows açılınca başlar
+    s = app.get_settings()
+    assert s["auto_mode"] is True and s["autostart"]["enabled"] is True
+    app.set_auto_mode(False)
+    assert store["auto_mode"] is False and (a.RUN_KEY, a.VALUE) not in reg.d
+    assert store["api_port"] == 8765                                    # API açık kalır (başka program kullanıyor olabilir)
+
+
+def test_note_unclean_end_counts_and_closes_window(tmp_path):
+    import json
+
+    from stt.gpuguard import mark_busy, note_unclean_end
+    st = tmp_path / ".stt"
+    assert note_unclean_end(st, now=1000.0) == 0                        # ilk kurulum: kayıt yok
+    mark_busy(st, True)                                                 # iş sürerken uygulama çöktü (aralık açık)
+    assert note_unclean_end(st, now=2000.0) == 1
+    wins = json.loads((st / "isleme.json").read_text())["windows"]
+    assert wins[-1][1] == 2000                                          # açık aralık kapatıldı: bir daha sayılmaz
+    assert note_unclean_end(st, now=2100.0) == 1
+    mark_busy(st, True)
+    assert note_unclean_end(st, now=3000.0) == 2                        # 24 saatte ikinci kirli kapanış
+    mark_busy(st, True)
+    assert note_unclean_end(st, now=3000.0 + 2 * 86400) == 1            # eskiler 24 saat dışında
+
+
+def test_auto_resume_on_first_start(tmp_path, monkeypatch):
+    g, app, store = _auto_app(tmp_path, monkeypatch, auto_mode=True)
+    st = app._state()
+    st.queue_add("p1", "url", "https://www.youtube.com/watch?v=abcdefghijk", "eski iş", {"lang": "en"})
+    app2 = g.App()                                                      # yeniden açılış (ör. Windows güncellemesi)
+    pushed = []
+    app2._push = pushed.append
+    assert [r["uid"] for r in app2._pending] == ["p1"]
+    app2._after_engine_start(first=True)
+    assert [it.extra["uid"] for it in list(app2._inbox.queue)] == ["p1"] and app2._pending == []
+    assert any(e.get("type") == "pending" and e.get("pending") == [] for e in pushed)
+    store["auto_mode"] = False                                          # ajan modu kapalı: "Devam et" beklenir
+    app3 = g.App()
+    app3._after_engine_start(first=True)
+    assert app3._inbox.empty() and [r["uid"] for r in app3._pending] == ["p1"]
+
+
+def test_crash_loop_pauses_auto_resume(tmp_path, monkeypatch):
+    from stt.gpuguard import mark_busy
+    g, app, store = _auto_app(tmp_path, monkeypatch, auto_mode=True)
+    sd = app._state_dir()
+    app._state().queue_add("p1", "url", "https://www.youtube.com/watch?v=abcdefghijk", "iş", {})
+    for _ in range(2):                                                  # 24 saatte iki kez iş yaparken çöktü
+        mark_busy(sd, True)
+        g.App()
+    mark_busy(sd, True)
+    app2 = g.App()
+    assert app2._unclean_24h >= 2
+    app2._after_engine_start(first=True)
+    assert app2._inbox.empty() and app2._auto_paused                    # sürdürülmedi, ajandan iş alınmıyor
+    app2.resume_pending()                                               # kullanıcı bakıp "Devam et"e bastı
+    assert app2._auto_paused == "" and [it.extra["uid"] for it in list(app2._inbox.queue)] == ["p1"]
+
+
+def test_update_while_busy_keeps_queue(tmp_path, monkeypatch):
+    import stt.updater as up
+    g, app, store = _auto_app(tmp_path, monkeypatch, auto_mode=True)
+    uid = app.start("https://www.youtube.com/watch?v=abcdefghijk", [], {})["uids"][0]
+    killed, relaunched, shut = [], [], []
+
+    class P:
+        def active(self):
+            return True
+
+        def kill(self):
+            killed.append(1)
+    app._pipe = P()
+    monkeypatch.setattr(up, "apply", lambda progress: {"ok": True, "version": "9.9.9"})
+    monkeypatch.setattr(up, "relaunch", lambda: relaunched.append(1))
+    monkeypatch.setattr(g, "_shutdown", lambda a: shut.append(1))
+    monkeypatch.setattr(g, "RELAUNCH_DELAY_S", 0.0)
+    r = app.update_apply()
+    for _ in range(200):
+        if shut:
+            break
+        time.sleep(0.01)
+    assert r["ok"] and killed == [1] and app._stop.is_set() and relaunched == [1] and shut == [1]
+    from stt.state import State
+    assert [x["uid"] for x in State(tmp_path / "cikti" / ".stt").queue_all()] == [uid]   # kuyruk korundu
