@@ -199,12 +199,17 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   **1.9.26: sezon klasöründe o günkü teknik direktör** ("2025-2026 Pep Guardiola", "2026-2027 Enzo Maresca"; sezon
   ortasında değişince aynı sezonda yeni klasör: Chelsea 2025-26 Maresca / McFarlane / Rosenior). `dataset.team_manager`:
   maç tarihindeki hoca (yoksa toplantı tarihi; aynı maçın toplantıları aynı klasörde) — 1. `match.MANAGER_HISTORY`
-  (takım → [(başlama günü, ad | None)], geçici hocalar dahil, 2026-11-08'de haberlerden doğrulandı; doğrulama
-  gününden sonra konuşan başka bilinen hoca varsa o), 2. konuşan bilinen hoca (o gün başka takımda değilse), 3. aynı
-  takımın aynı sezondaki başka kayıtlarında konuşan bilinen hoca (index.jsonl). Bilinmiyorsa klasör yalnız sezon.
+  (takım → [(başlama günü, ad | None)], geçici hocalar dahil, Haziran ataması 1 Temmuz'dan; 2026-11-08'de
+  haberlerden doğrulandı; tabloya girilmemiş değişiklikte eski hoca kalır — konuşana göre değiştirmek tarafsız
+  kanalda "Hansi Flick ... | Arsenal vs Barcelona" gibi videolarla sahte klasör açıyordu), 2. tabloda yoksa konuşan,
+  listelere göre o gün bu takımda olan ya da takımı bilinmeyen bilinen hoca + kulübün kendi kanalı, 3. aynı takımın
+  aynı sezondaki başka kayıtlarının `team_manager`'ı (index.jsonl, en yakın önceki). Bilinmiyorsa klasör yalnız
+  sezon. Tabloda olmayan takımda oyuncu toplantısı hocanınkinden önce işlenirse ayrı ("2026-2027") klasöre düşer;
+  "Yeniden sınıflandır" birleştirir.
   Oyuncunun / yardımcının toplantısı da hocanın klasörüne. index + mac.json `team_manager` (konuşan `manager` ayrı).
   `manager_team` artık tarihli videoda tabloya bakar (eski sezonun Sky videosu da doğru takıma). Eski kayıtlar
-  "Yeniden sınıflandır"la hocalı klasöre taşınır (`reclassify._same_match`: yalnız sezon katmanı değişiyorsa).
+  "Yeniden sınıflandır"la hocalı klasöre taşınır (`reclassify._same_match`: yalnız sezon katmanı değişiyorsa; elle
+  açılmış "2025-2026 yedek" gibi klasöre dokunulmaz; yol sınırı için kısaltılan maç adı aynı maç sayılır).
   Maç + GW, FPL API fikstürlerinden (fantasy.premierleague.com/api/bootstrap-static, /fixtures) eşleşir
   (`stt/dataset.py`), önbellek `<out>/.stt/fpl_cache.json`.
 - Takım/TD adı başlık + YouTube kanal adından (`stt/match.py`; Türkçe/Azerice kalıplar dahil).

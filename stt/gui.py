@@ -1254,8 +1254,10 @@ class App:
                 for m in matches:   # maçlar yeniden eskiye: her grubun ilk maçı en yenisi
                     if m["season"]:
                         seasons.setdefault(m["season_dir"], []).append(m)
-                # en yeni sezon üstte, sezon içinde son hoca üstte; "Sezon bilinmiyor" en altta
+                # en yeni sezon üstte, sezon içinde son hoca üstte (taşınmamış hocasız eski kayıtlar sezonun
+                # sonunda); "Sezon bilinmiyor" en altta
                 order = sorted(seasons, key=lambda x: (seasons[x][0]["season"] != NO_SEASON, seasons[x][0]["season"],
+                                                       bool(seasons[x][0]["team_manager"]),
                                                        seasons[x][0].get("match_date") or ""), reverse=True)
                 teams.append({"team": team, "folder": str(tfolder), "matches": matches,
                               "seasons": [{"season": seasons[x][0]["season"], "manager": seasons[x][0]["team_manager"],

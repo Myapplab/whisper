@@ -29,7 +29,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path, PurePath
 
-from .match import (_ALIAS_MAP, _ALIASES, MANAGER_HISTORY_CHECKED, _alias_norm, _known_manager, _norm, find_teams,
+from .match import (_ALIAS_MAP, _ALIASES, _alias_norm, _known_manager, _norm, club_of_channel, find_teams,
                     history_manager, is_team, manager_team, opp_suffix_words, opp_words, safe_filename)
 from .util import atomic_write_text, log, read_jsonl, write_jsonl_csv
 
@@ -410,15 +410,18 @@ def _meta_day(meta: dict) -> str | None:
     return None
 
 
-def _speaker_manager(name, team: str, day: str) -> str | None:
-    """Konuşan bilinen bir hocaysa ve o gün başka takımın hocası değilse tam adı (Sky'daki "Guardiola on Arsenal"
-    videosu Arsenal'in hocası sayılmaz). Oyuncu / bilinmeyen ad: None."""
+def _speaker_manager(name, team: str, day: str, channel_team: str | None = None) -> str | None:
+    """Konuşan, o gün bu takımın hocası olarak bilinen biri mi: listelere göre o gün bu takımda, ya da takımı
+    bilinmeyen bilinen bir hoca (Okan Buruk) ve video kulübün kendi kanalından. Tarafsız kanalda başka hocanın
+    videosu ("Hansi Flick press conference | Arsenal vs Barcelona", "Guardiola on Arsenal") sayılmaz; oyuncu /
+    bilinmeyen ad: None."""
     if not name:
         return None
     full = _known_manager(str(name).split(), [team])
     if not full:
         return None
-    return full if manager_team(full, day) in (None, team) else None
+    mt = manager_team(full, day)
+    return full if mt == team or (mt is None and channel_team == team) else None
 
 
 _learn_cache: dict = {}
@@ -430,15 +433,16 @@ def _index_rows(root: Path) -> list[dict]:
         st = p.stat()
     except OSError:
         return []
-    sig = (str(p), st.st_mtime_ns, st.st_size)
+    sig = (str(p), st.st_mtime_ns, st.st_ctime_ns, st.st_size, st.st_ino)
     if _learn_cache.get("sig") != sig:
         _learn_cache.update(sig=sig, rows=read_jsonl(p))
     return _learn_cache["rows"]
 
 
 def _learned_manager(root: Path, team: str, day: str, key: str | None) -> str | None:
-    """Geçmiş tablosunda olmayan takım: aynı takımın aynı sezondaki başka kayıtlarında konuşan bilinen hoca
-    (oyuncunun / yardımcının toplantısı hocanın klasörüne). Önce o günden önceki en yakın kayıt, yoksa sonraki."""
+    """Geçmiş tablosunda olmayan takım: aynı takımın aynı sezondaki başka kayıtlarının hocası (index'teki
+    ``team_manager``; yalnız güvenilir kaynaktan yazılır) — oyuncunun / yardımcının toplantısı hocanın klasörüne.
+    Önce o günden önceki en yakın kayıt, yoksa sonraki."""
     season = season_of({"match_date": day})
     before, after = None, None
     for r in _index_rows(root):
@@ -447,7 +451,7 @@ def _learned_manager(root: Path, team: str, day: str, key: str | None) -> str | 
         rd = _meta_day(r)
         if not rd or season_of({"match_date": rd}) != season:
             continue
-        who = _speaker_manager(r.get("manager"), team, rd)
+        who = r.get("team_manager")
         if not who:
             continue
         if rd <= day:
@@ -458,29 +462,31 @@ def _learned_manager(root: Path, team: str, day: str, key: str | None) -> str | 
     return (before or after or (None, None))[1]
 
 
-def team_manager(meta: dict, root: Path | None = None, key: str | None = None) -> str | None:
+def team_manager(meta: dict, root: Path | None = None, key: str | None = None,
+                 channel: str | None = None) -> str | None:
     """Maç günü takımın teknik direktörü (sezon klasörünün adı: "2025-2026 Pep Guardiola"). Sıra:
-    1. hoca geçmişi tablosu (match.MANAGER_HISTORY; geçici hocalar dahil) — tablonun doğrulandığı günden sonra
-       konuşan başka bilinen bir hocaysa (tabloya henüz girilmemiş değişiklik) o;
-    2. konuşan bilinen hoca (o gün başka takımda değilse);
-    3. ``root`` verilirse aynı takımın aynı sezondaki başka kayıtlarında konuşan bilinen hoca.
+    1. hoca geçmişi tablosu (match.MANAGER_HISTORY; geçici hocalar dahil). Tabloya henüz girilmemiş değişiklikte
+       eski hoca kalır (konuşana göre değiştirilmez: tarafsız kanalda başka hocanın videosu sahte klasör açardı,
+       aynı maçın oyuncu toplantısı da ayrı klasöre düşerdi);
+    2. tabloda yoksa konuşan, o takımın hocası olarak bilinen kişi (``_speaker_manager``; ``channel``: video kanalı);
+    3. ``root`` verilirse aynı takımın aynı sezondaki başka kayıtlarının hocası.
     Bilinmiyorsa None (klasör yalnız sezon)."""
     team = meta.get("team")
     day = _meta_day(meta)
     if not team or meta.get("general") or not day:
         return None
     hist = history_manager(team, day)
-    speaker = _speaker_manager(meta.get("manager"), team, day)
-    if hist and (day <= MANAGER_HISTORY_CHECKED or not speaker):
+    if hist:
         return hist
+    speaker = _speaker_manager(meta.get("manager"), team, day, club_of_channel(channel or ""))
     if speaker:
         return speaker
     return _learned_manager(root, team, day, key) if root is not None else None
 
 
-def set_team_manager(root: Path, meta: dict, key: str | None = None) -> dict:
+def set_team_manager(root: Path, meta: dict, key: str | None = None, channel: str | None = None) -> dict:
     """``meta['team_manager']``'ı hesaplar (bitirmede ve yeniden sınıflandırmada, klasör hesaplanmadan önce)."""
-    meta["team_manager"] = team_manager(meta, root, key)
+    meta["team_manager"] = team_manager(meta, root, key, channel)
     return meta
 
 

@@ -28,7 +28,10 @@ def test_history_manager_by_date():
 
 def test_history_team_by_date():
     assert history_team("Andoni Iraola", "2025-12-01") == "Bournemouth"
-    assert history_team("Andoni Iraola", "2026-06-10") == "Liverpool"          # yenisine başladı: en son başladığı
+    # yaz arasında atanan hoca 1 Temmuz'dan başlar: Haziran'da hâlâ eski takımının (sezon klasörü eski hocada)
+    assert history_team("Andoni Iraola", "2026-06-10") == "Bournemouth"
+    assert history_team("Andoni Iraola", "2026-07-10") == "Liverpool"
+    assert history_manager("Liverpool", "2026-06-10") == "Arne Slot"
     assert history_team("Enzo Maresca", "2025-12-01") == "Chelsea"
     assert history_team("Enzo Maresca", "2026-03-01") is None                  # işsiz
     assert history_team("Nuno Espírito Santo", "2025-10-01") == "West Ham"
@@ -39,6 +42,7 @@ def test_history_table_is_sorted_and_matches_current_list():
     for team, rows in MANAGER_HISTORY.items():
         days = [d for d, _ in rows]
         assert days == sorted(days) and len(set(days)) == len(days), team
+        assert not any(d[5:7] == "06" for d in days), (team, "Haziran ataması 1 Temmuz'dan başlamalı")
     for name, team in PL_MANAGERS.items():
         assert history_manager(team, MANAGER_HISTORY_CHECKED) == name, (team, name)
     # tablodaki bilinen hocalar soyadıyla tanınan tam adıyla yazılmış (yazım farkı eşleşmeyi bozmasın)
@@ -88,34 +92,49 @@ def test_season_folder_has_manager_and_changes_with_manager(tmp_path):
 
 
 def test_team_manager_from_speaker_and_learned_from_index(tmp_path):
-    # tabloda olmayan takım: konuşan bilinen hoca
-    assert team_manager(_meta("Galatasaray", "2026-10-01", "Okan Buruk", is_pl=False)) == "Okan Buruk"
+    # tabloda olmayan takım: kulübün kendi kanalında konuşan bilinen hoca
+    gs = _meta("Galatasaray", "2026-10-01", "Okan Buruk", is_pl=False)
+    assert team_manager(gs, channel="Galatasaray") == "Okan Buruk"
+    assert team_manager(gs, channel="Sky Sports") is None                      # tarafsız kanal: emin değil
     # oyuncunun toplantısı, kayıt yokken: bilinmiyor (klasör yalnız sezon)
     assert team_manager(_meta("Galatasaray", "2026-10-05", "Barış Alper Yılmaz", is_pl=False), tmp_path) is None
-    # aynı sezonun başka kaydında hoca konuşmuş: o
+    # aynı sezonun başka kaydının hocası: o
     update_index(tmp_path, {"key": "g1", "team": "Galatasaray", "league": "Diger", "manager": "Okan Buruk",
-                            "match_date": "2026-09-20", "presser_date": "2026-09-19"})
+                            "team_manager": "Okan Buruk", "match_date": "2026-09-20", "presser_date": "2026-09-19"})
     update_index(tmp_path, {"key": "g0", "team": "Galatasaray", "league": "Diger", "manager": "Okan Buruk",
-                            "match_date": "2026-05-20"})                     # önceki sezon: sayılmaz
+                            "team_manager": "Okan Buruk", "match_date": "2026-05-20"})   # önceki sezon: sayılmaz
+    update_index(tmp_path, {"key": "g9", "team": "Galatasaray", "league": "Diger", "manager": "Diego Simeone",
+                            "team_manager": None, "match_date": "2026-10-03"})   # rakip hoca: hocasız satır sayılmaz
     m = _meta("Galatasaray", "2026-10-05", "Barış Alper Yılmaz", is_pl=False)
     assert team_manager(m, tmp_path, "g2") == "Okan Buruk"
     assert team_manager(_meta("Galatasaray", "2027-08-05", "Barış Alper Yılmaz", is_pl=False), tmp_path) is None
-    # başka takımın hocası konuşuyor (Sky: "Guardiola on Leverkusen"): o takımın hocası sayılmaz
-    assert team_manager(_meta("Bayer Leverkusen", "2025-12-01", "Pep Guardiola", is_pl=False), tmp_path) is None
+    # başka takımın hocası konuşuyor (Sky: "Guardiola on Leverkusen"), kulüp kanalında bile: sayılmaz
+    assert team_manager(_meta("Bayer Leverkusen", "2025-12-01", "Pep Guardiola", is_pl=False), tmp_path,
+                        channel="Bayer 04 Leverkusen") is None
     # tablodaki takım: oyuncu konuşsa da tablo; podcast / takımsız: yok
     assert team_manager(_meta("Arsenal", "2026-10-01", "Bukayo Saka")) == "Mikel Arteta"
     assert team_manager({**_meta("Arsenal", "2026-10-01"), "general": True}) is None
     assert team_manager({"team": None, "match_date": "2026-10-01"}) is None
 
 
-def test_after_table_check_date_known_new_manager_wins():
-    """Tablonun doğrulandığı günden sonra yeni gelen bilinen bir hoca konuşuyorsa (tabloya henüz girilmemiş)."""
-    later = "2027-01-10"
-    assert later > MANAGER_HISTORY_CHECKED
-    assert team_manager(_meta("Arsenal", later, "Thomas Frank")) == "Thomas Frank"
-    assert team_manager(_meta("Arsenal", later, "Bukayo Saka")) == "Mikel Arteta"
-    # tablo tarihinden önce: tablo esas (eski videoda konuşan eski hoca bile olsa)
-    assert team_manager(_meta("Arsenal", "2026-10-01", "Thomas Frank")) == "Mikel Arteta"
+def test_other_managers_never_open_fake_folders(tmp_path):
+    """İnceleme bulgusu: tarafsız kanalda başka hocanın videosu ("Hansi Flick press conference | Arsenal vs
+    Barcelona") tablonun doğrulandığı günden sonra "2026-2027 Hansi Flick" klasörü açıyordu; aynı maçın oyuncu
+    toplantısı başka klasöre düşüyordu. Tablodaki takımda her zaman tablo."""
+    from stt.dataset import classify
+    for day, title, channel in [
+            ("20261124", "Hansi Flick press conference | Arsenal vs Barcelona | Champions League", "TNT Sports"),
+            ("20261120", "Pep Guardiola on Arsenal's title chances", "Sky Sports News"),
+            ("20270110", "Thomas Frank press conference | Arsenal", "Sky Sports News")]:
+        info = {"title": title, "channel": channel, "upload_date": day}
+        meta = classify(parse_match(info), info, None)
+        assert meta["team"] == "Arsenal", title
+        assert team_manager(meta, tmp_path, channel=channel) == "Mikel Arteta", title
+    # tabloda olmayan takım: tarafsız kanaldaki başka hoca da sayılmaz
+    assert team_manager(_meta("Galatasaray", "2026-10-21", "Diego Simeone", is_pl=False), tmp_path,
+                        channel="beIN SPORTS") is None
+    # Haziran'da (maçsız) yeni hocası açıklanan takımın oyuncu videosu biten sezonun hocasında
+    assert team_manager(_meta("Liverpool", "2026-06-10", "Mohamed Salah")) == "Arne Slot"
 
 
 def test_index_row_and_match_json_have_team_manager(tmp_path):
@@ -258,3 +277,29 @@ def test_gui_dataset_tree_groups_by_season_and_manager(tmp_path, monkeypatch):
     assert tm["seasons"][1]["manager"] == "Liam Rosenior"
     assert tm["seasons"][1]["folder"] == str(tmp_path / "Premier League" / "Chelsea" / "2025-2026 Liam Rosenior")
     assert tm["seasons"][3]["folder"] == str(tmp_path / "Premier League" / "Chelsea" / "2025-2026")
+
+
+def test_season_dir_detection_and_truncated_match_names():
+    from stt.reclassify import _is_season_dir, _same_match_name
+    assert _is_season_dir("2025-2026") and _is_season_dir("2025-2026 Pep Guardiola")
+    assert _is_season_dir("2026-2027 Gary O'Neil") and _is_season_dir("Sezon bilinmiyor")
+    assert _is_season_dir("2025-2026 Okan Buruk")                              # bilinen hoca (takımı tabloda yok)
+    assert not _is_season_dir("2025-2026 yedek") and not _is_season_dir("Arsenal")
+    full = "2026-03-01 Champions League Arsenal vs Slavia Prague"
+    assert _same_match_name(full, full[:30].rstrip(), full)                    # yol sınırı için kısaltılmış yeni ad
+    assert _same_match_name(full[:40], full[:30], full)                        # eski ad da kısaltılmıştı
+    plain = "2026-03-01 Arsenal vs Chelsea"
+    assert not _same_match_name(plain + " (eski ad)", plain, plain)            # elle uzatılmış ad: başka klasör
+    assert not _same_match_name(full, full[:30], None)
+
+
+def test_reclassify_leaves_hand_made_season_folder(tmp_path):
+    """Elle açılmış "2025-2026 yedek" klasöründeki eski sezon kaydı oradan çekilmez."""
+    from stt.reclassify import reclassify
+    ds = {"team": "Chelsea", "is_pl": True, "presser_date": "2026-01-30", "match_date": "2026-01-31",
+          "home": "Chelsea", "away": "Arsenal", "opponent": "Arsenal", "gw": 24, "competition": "Premier League"}
+    p = _old_output(tmp_path, "y_h", "Liam Rosenior press conference", "Chelsea", _ts("2026-01-30 12:00"),
+                    "Premier League/Chelsea/2025-2026 yedek/2026-01-31 GW24 Chelsea vs Arsenal",
+                    "2026-01-30 - Liam Rosenior", ds)
+    res = reclassify(tmp_path, apply=True, data=FPL)
+    assert res["moved"] == 0 and res["other_season"] == 1 and p["txt"].exists()

@@ -38,14 +38,14 @@ E.2 (C5) ve aşağıdaki K5 planı. **(1.9.5'ten kalan):** kullanıcı Güncelle
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
-- 1.9.26 (Claude; 664 test): kullanıcı: "aynı takımda sezon ortasında ya da yeni sezonda yeni teknik direktör varsa
+- 1.9.26 (Claude; 666 test; bağımsız inceleme 5 bulgu, düzeltildi: tarafsız kanaldaki başka hoca sahte klasör açmasın, Haziran ataması 1 Temmuz'dan, elle açılmış sezon klasörüne dokunma, kısaltılmış maç adı): kullanıcı: "aynı takımda sezon ortasında ya da yeni sezonda yeni teknik direktör varsa
   dosya o sezon hocanın adıyla devam etsin (2025-2026 Manchester City Guardiola, 2026-2027 Manchester City Maresca)".
   Sezon klasörü artık `<sezon> <maç günkü hoca>` (`dataset.team_manager`, ayrıntı GELISTIRME "1.9.26"). Kaynak:
   `match.MANAGER_HISTORY` (2024-25 → 2026-27 PL hoca değişiklikleri, geçici hocalar dahil; 2026-11-08'de web
   aramasıyla doğrulandı: ör. Chelsea Maresca → McFarlane 1 Oca → Rosenior 6 Oca → McFarlane 22 Nis → Alonso 1 Tem;
   Forest Nuno → Postecoglou → Dyche → Pereira → Glasner; Spurs Frank → Tudor → De Zerbi). Tabloda olmayan takım:
-  konuşan bilinen hoca, yoksa aynı sezonun başka kayıtlarından. HOCA DEĞİŞİNCE tabloya tarihiyle ekle +
-  PL_MANAGERS. DENENMEDİ: Windows, kullanıcının gerçek kayıtları. KULLANICIDAN: Güncelle → "Veri seti > Yeniden
+  kulüp kanalında konuşan bilinen hoca, yoksa aynı sezonun başka kayıtlarından. HOCA DEĞİŞİNCE tabloya tarihiyle
+  ekle + PL_MANAGERS (eklenmezse yeni hocanın toplantıları eski hocanın klasöründe kalır). DENENMEDİ: Windows, kullanıcının gerçek kayıtları. KULLANICIDAN: Güncelle → "Veri seti > Yeniden
   sınıflandır" (deneme turu sayıları) ekran görüntüsü + veri seti ağacı (takım › "2025-2026 · Hoca" › maç).
 - 1.9.25 (Claude; 651 test; bağımsız inceleme 2 hata buldu, testle düzeltildi: eski sezon klasör adı farklıysa taşınmaz (birleşme olmasın), yeni klasörde mac.json varsa eski ek_bilgiler ona aktarılır): kullanıcı: "her takımın klasöründe sezon sezon ayrılsın (2025-2026, 2026-2027),
   basın toplantısı hangi tarihteyse o sezonun klasöründe olsun". `dataset.season_of` (maç tarihi, yoksa toplantı

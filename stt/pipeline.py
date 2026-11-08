@@ -2461,7 +2461,8 @@ class Pipeline:
         meta = classify(job.match, info, self.fpl())
         if mode == "herkes" and self._opt(job.item, "diarize"):
             meta["general"] = True  # podcast / film: veri setinin takım klasörlerine karışmasın
-        set_team_manager(self.out_root, meta, job.item.key)   # sezon klasörü "<sezon> <o günkü hoca>"
+        set_team_manager(self.out_root, meta, job.item.key,   # sezon klasörü "<sezon> <o günkü hoca>"
+                         info.get("channel") or info.get("uploader") or "")
         doc["dataset"] = {k: v for k, v in meta.items() if k != "fixture"}
         fpl = item_fpl(job.item, cfg)
         if not fpl and not meta.get("general") and self._opt(job.item, "fpl_auto") and meta.get("gw") and meta.get("fpl_short") and cfg.fpl_repo \
