@@ -18,7 +18,7 @@ from pathlib import Path
 
 from . import __version__
 from .config import SECRETS, TOOL_DIR, Config, env_secrets, load_config
-from .dataset import GENERAL_DIR, NO_SEASON, OTHER_DIR, PL_DIR, season_folder, season_of
+from .dataset import GENERAL_DIR, NO_SEASON, OTHER_DIR, PL_DIR, season_of
 from .match import safe_filename
 from .sources import expand_inputs, is_url
 from .util import console_python, log, read_jsonl
@@ -1558,53 +1558,59 @@ class App:
             self._reclassifying = False
 
     def dataset(self) -> dict:
+        """Arayüzdeki veri seti ağacı (1.9.28): lig › sezon › takım › hoca › maç (klasör düzeniyle aynı). Takımı ya da
+        tarihi olmayan kayıt ("Bilinmeyen", podcast) ligin altında düz listelenir. Gruplama index'teki alanlardan:
+        henüz taşınmamış eski düzendeki kayıt da doğru yerde görünür, klasör düğmesi yalnız klasör varsa."""
         root = Path(self._cfg.out_dir).resolve()
         rows = read_jsonl(root / "index.jsonl")
         tree: dict = {}
+        flat: dict = {}
         for r in rows:
             league = r.get("league") or "Diger"
-            team = "Kayıtlar" if league == GENERAL_DIR else (r.get("team") or "Bilinmeyen")
             txt = r.get("txt") or ""
             folder = str((root / txt).parent) if txt else str(root)
-            # sezon (1.9.25): takımı olan basın toplantısı; podcast / takımsız kayıtta sezon katmanı yok
-            season = None if league == GENERAL_DIR or not r.get("team") else (r.get("season") or season_of(r) or NO_SEASON)
-            # 1.9.26: sezon klasörü o sezonki teknik direktörle ("2025-2026 Pep Guardiola"); eski satırda yalnız sezon
-            tm = (r.get("team_manager") or None) if season and season != NO_SEASON else None
-            m = tree.setdefault(league, {}).setdefault(team, {}).setdefault(folder, {
-                "folder": folder, "name": Path(folder).name, "match_date": r.get("match_date"), "gw": r.get("gw"),
-                "season": season, "team_manager": tm,
-                "season_dir": season_folder(season, tm) if season else None, "pressers": []})
-            m["pressers"].append({"txt": str(root / txt) if txt else "", "manager": r.get("manager"),
-                                  "phase": r.get("phase"), "date": r.get("presser_date"),
-                                  "questions": r.get("questions"), "diarized": r.get("diarized")})
+            m = {"folder": folder, "name": Path(folder).name, "match_date": r.get("match_date"), "gw": r.get("gw"),
+                 "pressers": []}
+            p = {"txt": str(root / txt) if txt else "", "manager": r.get("manager"), "phase": r.get("phase"),
+                 "date": r.get("presser_date"), "questions": r.get("questions"), "diarized": r.get("diarized")}
+            if league == GENERAL_DIR or not r.get("team"):
+                team = "Kayıtlar" if league == GENERAL_DIR else "Bilinmeyen"
+                flat.setdefault(league, {}).setdefault(team, {}).setdefault(folder, m)["pressers"].append(p)
+                continue
+            season = r.get("season") or season_of(r) or NO_SEASON
+            tm = (r.get("team_manager") or None) if season != NO_SEASON else None
+            box = tree.setdefault(league, {}).setdefault(season, {}).setdefault(r["team"], {}).setdefault(tm, {})
+            box.setdefault(folder, m)["pressers"].append(p)
+
+        def newest(ms):
+            return sorted(ms, key=lambda m: m.get("match_date") or "", reverse=True)
+
+        def isdir(p: Path) -> str:
+            return str(p) if p.is_dir() else ""
+
         out = []
-        for league in sorted(tree, key=lambda x: (x != "Premier League", x == GENERAL_DIR, x)):
-            teams = []
-            for team in sorted(tree[league]):
-                matches = sorted(tree[league][team].values(), key=lambda m: m.get("match_date") or "", reverse=True)
-                tfolder = Path(matches[0]["folder"]).parent
-                if league != GENERAL_DIR and team != "Bilinmeyen":
-                    t = root / (PL_DIR if league == PL_DIR else OTHER_DIR) / safe_filename(team)
-                    if t.is_dir():   # sezon klasörü (ya da elle taşınmış kayıt) olsa da takım klasörü açılsın
-                        tfolder = t
-                seasons = {}
-                for m in matches:   # maçlar yeniden eskiye: her grubun ilk maçı en yenisi
-                    if m["season"]:
-                        seasons.setdefault(m["season_dir"], []).append(m)
-                # en yeni sezon üstte, sezon içinde son hoca üstte (taşınmamış hocasız eski kayıtlar sezonun
-                # sonunda); "Sezon bilinmiyor" en altta
-                order = sorted(seasons, key=lambda x: (seasons[x][0]["season"] != NO_SEASON, seasons[x][0]["season"],
-                                                       bool(seasons[x][0]["team_manager"]),
-                                                       seasons[x][0].get("match_date") or ""), reverse=True)
-                teams.append({"team": team, "folder": str(tfolder), "matches": matches,
-                              "seasons": [{"season": seasons[x][0]["season"], "manager": seasons[x][0]["team_manager"],
-                                           "label": " · ".join(y for y in (seasons[x][0]["season"],
-                                                                           seasons[x][0]["team_manager"]) if y),
-                                           "folder": str(tfolder / x) if (tfolder / x).is_dir() else "",
-                                           "matches": seasons[x]} for x in order]})
-            out.append({"league": league, "folder": str(root / ("Premier League" if league == "Premier League"
-                                                                else league if league == GENERAL_DIR
-                                                                else "Diger Takimlar")), "teams": teams})
+        for league in sorted(set(tree) | set(flat), key=lambda x: (x != "Premier League", x == GENERAL_DIR, x)):
+            ldir = root / (PL_DIR if league == PL_DIR else GENERAL_DIR if league == GENERAL_DIR else OTHER_DIR)
+            seasons = []
+            for season in sorted(tree.get(league, {}), key=lambda x: (x != NO_SEASON, x), reverse=True):
+                sdir = ldir / season
+                teams = []
+                for team in sorted(tree[league][season]):
+                    tdir = sdir / safe_filename(team)
+                    groups = tree[league][season][team]
+                    mgrs = [{"manager": tm, "folder": isdir(tdir / safe_filename(tm)),
+                             "matches": newest(groups[tm].values())} for tm in groups if tm]
+                    # sezon içinde son hoca üstte
+                    mgrs.sort(key=lambda g: g["matches"][0].get("match_date") or "", reverse=True)
+                    loose = newest(groups.get(None, {}).values())
+                    n = sum(len(g["matches"]) for g in mgrs) + len(loose)
+                    teams.append({"team": team, "folder": isdir(tdir), "count": n, "managers": mgrs,
+                                  "matches": loose})
+                seasons.append({"season": season, "folder": isdir(sdir), "teams": teams,
+                                "count": sum(t["count"] for t in teams)})
+            flat_teams = [{"team": t, "folder": isdir(ldir / t) if t == "Bilinmeyen" else isdir(ldir),
+                           "matches": newest(flat[league][t].values())} for t in sorted(flat.get(league, {}))]
+            out.append({"league": league, "folder": str(ldir), "seasons": seasons, "teams": flat_teams})
         return {"root": str(root), "count": len(rows), "leagues": out,
                 "index_csv": str(root / "index.csv") if (root / "index.csv").exists() else ""}
 

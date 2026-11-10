@@ -242,7 +242,7 @@ def test_dataset_classify_pl_prematch(tmp_path):
                                                                                            "mac-oncesi", "ARS")
     assert match_folder_name(meta) == "2026-11-08 GW11 Arsenal vs Chelsea"
     assert presser_base_name(meta, "x").endswith("mac-oncesi - Mikel Arteta")
-    assert target_dir(tmp_path, meta, "x") == tmp_path / "Premier League" / "Arsenal" / "2026-2027" / "2026-11-08 GW11 Arsenal vs Chelsea"
+    assert target_dir(tmp_path, meta, "x") == tmp_path / "Premier League" / "2026-2027" / "Arsenal" / "2026-11-08 GW11 Arsenal vs Chelsea"
 
 
 def test_dataset_classify_postmatch_and_away_team(tmp_path):
@@ -252,7 +252,7 @@ def test_dataset_classify_postmatch_and_away_team(tmp_path):
             "upload_date": "20261108", "timestamp": 1794172800}  # 2026-11-08 ~ maçtan sonra
     meta = classify(parse_match(info), info, FPL_SAMPLE)
     assert meta["team"] == "Coventry City" and meta["phase"] == "mac-sonrasi" and meta["gw"] == 11
-    assert target_dir(tmp_path, meta, "x").parts[-4:] == ("Premier League", "Coventry City", "2026-2027",
+    assert target_dir(tmp_path, meta, "x").parts[-4:] == ("Premier League", "2026-2027", "Coventry City",
                                                           "2026-11-08 GW11 Everton vs Coventry City")
     assert match_folder_name(meta) == "2026-11-08 GW11 Everton vs Coventry City"
 
@@ -268,7 +268,7 @@ def test_dataset_classify_cup_and_other(tmp_path):
     info = {"title": "Okan Buruk'un VfB Stuttgart maçı öncesi açıklamaları", "channel": "Galatasaray",
             "upload_date": "20261105"}
     meta = classify(parse_match(info), info, FPL_SAMPLE)
-    assert target_dir(tmp_path, meta, "x").parts[-4:] == ("Diger Takimlar", "Galatasaray", "2026-2027",
+    assert target_dir(tmp_path, meta, "x").parts[-4:] == ("Diger Takimlar", "2026-2027", "Galatasaray",
                                                           "2026-11-05 Galatasaray vs Stuttgart")
     assert meta["phase"] == "mac-oncesi"
 
@@ -292,7 +292,7 @@ def test_dataset_infers_team_from_opponent_fixture():
 
 
 def test_season_of_and_season_folder(tmp_path):
-    """1.9.25: takım klasöründe sezon klasörü ("2026-2027"); sezon 1 Temmuz'da başlar."""
+    """Sezon klasörü ("2026-2027"; 1.9.28'den beri ligin altında, takımdan önce); sezon 1 Temmuz'da başlar."""
     from stt.dataset import NO_SEASON, index_row, season_of, target_dir
     assert season_of({"match_date": "2026-11-08"}) == "2026-2027"
     assert season_of({"match_date": "2027-05-30"}) == "2026-2027"      # sezonun son maçı
@@ -305,9 +305,9 @@ def test_season_of_and_season_folder(tmp_path):
     assert season_of({"match_date": "2026-13-01"}) is None
     meta = {"team": "Arsenal", "is_pl": True, "match_date": "2025-09-14", "home": "Arsenal", "away": "Chelsea", "gw": 4}
     assert target_dir(tmp_path, meta, "x") == \
-        tmp_path / "Premier League" / "Arsenal" / "2025-2026" / "2025-09-14 GW04 Arsenal vs Chelsea"
+        tmp_path / "Premier League" / "2025-2026" / "Arsenal" / "2025-09-14 GW04 Arsenal vs Chelsea"
     nodate = target_dir(tmp_path, {"team": "Galatasaray"}, "x")
-    assert nodate.parts[-4:-1] == ("Diger Takimlar", "Galatasaray", NO_SEASON)
+    assert nodate.parts[-4:-1] == ("Diger Takimlar", NO_SEASON, "Galatasaray")
     # takımsız / podcast: sezon klasörü yok
     assert target_dir(tmp_path, {"presser_date": "2026-11-08"}, "Baslik").parts[-3:] == \
         ("Diger Takimlar", "Bilinmeyen", "Baslik")

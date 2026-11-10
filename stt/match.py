@@ -110,39 +110,49 @@ PL_MANAGERS = {
 # (dataset.team_manager); tabloda olmayan takım / tarih için basın toplantısındaki bilinen hoca kullanılır.
 # MANAGER_HISTORY_CHECKED tarihinde haberlerden doğrulandı. Hoca değişince: buraya tarihiyle ekle + PL_MANAGERS'ı
 # güncelle (test ikisinin aynı olduğunu denetler), sonra kullanıcı "Veri seti > Yeniden sınıflandır".
+# 1.9.28: 2023-24 ve 2024-25 sezonları eklendi (Klopp, Pochettino, Kompany, Hodgson, Cooper, Heckingbottom / Wilder,
+# Moyes, Lopetegui, Leicester, Southampton, Luton; Hermes'in hoca takvimiyle (pl_managers.json, Wikipedia) karşılaştırıldı).
 MANAGER_HISTORY_CHECKED = "2026-11-08"
 MANAGER_HISTORY: dict[str, list[tuple[str, str | None]]] = {
     "Arsenal": [("2019-12-20", "Mikel Arteta")],
     "Aston Villa": [("2022-11-01", "Unai Emery")],
     "Bournemouth": [("2023-07-01", "Andoni Iraola"), ("2026-07-01", "Marco Rose")],
     "Brentford": [("2018-10-16", "Thomas Frank"), ("2025-07-01", "Keith Andrews")],
-    "Brighton": [("2024-07-01", "Fabian Hürzeler")],
-    "Burnley": [("2024-07-04", "Scott Parker"), ("2026-04-30", "Mike Jackson"), ("2026-07-01", None)],
-    "Chelsea": [("2024-07-01", "Enzo Maresca"), ("2026-01-01", "Calum McFarlane"), ("2026-01-06", "Liam Rosenior"),
-                ("2026-04-22", "Calum McFarlane"), ("2026-07-01", "Xabi Alonso")],
+    "Brighton": [("2022-09-18", "Roberto De Zerbi"), ("2024-07-01", "Fabian Hürzeler")],
+    "Burnley": [("2022-07-01", "Vincent Kompany"), ("2024-05-29", None), ("2024-07-04", "Scott Parker"),
+                ("2026-04-30", "Mike Jackson"), ("2026-07-01", None)],
+    "Chelsea": [("2023-07-01", "Mauricio Pochettino"), ("2024-05-21", None), ("2024-07-01", "Enzo Maresca"),
+                ("2026-01-01", "Calum McFarlane"), ("2026-01-06", "Liam Rosenior"), ("2026-04-22", "Calum McFarlane"),
+                ("2026-07-01", "Xabi Alonso")],
     "Coventry City": [("2024-11-28", "Frank Lampard")],
-    "Crystal Palace": [("2024-02-19", "Oliver Glasner"), ("2026-07-01", "Pierre Sage")],
-    "Everton": [("2023-01-30", "Sean Dyche"), ("2025-01-11", "David Moyes")],
+    "Crystal Palace": [("2023-03-21", "Roy Hodgson"), ("2024-02-19", "Oliver Glasner"), ("2026-07-01", "Pierre Sage")],
+    "Everton": [("2023-01-30", "Sean Dyche"), ("2025-01-09", "Leighton Baines"), ("2025-01-11", "David Moyes")],
     "Fulham": [("2021-07-01", "Marco Silva"), ("2026-07-07", "Álvaro Arbeloa")],
     "Hull City": [("2025-07-01", "Sergej Jakirović")],
     "Ipswich Town": [("2021-12-16", "Kieran McKenna"), ("2026-07-01", "Gary O'Neil")],
     "Leeds United": [("2023-07-04", "Daniel Farke")],
-    "Liverpool": [("2024-07-01", "Arne Slot"), ("2026-07-01", "Andoni Iraola")],
+    "Leicester City": [("2024-07-01", "Steve Cooper"), ("2024-11-24", "Ben Dawson"),
+                       ("2024-11-29", "Ruud van Nistelrooy"), ("2025-07-01", None)],
+    "Liverpool": [("2015-10-08", "Jürgen Klopp"), ("2024-07-01", "Arne Slot"), ("2026-07-01", "Andoni Iraola")],
+    "Luton Town": [("2022-11-16", "Rob Edwards"), ("2025-01-09", None)],
     "Manchester City": [("2016-07-01", "Pep Guardiola"), ("2026-07-01", "Enzo Maresca")],
     "Manchester United": [("2022-05-23", "Erik ten Hag"), ("2024-10-28", "Ruud van Nistelrooy"),
                           ("2024-11-11", "Ruben Amorim"), ("2026-01-05", "Darren Fletcher"),
                           ("2026-01-13", "Michael Carrick")],
     "Newcastle United": [("2021-11-08", "Eddie Howe"), ("2026-08-05", "Matthias Jaissle")],
-    "Nottingham Forest": [("2023-12-20", "Nuno Espírito Santo"), ("2025-09-09", "Ange Postecoglou"),
-                          ("2025-10-21", "Sean Dyche"), ("2026-02-15", "Vítor Pereira"),
+    "Nottingham Forest": [("2021-09-21", "Steve Cooper"), ("2023-12-20", "Nuno Espírito Santo"),
+                          ("2025-09-09", "Ange Postecoglou"), ("2025-10-21", "Sean Dyche"), ("2026-02-15", "Vítor Pereira"),
                           ("2026-07-06", "Oliver Glasner")],
+    "Sheffield United": [("2021-11-25", "Paul Heckingbottom"), ("2023-12-05", "Chris Wilder"), ("2024-07-01", None)],
+    "Southampton": [("2023-07-01", "Russell Martin"), ("2024-12-15", "Simon Rusk"), ("2024-12-21", "Ivan Jurić"),
+                    ("2025-04-07", "Simon Rusk"), ("2025-07-01", None)],
     "Sunderland": [("2024-07-01", "Régis Le Bris")],
     "Tottenham": [("2023-07-01", "Ange Postecoglou"), ("2025-07-01", "Thomas Frank"), ("2026-02-14", "Igor Tudor"),
                   ("2026-03-31", "Roberto De Zerbi")],
-    "West Ham": [("2024-07-01", "Julen Lopetegui"), ("2025-01-09", "Graham Potter"),
+    "West Ham": [("2019-12-29", "David Moyes"), ("2024-07-01", "Julen Lopetegui"), ("2025-01-09", "Graham Potter"),
                  ("2025-09-27", "Nuno Espírito Santo"), ("2026-07-01", None)],
-    "Wolves": [("2023-08-09", "Gary O'Neil"), ("2024-12-19", "Vítor Pereira"), ("2025-11-02", "Jamie Collins"),
-               ("2025-11-12", "Rob Edwards"), ("2026-07-01", None)],
+    "Wolves": [("2022-11-05", "Julen Lopetegui"), ("2023-08-09", "Gary O'Neil"), ("2024-12-19", "Vítor Pereira"),
+               ("2025-11-02", "Jamie Collins"), ("2025-11-12", "Rob Edwards"), ("2026-07-01", None)],
 }
 _ISO_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 
@@ -182,10 +192,13 @@ OTHER_MANAGERS = (
     "Vincent Kompany", "José Mourinho", "Antonio Conte", "Massimiliano Allegri", "Cristian Chivu",
     "Luciano Spalletti", "Gian Piero Gasperini", "Domenico Tedesco", "Jindřich Trpišovský", "Gurban Gurbanov",
     "Qurban Qurbanov", "Mauricio Pochettino", "Thomas Tuchel", "Gareth Southgate", "Vincenzo Montella", "Okan Buruk",
+    # 1.9.28: eski sezonların (2023-24, 2024-25) PL hocaları
+    "Jürgen Klopp", "Roy Hodgson", "Steve Cooper", "Paul Heckingbottom", "Chris Wilder", "Julen Lopetegui",
+    "Ruud van Nistelrooy", "Russell Martin", "Ivan Jurić",
 )
 # Ortak sözcük / çok yaygın soyadı: tek başına yazılınca hoca sayılmaz ("time slot", "Bernardo Silva", "Derrick Rose")
 _UNSAFE_SURNAMES = {"slot", "silva", "rose", "sage", "frank", "parker", "edwards", "andrews", "alonso", "tudor",
-                    "potter", "flick", "santo"}
+                    "potter", "flick", "santo", "cooper", "martin", "wilder"}
 
 
 def _norm(s: str) -> str:

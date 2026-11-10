@@ -6,9 +6,12 @@ haber taslağı); mac.json (GW, skor, erteleme), index.csv/jsonl, durum kaydı v
 
 Güvenlik kuralları:
 - FPL fikstürü alınamazsa hiçbir şey yapılmaz (yoksa bütün GW'ler silinirdi).
-- FPL verisinin sezonu dışındaki (eski sezon) kayıtlar yeniden sınıflandırılmaz: o sezonun fikstürü elde yok.
-  Yalnız sezon klasörüne taşınırlar (takım / maç / ad aynı kalır; yalnız "<takım>/<sezon> <hoca>/" değişir:
-  1.9.25'te "2025-2026", 1.9.26'dan beri o günkü teknik direktörle "2025-2026 Pep Guardiola").
+- Eski sezonun kaydı o sezonun fikstürüyle yeniden sınıflandırılır (1.9.28: uygulamayla gelen 2023-24 / 2024-25 /
+  2025-26 fikstürleri + indirilen sezonların kopyası; ``dataset.season_data``): maç + GW bulunur, o sezon PL'de olan
+  takım "Diger Takimlar"dan "Premier League"e geçer. Fikstürü hiç olmayan sezonun kaydı yeniden sınıflandırılmaz,
+  yalnız yeni düzene taşınır (takım / maç / ad aynı kalır).
+- Düzen (1.9.28): "<lig>/<sezon>/<takım>/<hoca>/<maç>". Eski düzenler ("<lig>/<takım>/<maç>", 1.9.25
+  "<lig>/<takım>/<sezon>/<maç>", 1.9.26 "<lig>/<takım>/<sezon> <hoca>/<maç>") tanınır ve taşınır.
 - Podcast / film kayıtları taşınmaz (konuşmacı etiketleri farklı); artık basın toplantısına benzeyenler bildirilir.
 - Önce yeni dosyalar yazılır, sonra silinecek eski dosyalar (boyut + değişiklik zamanıyla) `.stt/
   siniflandirma_bekleyen.json`'a yazılır, sonra kayıtlar, en son eski dosyalar silinir. Silinemeyen (açık) ya da
@@ -30,11 +33,11 @@ from __future__ import annotations
 import json
 import os
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
-from .dataset import (NO_SEASON, _parse_dt, classify, fpl_data, index_row, match_folder_name, out_paths, presser_time,
-                      rel_path, season_of, set_team_manager, update_index, write_match_json)
+from .dataset import (NO_SEASON, OTHER_DIR, PL_DIR, classify, fpl_data, index_row, match_folder_name, out_paths,
+                      presser_time, rel_path, season_data, season_of, set_team_manager, update_index, write_match_json)
 from .match import _ALIASES, _tnorm, is_team, looks_like_presser, parse_match
 from .outputs import to_srt, to_summary, to_txt
 from .util import atomic_write_text, log, read_jsonl, replace_retry, write_jsonl_csv
@@ -92,13 +95,6 @@ def _clean(d: dict | None) -> dict:
     return {k: v for k, v in (d or {}).items() if v is not None and k != "fixture"}
 
 
-def _season(data: dict) -> tuple | None:
-    kos = [k for k in (_parse_dt(f.get("kickoff_time")) for f in data.get("fixtures") or []) if k]
-    if not kos:
-        return None
-    return min(kos) - timedelta(days=30), max(kos) + timedelta(days=7)
-
-
 def _same(a: Path, b: Path) -> bool:
     try:
         return a.resolve() == b.resolve()
@@ -152,14 +148,47 @@ def _same_match_name(old: str, new: str, full: str | None) -> bool:
     return len(new) >= 20 and f.startswith(new.casefold()) and f.startswith(old.casefold())
 
 
-def _same_match(old_dir: Path, new_dir: Path, full: str | None = None) -> bool:
-    """Aynı takımın aynı adlı maç klasörü; yalnız sezon katmanı farklı olabilir (eski düzende sezon klasörü yok,
-    1.9.25'te "2025-2026", 1.9.26'dan beri "2025-2026 <hoca>")."""
+_PLAIN_SEASON = re.compile(r"\d{4}-\d{4}")
+
+
+def _is_plain_season(name: str) -> bool:
+    """1.9.28 düzeninin ligin altındaki sezon klasörü: "2025-2026" ya da "Sezon bilinmiyor"."""
+    return bool(_PLAIN_SEASON.fullmatch(name)) or name == NO_SEASON
+
+
+def _team_of(d: Path, root: Path) -> str | None:
+    """Maç klasörü programın hangi düzeninde, hangi takımın: "<lig>/<sezon>/<takım>[/<hoca>]/<maç>" (1.9.28),
+    "<lig>/<takım>/<sezon[ hoca]>/<maç>" (1.9.25/26), "<lig>/<takım>/<maç>" (eski). Tanınmayan (elle açılmış
+    "2025-2026 yedek", bilinmeyen alt klasör) yerde None."""
+    try:
+        parts = d.relative_to(root).parts
+    except ValueError:
+        return None
+    if len(parts) < 3 or parts[0] not in (PL_DIR, OTHER_DIR):
+        return None
+    mid = parts[1:-1]
+    if len(mid) == 1:
+        return None if _is_plain_season(mid[0]) else mid[0]
+    if len(mid) == 2:
+        if _is_plain_season(mid[0]):
+            return mid[1]                                   # 1.9.28, hocasız
+        return mid[0] if _is_season_dir(mid[1]) else None   # 1.9.25 / 1.9.26
+    if len(mid) == 3 and _is_plain_season(mid[0]) and mid[2].casefold() in _manager_dir_names():
+        return mid[1]                                       # 1.9.28, hocalı
+    return None
+
+
+def _same_match(old_dir: Path, new_dir: Path, full: str | None = None, root: Path | None = None) -> bool:
+    """Aynı takımın aynı adlı maç klasörü; düzen (sezon / hoca katmanı, lig) farklı olabilir. ``root``: veri seti
+    kökü (yoksa yeni klasörden çıkarılır)."""
     if not _same_match_name(old_dir.name, new_dir.name, full):
         return False
-    team_dir = new_dir.parent.parent
-    return _same_dir(old_dir.parent, team_dir) or (_same_dir(old_dir.parent.parent, team_dir)
-                                                   and _is_season_dir(old_dir.parent.name))
+    if root is None:
+        root = next((p.parent for p in new_dir.parents if p.name in (PL_DIR, OTHER_DIR)), None)
+        if root is None:
+            return False
+    a, b = _team_of(old_dir, root), _team_of(new_dir, root)
+    return bool(a and b and a.casefold() == b.casefold())
 
 
 def _has_extra(mac: Path) -> bool:
@@ -376,14 +405,14 @@ def reclassify(out_root: Path, apply: bool = True, data: dict | None = None, pro
     """``apply=False``: yalnız ne değişeceğini say (deneme turu, hiçbir dosya yazılmaz)."""
     root = Path(out_root).resolve()
     res = {"ok": True, "dry_run": not apply, "checked": 0, "moved": 0, "updated": 0, "unchanged": 0, "gw_found": 0,
-           "other_season": 0, "podcast": 0, "missing": [], "errors": [], "presser_now": [], "changes": []}
+           "other_season": 0, "podcast": 0, "to_pl": 0, "by_season": {}, "missing": [], "errors": [],
+           "presser_now": [], "changes": []}
     if data is None:
         data = fpl_data(root / ".stt", force=True)  # kullanıcı elle istedi: ağ bekleme süresine bakılmaz
     if not data or not data.get("fixtures"):
         return {**res, "ok": False,
                 "error": "FPL fikstür verisi alınamadı (internet / fantasy.premierleague.com). Bağlantıyı kontrol "
                          "edip tekrar deneyin; veri olmadan yeniden sınıflandırma GW'leri silerdi."}
-    season = _season(data)
     if apply:
         _retry_pending(root, res)
     rows = [r for r in read_jsonl(root / "index.jsonl") if r.get("key")]
@@ -396,7 +425,7 @@ def reclassify(out_root: Path, apply: bool = True, data: dict | None = None, pro
             progress(i, len(rows))
         res["checked"] += 1
         try:
-            _one(root, row, data, season, apply, state, res)
+            _one(root, row, data, apply, state, res)
         except _Unreadable as e:  # beklenen durum (dosya açık): iz yazmadan bildir
             title = str(row.get("title") or row.get("json") or row.get("key"))
             log.warning("Yeniden sınıflandırılmadı: %s (%s)", title[:70], e)
@@ -414,7 +443,7 @@ def reclassify(out_root: Path, apply: bool = True, data: dict | None = None, pro
     return res
 
 
-def _one(root: Path, row: dict, data: dict, season, apply: bool, state, res: dict) -> None:
+def _one(root: Path, row: dict, data: dict, apply: bool, state, res: dict) -> None:
     key, rel = row["key"], str(row.get("json") or "")
     title = str(row.get("title") or rel)
     jp = root / rel if rel else None
@@ -440,12 +469,12 @@ def _one(root: Path, row: dict, data: dict, season, apply: bool, state, res: dic
     when, _ = presser_time(info)
     old_dir, old_base = jp.parent, jp.stem
     season_only = False
-    if when and season and not (season[0] <= when <= season[1]):
-        # o sezonun fikstürü elde yok: eski sınıflandırma kalır, yalnız sezon (+ hoca) klasörüne taşınır
+    if when and season_data(when, data, root / ".stt") is None:
+        # o sezonun fikstürü elde yok: eski sınıflandırma kalır, yalnız yeni düzene (sezon / takım / hoca) taşınır
         meta = set_team_manager(root, dict(old_ds), key, _channel(info)) if old_ds.get("team") else dict(old_ds)
         new_dir = out_paths(root, meta, info["title"] or "kayit", key, create=False)[0] if old_ds.get("team") \
             else old_dir
-        if _same_dir(new_dir, old_dir) or not _same_match(old_dir, new_dir, match_folder_name(meta)):
+        if _same_dir(new_dir, old_dir) or not _same_match(old_dir, new_dir, match_folder_name(meta), root):
             # zaten doğru sezon klasöründe, ya da başka bir yere / başka adlı maç klasörüne gidecekti (eski sürümün
             # ya da elle verilmiş ad): dokunma, yoksa farklı klasörler birleşirdi
             res["other_season"] += 1
@@ -453,7 +482,7 @@ def _one(root: Path, row: dict, data: dict, season, apply: bool, state, res: dic
         match, season_only = doc.get("match"), True
     else:
         match = parse_match(info)
-        meta = set_team_manager(root, classify(match, info, data), key, _channel(info))
+        meta = set_team_manager(root, classify(match, info, data, root / ".stt"), key, _channel(info))
     new_ds = {k: v for k, v in meta.items() if k != "fixture"}
     keep = old_base if season_only else None   # sezon taşıması: dosya adı aynen kalır
     new_dir, new_base = out_paths(root, meta, info["title"] or "kayit", key, create=False, base=keep)
@@ -470,6 +499,11 @@ def _one(root: Path, row: dict, data: dict, season, apply: bool, state, res: dic
         res["moved" if not same_place else "updated"] += 1
         if meta.get("gw") and not old_ds.get("gw"):
             res["gw_found"] += 1
+        if meta.get("is_pl") and old_ds.get("team") and not old_ds.get("is_pl"):
+            res["to_pl"] += 1
+        sk = season_of(meta) if meta.get("team") else None
+        if sk:
+            res["by_season"][sk] = res["by_season"].get(sk, 0) + 1
         if not same_place and len(res["changes"]) < 200:
             res["changes"].append(change)
     if not apply:
@@ -498,7 +532,7 @@ def _one(root: Path, row: dict, data: dict, season, apply: bool, state, res: dic
     paths = _write_outputs(new_dir, new_base, doc, keep_txt, keep_srt, same_place)
     if not same_place:
         _move_news(old_dir, old_base, new_dir, new_base, paths)
-    same_match = _same_match(old_dir, new_dir, match_folder_name(meta) if meta.get("team") else None)
+    same_match = _same_match(old_dir, new_dir, match_folder_name(meta) if meta.get("team") else None, root)
     if (season_only or same_match) and (old_dir / "mac.json").is_file():
         # yalnız sezon klasörüne taşınan maç: eski mac.json (fikstür, skor, elle eklenen ek_bilgiler) yeni yere geçer
         _carry_mac(old_dir / "mac.json", new_dir / "mac.json")
@@ -638,6 +672,10 @@ def summary_text(res: dict, limit: int = 12) -> str:
              f"(GW / skor / maç bilgisi), {res['unchanged']} zaten doğru."]
     if res.get("gw_found"):
         lines.append(f"{res['gw_found']} kayda GW bulundu.")
+    if res.get("to_pl"):
+        lines.append(f"{res['to_pl']} kayıt 'Diğer Takımlar'dan Premier League'e geçiyor (takım o sezon PL'deydi).")
+    if res.get("by_season"):
+        lines.append("Sezonlara göre: " + ", ".join(f"{k}: {v}" for k, v in sorted(res["by_season"].items())))
     for c in res.get("changes", [])[:limit]:
         lines.append(f"  {c['from']}  ->  {c['to']}")
     if len(res.get("changes", [])) > limit:

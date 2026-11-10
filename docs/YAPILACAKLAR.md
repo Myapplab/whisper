@@ -38,6 +38,19 @@ E.2 (C5) ve aşağıdaki K5 planı. **(1.9.5'ten kalan):** kullanıcı Güncelle
 - [x] K11 (#8) ✅ `VoiceLibrary.identify`: iki ada farkı < 0.05 ve eşik+0.15 altındaysa ad verilmez (`voices.MARGIN/SURE`). Eşiğin ölçümle ayarı K5 verisi gelince.
 
 ## Son durum
+- 1.9.28 (Claude; 727 test geçiyor, 2 eski ortam hatası: requests/nvidia-smi): eski sezonlar + yeni düzen. Düzen
+  `<lig>/<sezon>/<takım>/<hoca>/<maç>` (kullanıcı: hoca klasörü takımın altında kalsın; hoca bilinmiyorsa maç
+  doğrudan takımın altında). Eski sezon fikstürleri `stt/assets/fpl_history.json` (2023-24/24-25/25-26, vaastav;
+  `dev/build_fpl_history.py`, sezon bitince yenisini ekle) + indirilen FPL verisinin sezon kopyası `.stt/fpl_<sezon>.json`;
+  `dataset.season_data`, `classify(..., cache_dir)`. O sezon PL'deki (sonra düşen) takım Premier League'de.
+  `match.MANAGER_HISTORY`'ye 2023-24/2024-25 hocaları (Klopp, Pochettino, Kompany, Hodgson, Cooper, Wilder, Leicester,
+  Southampton, Luton...). Eski sezon GW'si FPL reposuna (presser.py) yazılmaz. Yeniden sınıflandır bütün eski düzenleri
+  tanır (`reclassify._team_of`), deneme turunda "Diğer'den PL'e" ve sezon sayıları. Arayüz ağacı lig › sezon › takım ›
+  hoca › maç. "dict contains fields not in fieldnames" hatası: günlükte yalnız eski 1.2.1 kodu çalışırken (1.9.24
+  exe sorunu); şimdiki kod etkilenmiyor, regresyon testi eklendi (test_v1928). Kullanıcının GERÇEK verisinde salt
+  okunur deneme turu (2026-11-10): 893 kayıt, 847 taşınacak, 650'ye GW, 86 Diğer→PL, hata 0. DENENMEDİ: uygulamanın
+  gerçek veride uygulanması (kopyada da), arayüz ekranı (JS sözdizimi deno ile denetlendi). KULLANICIDAN: Güncelle →
+  Veri seti > Yeniden sınıflandır (deneme turu) ekran görüntüsü → uygula. Sonra Hermes `backfill.py send`.
 - 1.9.27 (Claude; esnek güç 2 + Hermes ajanıyla otomatik çalışma; ayrıntı GELISTIRME "1.9.27"): kullanıcı: "monitör
   HD 630'da, oda soğuk; esnek güç bu iş için gelişsin, sorunsuz çalışsın" + "Hermes ajanıyla linkleri otomatik çeken
   sistem kurdum, programı ajanla otomatik çalışmaya müsait hâle getir". Soru üzerine anlattı: esnek güç açıkken

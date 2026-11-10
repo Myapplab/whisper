@@ -239,6 +239,7 @@ Windows aracı. Amaç: **Fantasy Premier League modeli için veri seti** (takım
   direktör, diğerleri muhabir → `.txt` soru-cevap biçiminde.
 - Çıktı: `.txt` (soru-cevap), `.srt`, `.json` (kelime zamanı + konuşmacı), `ozet.md`, `mac.json`,
   `index.csv` / `index.jsonl`.
+- **1.9.28 düzen: `<out>/<lig>/<sezon>/<Takım>/<hoca>/<maç>/`**; eski sezonlarda maç+GW `assets/fpl_history.json` + `.stt/fpl_<sezon>.json` (`dataset.season_data`); ayrıntı YAPILACAKLAR "1.9.28".
 - Veri seti düzeni: `<out>/Premier League/<Takım>/<sezon>/<maç tarihi> GWxx <Ev> vs <Dep>/<tarih> mac-oncesi - <TD>.txt`.
   Sezon (1.9.25, `dataset.season_of`): "2026-2027"; maç tarihi (yoksa toplantı tarihi) 1 Temmuz'dan önceyse önceki
   sezon; tarih yoksa "Sezon bilinmiyor". Podcast / takımsız kayıtta sezon katmanı yok. index'te `season` sütunu,

@@ -1,24 +1,28 @@
-"""Veri seti düzeni: lig / takım / maç / basın toplantıları + index.csv.
+"""Veri seti düzeni: lig / sezon / takım / hoca / maç / basın toplantıları + index.csv.
 
     cikti/
       Premier League/
-        Arsenal/
-          2026-2027 Mikel Arteta/                      <- sezon (1 Temmuz - 30 Haziran) + o sezonki hoca (1.9.26);
-                                                          sezon ortasında hoca değişirse yeni klasör:
-                                                          "2025-2026 Enzo Maresca", "2025-2026 Liam Rosenior"
-            2026-11-08 GW11 Arsenal vs Chelsea/
-              mac.json                                   <- fikstür bilgisi (FPL), maça ait ek veriler buraya
-              2026-11-07 mac-oncesi - Mikel Arteta.txt   <- soru-cevap metni
-              2026-11-07 mac-oncesi - Mikel Arteta.json  <- zaman + konuşmacı
-              2026-11-07 mac-oncesi - Mikel Arteta.srt
-              2026-11-07 mac-oncesi - Mikel Arteta - ozet.md
-            2026-11-04 Champions League Arsenal vs Slavia Prague/
-          2025-2026 Mikel Arteta/...
+        2026-2027/                                     <- sezon (1 Temmuz - 30 Haziran) (1.9.28: önce sezon)
+          Arsenal/
+            Mikel Arteta/                              <- maç günü takımın teknik direktörü (1.9.26); sezon ortasında
+                                                          hoca değişirse yeni klasör: Chelsea/Enzo Maresca, Chelsea/Liam Rosenior
+              2026-11-08 GW11 Arsenal vs Chelsea/
+                mac.json                                   <- fikstür bilgisi (FPL), maça ait ek veriler buraya
+                2026-11-07 mac-oncesi - Mikel Arteta.txt   <- soru-cevap metni
+                2026-11-07 mac-oncesi - Mikel Arteta.json  <- zaman + konuşmacı
+                2026-11-07 mac-oncesi - Mikel Arteta.srt
+                2026-11-07 mac-oncesi - Mikel Arteta - ozet.md
+              2026-11-04 Champions League Arsenal vs Slavia Prague/
+        2023-2024/
+          Luton Town/Rob Edwards/...                   <- o sezon PL'de olan (sonra düşen) takım da Premier League'de
       Diger Takimlar/
-        Galatasaray/2026-2027 Okan Buruk/...
+        2026-2027/Galatasaray/Okan Buruk/...
+        Bilinmeyen/<başlık>/                           <- takımı bulunamayan
       index.csv / index.jsonl                          <- her basın toplantısı bir satır (model eğitimi için)
 
-Maç ve GW, FPL'nin herkese açık fikstür verisinden bulunur (fantasy.premierleague.com/api).
+Maç ve GW, FPL'nin herkese açık fikstür verisinden bulunur (fantasy.premierleague.com/api; yalnız güncel sezon).
+Eski sezonlar (1.9.28): ``assets/fpl_history.json`` (FPL'nin sezon sonu kopyası, vaastav/Fantasy-Premier-League;
+``dev/build_fpl_history.py``) + her sezonun indirilen FPL verisi ``.stt/fpl_<sezon>.json`` olarak saklanır.
 """
 from __future__ import annotations
 
@@ -110,6 +114,7 @@ def fpl_data(cache_dir: Path, max_age_h: float = 6, force: bool = False) -> dict
             }
             cache.parent.mkdir(parents=True, exist_ok=True)
             atomic_write_text(cache, json.dumps(data))
+            _archive(cache.parent, data)
             _fail_until = 0.0
             return data
         except Exception as e:  # noqa: BLE001
@@ -119,6 +124,72 @@ def fpl_data(cache_dir: Path, max_age_h: float = 6, force: bool = False) -> dict
                         "önceki fikstür verisi kullanılıyor." if old else
                         f"maç/GW eşleştirmesi yapılamıyor, {FPL_RETRY_S // 60} dk sonra tekrar denenecek.")
             return old
+
+
+# ------------------------------------------------------------------ eski sezonlar (1.9.28)
+
+HISTORY_FILE = Path(__file__).resolve().parent / "assets" / "fpl_history.json"
+_history: dict | None = None
+
+
+def history_seasons() -> dict[str, dict]:
+    """Uygulamayla gelen eski sezon fikstürleri: {"2023-2024": {"teams", "fixtures"}, ...}. Okunamazsa {}."""
+    global _history
+    if _history is None:
+        try:
+            d = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+            _history = {k: v for k, v in (d.get("seasons") or {}).items()
+                        if isinstance(v, dict) and v.get("teams") and v.get("fixtures")}
+        except Exception as e:  # noqa: BLE001
+            log.warning("Eski sezon fikstürleri okunamadı (%s): %s", HISTORY_FILE, e)
+            _history = {}
+    return _history
+
+
+def data_season(data: dict | None) -> str | None:
+    """FPL verisinin sezonu ("2026-2027"): ilk maçın tarihinden."""
+    kos = [str(f.get("kickoff_time")) for f in (data or {}).get("fixtures") or [] if f.get("kickoff_time")]
+    return season_of({"match_date": min(kos)[:10]}) if kos else None
+
+
+def _archive_path(cache_dir: Path, season: str) -> Path:
+    return Path(cache_dir) / f"fpl_{season}.json"
+
+
+def _archive(cache_dir: Path, data: dict) -> None:
+    """İndirilen FPL verisinin sezonluk kopyası: sezon bitip FPL yeni sezona geçince eski sezonun kayıtları yine
+    maç / GW bulsun (uygulamayla gelen geçmiş dosyasında henüz yoksa)."""
+    s = data_season(data)
+    if not s:
+        return
+    try:
+        atomic_write_text(_archive_path(cache_dir, s), json.dumps(data))
+    except OSError as e:
+        log.warning("FPL sezon kopyası yazılamadı: %s", e)
+
+
+def season_data(when: datetime | str | None, data: dict | None, cache_dir: Path | None = None) -> dict | None:
+    """Basın toplantısı tarihinin sezonuna ait fikstür verisi. ``data``: güncel FPL verisi. Sıra: güncel veri o
+    sezonunsa o; yoksa uygulamayla gelen geçmiş (sezon sonu, tam); yoksa ``cache_dir``'deki sezon kopyası. Hiçbiri
+    yoksa None (o sezonun fikstürü elde yok). Tarih yoksa ``data``."""
+    if when is None:
+        return data
+    day = when if isinstance(when, str) else when.date().isoformat()
+    s = season_of({"match_date": day[:10]})
+    if not s:
+        return data
+    if data and data_season(data) == s:
+        return data
+    hist = history_seasons().get(s)
+    if hist:
+        return hist
+    if cache_dir is not None:
+        p = _archive_path(cache_dir, s)
+        if p.is_file():
+            d = _read_cache(p)
+            if isinstance(d, dict) and d.get("fixtures") and data_season(d) == s:
+                return d
+    return None
 
 
 def canon_team(name: str) -> str:
@@ -285,8 +356,12 @@ def fixture_details(fx: dict, teams: dict, team: str | None) -> dict:
 
 # ------------------------------------------------------------------ sınıflandırma
 
-def classify(match: dict, info: dict, data: dict | None) -> dict:
+def classify(match: dict, info: dict, data: dict | None, cache_dir: Path | None = None) -> dict:
     """Basın toplantısını lig/takım/maç olarak yerleştir.
+
+    - ``data``: güncel FPL verisi. Toplantı başka sezondansa o sezonun fikstürü kullanılır (``season_data``; 1.9.28):
+      eski sezonda da maç + GW bulunur, o sezon PL'de olan (sonra düşen) takım Premier League'e gider. O sezonun
+      verisi hiç yoksa güncel veri (maç bulunmaz; eski davranış).
 
     - Yarışma önce başlıktan; başlıkta yoksa açıklamadan, ama açıklamadaki kupa adı (kulüpler önceki/sonraki kupa
       maçını rutin anar) o rakiple PL maçı varsa PL'yi ezmez.
@@ -299,6 +374,7 @@ def classify(match: dict, info: dict, data: dict | None) -> dict:
     else:
         opponent = match.get("away") or match.get("home")
     when, day_only = presser_time(info)
+    data = season_data(when, data, cache_dir) or data
     teams = pl_teams(data)
     title = info.get("title") or ""
     comp_title = competition_from_text(title)
@@ -491,10 +567,23 @@ def set_team_manager(root: Path, meta: dict, key: str | None = None, channel: st
 
 
 def season_folder(season: str | None, manager: str | None = None) -> str:
-    """Takım klasöründeki sezon klasörü: "2025-2026 Pep Guardiola"; hoca bilinmiyorsa "2025-2026"."""
+    """1.9.26 düzeninin sezon klasörü ("2025-2026 Pep Guardiola"; hoca bilinmiyorsa "2025-2026"). 1.9.28'den beri
+    yalnız eski klasörleri tanımak için (yeni düzen: ``season_dir`` + ``manager_dir``)."""
     if not season or season == NO_SEASON:
         return NO_SEASON
     return safe_filename(f"{season} {manager}") if manager else season
+
+
+def season_dir(meta: dict) -> str:
+    """Ligin altındaki sezon klasörü: "2025-2026"; tarihsiz kayıtta "Sezon bilinmiyor"."""
+    return season_of(meta) or NO_SEASON
+
+
+def manager_dir(meta: dict) -> str | None:
+    """Takımın altındaki hoca klasörü (maç günkü teknik direktör; ``team_manager``). Bilinmiyorsa None: maç
+    klasörü doğrudan takımın altında."""
+    tm = meta.get("team_manager")
+    return safe_filename(str(tm)) if tm and season_of(meta) else None
 
 
 def season_dir_name(meta: dict) -> str:
@@ -512,7 +601,9 @@ def target_dir(root: Path, meta: dict, fallback_title: str) -> Path:
     if not meta.get("team"):
         return Path(root) / OTHER_DIR / "Bilinmeyen" / safe_filename(fallback_title, 70)
     league = PL_DIR if meta.get("is_pl") else OTHER_DIR
-    return Path(root) / league / safe_filename(meta["team"]) / season_dir_name(meta) / match_folder_name(meta)
+    team_dir = Path(root) / league / season_dir(meta) / safe_filename(meta["team"])
+    mdir = manager_dir(meta)
+    return (team_dir / mdir if mdir else team_dir) / match_folder_name(meta)
 
 
 MAX_PATH = 250  # Windows yol sınırı (260) altında kalmak için

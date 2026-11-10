@@ -135,10 +135,12 @@ details>summary::before{content:"▸";color:var(--muted);font-size:11px;transiti
 details[open]>summary::before{transform:rotate(90deg)}
 .lg>summary{font-weight:700}
 .tm>summary{font-weight:600}
-.tm{margin-left:12px}
-.ss{margin-left:18px}
+.ss{margin-left:12px}
 .ss>summary{font-size:13px;font-weight:600;color:var(--muted)}
-.ss>.mt{margin-left:24px}
+.tm{margin-left:18px}
+.mg{margin-left:18px}
+.mg>summary{font-size:13px;color:var(--muted)}
+.mg>.mt,.tm>.mt{margin-left:24px}
 .mt{margin:2px 0 6px 30px;display:flex;flex-direction:column;gap:2px}
 .mt .mh{display:flex;align-items:center;gap:8px;font-size:12.5px;padding:4px 6px;border-radius:6px}
 .mt .mh:hover{background:var(--panel-2)}
@@ -780,52 +782,56 @@ input.txt{width:100%;border:1px solid var(--line);border-radius:8px;background:v
 
   // ---------- veri seti
   function renderDataset(ds) {
+    // 1.9.28: lig › sezon › takım › hoca › maç (klasör düzeniyle aynı); takımsız / podcast kayıtları ligin altında düz
     const t = $("#tree"); t.replaceChildren();
-    let teams = 0, matches = 0;
+    const teamNames = new Set(); let matches = 0;
     $("#sPress").textContent = ds.count || 0;
     if (!ds.leagues || !ds.leagues.length) {
-      t.append(el("div", { class: "empty" }, el("b", {}, "Veri seti boş"), "İşlenen her basın toplantısı burada lig › takım › sezon › maç olarak görünür."));
+      t.append(el("div", { class: "empty" }, el("b", {}, "Veri seti boş"), "İşlenen her basın toplantısı burada lig › sezon › takım › hoca › maç olarak görünür."));
     }
+    const openBtn = folder => folder ? el("button", { class: "linkbtn", type: "button", title: "Klasörü aç", onclick: e => { e.preventDefault(); call("open", folder); } }, "↗") : null;
+    const node = (cls, open, label, count, folder) => el("details", { class: cls, open }, el("summary", {}, label, el("span", { class: "count" }, count), openBtn(folder)));
     for (const lg of ds.leagues || []) {
       const gen = lg.league === "Podcast ve Film";
-      const nRec = lg.teams.reduce((a, x) => a + x.matches.length, 0);
-      const d = el("details", { class: "lg", open: lg.league === "Premier League" },
-        el("summary", {}, lg.league === "Diger" ? "Diğer takımlar" : lg.league, el("span", { class: "count" }, gen ? nRec + " kayıt" : lg.teams.length + " takım")));
-      for (const tm of lg.teams) {
-        if (!gen) { teams++; matches += tm.matches.length; }
-        const td = el("details", { class: "tm" }, el("summary", {}, tm.team, el("span", { class: "count" }, tm.matches.length + (gen ? " kayıt" : " maç")),
-          el("button", { class: "linkbtn", type: "button", title: "Klasörü aç", onclick: e => { e.preventDefault(); call("open", tm.folder); } }, "↗")));
-        const matchBox = list => {
-          const box = el("div", { class: "mt" });
-          for (const m of list) {
-            box.append(el("div", { class: "mh" }, el("span", { title: m.name }, m.name),
-              el("button", { class: "linkbtn", type: "button", title: "Klasörü aç", onclick: () => call("open", m.folder) }, "↗")));
-            for (const p of m.pressers) {
-              const label = [p.date, PHASE[p.phase] || "", p.manager || ""].filter(Boolean).join(" · ");
-              box.append(el("div", { class: "pr" }, el("a", { onclick: () => openReader(p.txt), title: p.txt }, label || "metin"),
-                p.diarized && !gen ? el("span", { class: "count" }, (p.questions || 0) + " soru") : null));
-            }
+      const matchBox = list => {
+        const box = el("div", { class: "mt" });
+        for (const m of list) {
+          box.append(el("div", { class: "mh" }, el("span", { title: m.name }, m.name),
+            el("button", { class: "linkbtn", type: "button", title: "Klasörü aç", onclick: () => call("open", m.folder) }, "↗")));
+          for (const p of m.pressers) {
+            const label = [p.date, PHASE[p.phase] || "", p.manager || ""].filter(Boolean).join(" · ");
+            box.append(el("div", { class: "pr" }, el("a", { onclick: () => openReader(p.txt), title: p.txt }, label || "metin"),
+              p.diarized && !gen ? el("span", { class: "count" }, (p.questions || 0) + " soru") : null));
           }
-          return box;
-        };
-        const seasons = tm.seasons || [];
-        if (!gen && seasons.length) {
-          // takım › sezon (· teknik direktör) › maç (en yeni açık); sezonsuz eski kayıtlar ("Bilinmeyen") düz listelenir
-          const flat = tm.matches.filter(m => !m.season);
-          seasons.forEach((ss, i) => {
-            const sd = el("details", { class: "ss", open: i === 0 }, el("summary", {}, ss.label || ss.season, el("span", { class: "count" }, ss.matches.length + " maç"),
-              ss.folder ? el("button", { class: "linkbtn", type: "button", title: "Klasörü aç", onclick: e => { e.preventDefault(); call("open", ss.folder); } }, "↗") : null));
-            sd.append(matchBox(ss.matches)); td.append(sd);
-          });
-          if (flat.length) td.append(matchBox(flat));
-        } else {
-          td.append(matchBox(tm.matches));
         }
-        d.append(td);
+        return box;
+      };
+      const seasons = lg.seasons || [], flat = lg.teams || [];
+      const nRec = seasons.reduce((a, s) => a + s.count, 0) + flat.reduce((a, x) => a + x.matches.length, 0);
+      const d = node("lg", lg.league === "Premier League", lg.league === "Diger" ? "Diğer takımlar" : lg.league,
+        gen ? nRec + " kayıt" : seasons.length + " sezon", lg.folder);
+      seasons.forEach((ss, i) => {
+        const sd = node("ss", i === 0, ss.season, ss.teams.length + " takım · " + ss.count + " maç", ss.folder);
+        for (const tm of ss.teams) {
+          if (!gen) { teamNames.add(tm.team); matches += tm.count; }
+          const td = node("tm", false, tm.team, tm.count + " maç", tm.folder);
+          for (const g of tm.managers || []) {
+            const gd = node("mg", (tm.managers || []).length === 1, g.manager, g.matches.length + " maç", g.folder);
+            gd.append(matchBox(g.matches)); td.append(gd);
+          }
+          if ((tm.matches || []).length) td.append(matchBox(tm.matches));
+          sd.append(td);
+        }
+        d.append(sd);
+      });
+      for (const tm of flat) {
+        if (!gen) { teamNames.add(tm.team); matches += tm.matches.length; }
+        const td = node("tm", false, tm.team, tm.matches.length + (gen ? " kayıt" : " maç"), tm.folder);
+        td.append(matchBox(tm.matches)); d.append(td);
       }
       t.append(d);
     }
-    $("#sTeams").textContent = teams; $("#sMatches").textContent = matches;
+    $("#sTeams").textContent = teamNames.size; $("#sMatches").textContent = matches;
     $("#btnCsv").hidden = !ds.index_csv; $("#btnCsv").onclick = () => call("open", ds.index_csv);
   }
   const refreshDataset = async () => { const d = await call("dataset"); if (d) renderDataset(d); };

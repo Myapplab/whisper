@@ -21,8 +21,8 @@ from .merge import apply_labels, assign_speakers, label_speakers, label_speakers
 from .outputs import to_txt, write_all
 from .sources import Item
 from .state import State
-from .dataset import (MAX_PATH, classify, fpl_data, index_row, out_paths, set_team_manager, update_index,  # noqa: F401
-                      write_match_json)
+from .dataset import (MAX_PATH, classify, data_season, fpl_data, index_row, out_paths, season_of,  # noqa: F401
+                      set_team_manager, update_index, write_match_json)
 from .match import looks_like_presser, parse_match
 from .util import PAGEFILE_DUAL_HINT, fmt_clock, keep_awake, log, memory_status, text_hash
 from .workers import WorkerPool
@@ -2810,15 +2810,17 @@ class Pipeline:
         if not speakers:
             for s in doc["segments"]:
                 s.pop("speaker", None)
-        meta = classify(job.match, info, self.fpl())
+        cur_fpl = self.fpl()
+        meta = classify(job.match, info, cur_fpl, self.out_root / ".stt")   # eski sezonsa o sezonun fikstürü
         if mode == "herkes" and self._opt(job.item, "diarize"):
             meta["general"] = True  # podcast / film: veri setinin takım klasörlerine karışmasın
-        set_team_manager(self.out_root, meta, job.item.key,   # sezon klasörü "<sezon> <o günkü hoca>"
+        set_team_manager(self.out_root, meta, job.item.key,   # hoca klasörü: maç günkü teknik direktör
                          info.get("channel") or info.get("uploader") or "")
         doc["dataset"] = {k: v for k, v in meta.items() if k != "fixture"}
         fpl = item_fpl(job.item, cfg)
+        # eski sezonun GW'si FPL reposunda bu sezonun GW klasörüne yazılmasın
         if not fpl and not meta.get("general") and self._opt(job.item, "fpl_auto") and meta.get("gw") and meta.get("fpl_short") and cfg.fpl_repo \
-                and (Path(cfg.fpl_repo) / "presser.py").is_file():
+                and season_of(meta) == data_season(cur_fpl) and (Path(cfg.fpl_repo) / "presser.py").is_file():
             fpl = (int(meta["gw"]), meta["fpl_short"])
         if fpl:
             doc["fpl"] = {"gw": fpl[0], "team": fpl[1]}

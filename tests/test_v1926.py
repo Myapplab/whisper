@@ -4,11 +4,20 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from test_v198 import FPL, _old_output, _ts
 
 from stt.dataset import index_row, season_folder, set_team_manager, target_dir, team_manager, update_index
 from stt.match import (MANAGER_HISTORY, MANAGER_HISTORY_CHECKED, PL_MANAGERS, _known_manager, history_manager,
                        history_team, manager_team, parse_match)
+
+
+@pytest.fixture(autouse=True)
+def _no_history(monkeypatch):
+    """Bu dosyanın testleri sahte fikstürle (FPL: 2026-27) eski sezonun "fikstürü yok" yolunu dener; 1.9.28'den beri
+    uygulamayla gelen 2023-24..2025-26 fikstürleri kapatılır (gerçek veriyle testler: test_v1928.py)."""
+    import stt.dataset as d
+    monkeypatch.setattr(d, "_history", {})
 
 
 # ---------------------------------------------------------------- hoca geçmişi tablosu
@@ -20,7 +29,8 @@ def test_history_manager_by_date():
                                                     "2026-08-20")] == \
         ["Enzo Maresca", "Calum McFarlane", "Liam Rosenior", "Calum McFarlane", "Xabi Alonso"]
     assert history_manager("Chelsea", "2026-01-06") == "Liam Rosenior"           # başladığı gün yeni hoca
-    assert history_manager("Brighton", "2023-05-01") is None                    # tablonun başından önce
+    assert history_manager("Brighton", "2022-05-01") is None                    # tablonun başından önce
+    assert history_manager("Brighton", "2023-05-01") == "Roberto De Zerbi"      # 1.9.28: eski sezonlar
     assert history_manager("West Ham", "2026-09-01") is None                    # küme düştü: sonrası bilinmiyor
     assert history_manager("Galatasaray", "2026-09-01") is None
     assert history_manager("Chelsea", None) is None and history_manager("Chelsea", "tarih-yok") is None
@@ -75,18 +85,20 @@ def _meta(team, day, manager=None, **kw):
 
 def test_season_folder_has_manager_and_changes_with_manager(tmp_path):
     """Kullanıcının örneği: 2025-2026 Manchester City Guardiola, 2026-2027 Manchester City Maresca."""
-    def folder(meta):
-        return target_dir(tmp_path, set_team_manager(tmp_path, meta), "x").parent.name
-    assert folder(_meta("Manchester City", "2026-03-01", "Pep Guardiola")) == "2025-2026 Pep Guardiola"
-    assert folder(_meta("Manchester City", "2026-09-12", "Enzo Maresca")) == "2026-2027 Enzo Maresca"
+    def folder(meta):   # 1.9.28: <lig>/<sezon>/<takım>/<hoca>/<maç>
+        d = target_dir(tmp_path, set_team_manager(tmp_path, meta), "x")
+        return "/".join(d.relative_to(tmp_path).parts[1:-1])
+    assert folder(_meta("Manchester City", "2026-03-01", "Pep Guardiola")) == "2025-2026/Manchester City/Pep Guardiola"
+    assert folder(_meta("Manchester City", "2026-09-12", "Enzo Maresca")) == "2026-2027/Manchester City/Enzo Maresca"
     # sezon ortasında değişim: aynı sezonda ayrı klasörler; oyuncunun toplantısı o günkü hocanın klasörüne
     assert [folder(_meta("Chelsea", d, "Cole Palmer")) for d in ("2025-12-20", "2026-02-01", "2026-05-10")] == \
-        ["2025-2026 Enzo Maresca", "2025-2026 Liam Rosenior", "2025-2026 Calum McFarlane"]
-    assert folder(_meta("Nottingham Forest", "2025-11-01")) == "2025-2026 Sean Dyche"
+        ["2025-2026/Chelsea/Enzo Maresca", "2025-2026/Chelsea/Liam Rosenior", "2025-2026/Chelsea/Calum McFarlane"]
+    assert folder(_meta("Nottingham Forest", "2025-11-01")) == "2025-2026/Nottingham Forest/Sean Dyche"
     # maç tarihi belirler: maçtan önceki gün eski hocanın toplantısı da o maçın klasörüyle aynı yere
-    assert folder(_meta("Chelsea", "2026-01-07", presser_date="2026-01-04")) == "2025-2026 Liam Rosenior"
-    # tarih / takım yok: hoca yok
-    assert folder({"team": "Galatasaray"}) == "Sezon bilinmiyor"
+    assert folder(_meta("Chelsea", "2026-01-07", presser_date="2026-01-04")) == "2025-2026/Chelsea/Liam Rosenior"
+    # tarih / takım yok: hoca klasörü yok
+    assert folder({"team": "Galatasaray"}) == "Sezon bilinmiyor/Galatasaray"
+    assert folder(_meta("Galatasaray", "2026-10-05", "Barış Alper Yılmaz", is_pl=False)) == "2026-2027/Galatasaray"
     assert season_folder("2026-2027", "Gary O'Neil") == "2026-2027 Gary O'Neil"
     assert season_folder("2026-2027", None) == "2026-2027" and season_folder(None, "x") == "Sezon bilinmiyor"
 
@@ -150,8 +162,8 @@ def test_index_row_and_match_json_have_team_manager(tmp_path):
 
 # ---------------------------------------------------------------- yeniden sınıflandırma (eski kayıtlar)
 def test_reclassify_moves_old_season_into_manager_folders(tmp_path):
-    """1.9.25 düzeni (yalnız sezon klasörü): eski sezon kayıtları o günkü hocanın klasörüne; sezon ortasında
-    değişen hoca ayrı klasör. İkinci çalıştırma bir şey değiştirmez."""
+    """1.9.25 düzeni (yalnız sezon klasörü), fikstürü olmayan sezon: kayıtlar yeni düzende o günkü hocanın
+    klasörüne; sezon ortasında değişen hoca ayrı klasör. İkinci çalıştırma bir şey değiştirmez."""
     from stt.reclassify import reclassify
     base_ds = {"team": "Chelsea", "is_pl": True, "competition": "Premier League", "home": "Chelsea",
                "away": "Arsenal", "opponent": "Arsenal"}
@@ -171,17 +183,17 @@ def test_reclassify_moves_old_season_into_manager_folders(tmp_path):
     assert plan["moved"] == 2 and a["txt"].exists() and b["txt"].exists()
     res = reclassify(tmp_path, apply=True, data=FPL)
     assert res["moved"] == 2 and not res["errors"], res
-    ch = tmp_path / "Premier League" / "Chelsea"
-    na = ch / "2025-2026 Enzo Maresca" / "2025-12-20 GW17 Chelsea vs Arsenal"
-    nb = ch / "2025-2026 Liam Rosenior" / "2026-01-31 GW24 Chelsea vs Arsenal"
+    ch = tmp_path / "Premier League" / "2025-2026" / "Chelsea"
+    na = ch / "Enzo Maresca" / "2025-12-20 GW17 Chelsea vs Arsenal"
+    nb = ch / "Liam Rosenior" / "2026-01-31 GW24 Chelsea vs Arsenal"
     assert (na / "2025-12-19 mac-oncesi - Enzo Maresca.txt").exists()
     assert (nb / "2026-01-30 mac-oncesi - Liam Rosenior.txt").exists()
-    assert not (ch / "2025-2026").exists()                                    # boşalan eski sezon klasörü silindi
+    assert not (tmp_path / "Premier League" / "Chelsea").exists()             # boşalan eski takım klasörü silindi
     m = json.loads((na / "mac.json").read_text("utf-8"))
     assert m["score"] == "1-0" and m["ek_bilgiler"] == {"not": "elle"} and m["team_manager"] == "Enzo Maresca"
     rows = {r["key"]: r for r in (json.loads(x) for x in (tmp_path / "index.jsonl").read_text("utf-8").splitlines())}
     assert rows["y_c1"]["team_manager"] == "Enzo Maresca" and rows["y_c2"]["team_manager"] == "Liam Rosenior"
-    assert rows["y_c2"]["txt"].startswith("Premier League/Chelsea/2025-2026 Liam Rosenior/")
+    assert rows["y_c2"]["txt"].startswith("Premier League/2025-2026/Chelsea/Liam Rosenior/")
     doc = json.loads((nb / "2026-01-30 mac-oncesi - Liam Rosenior.json").read_text("utf-8"))
     assert doc["dataset"]["team_manager"] == "Liam Rosenior" and doc["dataset"]["gw"] == 24
     again = reclassify(tmp_path, apply=True, data=FPL)
@@ -189,7 +201,7 @@ def test_reclassify_moves_old_season_into_manager_folders(tmp_path):
 
 
 def test_reclassify_current_season_from_plain_season_folder(tmp_path):
-    """Bu sezonun 1.9.25 kaydı ("Arsenal/2026-2027/...") hocalı klasöre taşınır; takım klasörü kalır."""
+    """Bu sezonun 1.9.25 kaydı ("Arsenal/2026-2027/...") yeni düzende hocalı klasöre taşınır."""
     from stt.reclassify import reclassify
     ds = {"team": "Arsenal", "opponent": "Chelsea", "is_pl": True, "gw": 11, "home": "Arsenal", "away": "Chelsea",
           "presser_date": "2026-11-06", "match_date": "2026-11-08", "phase": "mac-oncesi", "manager": "Mikel Arteta",
@@ -200,11 +212,10 @@ def test_reclassify_current_season_from_plain_season_folder(tmp_path):
     (p["txt"].parent / "mac.json").write_text(json.dumps({"team": "Arsenal", "ek_bilgiler": {"kadro": [1]}}),
                                               encoding="utf-8")
     res = reclassify(tmp_path, apply=True, data=FPL)
-    new = tmp_path / "Premier League" / "Arsenal" / "2026-2027 Mikel Arteta" / "2026-11-08 GW11 Arsenal vs Chelsea"
+    new = tmp_path / "Premier League" / "2026-2027" / "Arsenal" / "Mikel Arteta" / "2026-11-08 GW11 Arsenal vs Chelsea"
     assert res["moved"] == 1 and (new / "2026-11-06 mac-oncesi - Mikel Arteta.txt").exists()
     assert json.loads((new / "mac.json").read_text("utf-8"))["ek_bilgiler"] == {"kadro": [1]}
-    assert not (tmp_path / "Premier League" / "Arsenal" / "2026-2027").exists()
-    assert (tmp_path / "Premier League" / "Arsenal").is_dir()
+    assert not (tmp_path / "Premier League" / "Arsenal").exists()
 
 
 def test_reclassify_old_season_other_team_folder_not_touched(tmp_path):
@@ -220,7 +231,7 @@ def test_reclassify_old_season_other_team_folder_not_touched(tmp_path):
 
 # ---------------------------------------------------------------- pipeline + arayüz
 def test_finalize_puts_presser_into_manager_folder(tmp_path):
-    """Bitirme: oyuncunun toplantısı da o günkü hocanın klasörüne ("2025-2026 Liam Rosenior"); index'te team_manager,
+    """Bitirme: oyuncunun toplantısı da o günkü hocanın klasörüne ("2025-2026/Chelsea/Liam Rosenior"); index'te team_manager,
     konuşan (manager) ayrı kalır."""
     from stt.config import Config
     from stt.pipeline import Item, Job, Pipeline
@@ -244,7 +255,7 @@ def test_finalize_puts_presser_into_manager_folder(tmp_path):
         assert job.status == "done", job.error
     finally:
         pipe.close()
-    assert job.out_dir.parent == out / "Premier League" / "Chelsea" / "2025-2026 Liam Rosenior"
+    assert job.out_dir.parent == out / "Premier League" / "2025-2026" / "Chelsea" / "Liam Rosenior"
     row = json.loads((out / "index.jsonl").read_text("utf-8").splitlines()[0])
     assert row["team_manager"] == "Liam Rosenior" and row["manager"] == "Cole Palmer" and row["season"] == "2025-2026"
     assert job.result["dataset"]["team_manager"] == "Liam Rosenior"
@@ -252,16 +263,17 @@ def test_finalize_puts_presser_into_manager_folder(tmp_path):
 
 
 def test_gui_dataset_tree_groups_by_season_and_manager(tmp_path, monkeypatch):
+    """1.9.28: lig › sezon › takım › hoca › maç; taşınmamış eski düzendeki kayıt da index'e göre doğru yerde."""
     import stt.gui as g
     monkeypatch.chdir(tmp_path)
     app = g.App()
     app._cfg.out_dir = tmp_path
     for key, folder, md, season, tm in [
-            ("a", "Premier League/Chelsea/2025-2026 Enzo Maresca/2025-12-20 GW17 Chelsea vs Arsenal", "2025-12-20",
+            ("a", "Premier League/2025-2026/Chelsea/Enzo Maresca/2025-12-20 GW17 Chelsea vs Arsenal", "2025-12-20",
              "2025-2026", "Enzo Maresca"),
-            ("b", "Premier League/Chelsea/2025-2026 Liam Rosenior/2026-01-31 GW24 Chelsea vs Arsenal", "2026-01-31",
+            ("b", "Premier League/2025-2026/Chelsea/Liam Rosenior/2026-01-31 GW24 Chelsea vs Arsenal", "2026-01-31",
              "2025-2026", "Liam Rosenior"),
-            ("c", "Premier League/Chelsea/2026-2027 Xabi Alonso/2026-09-12 GW04 Chelsea vs Arsenal", "2026-09-12",
+            ("c", "Premier League/2026-2027/Chelsea/Xabi Alonso/2026-09-12 GW04 Chelsea vs Arsenal", "2026-09-12",
              "2026-2027", "Xabi Alonso"),
             ("d", "Premier League/Chelsea/2025-2026/2025-09-14 GW04 Chelsea vs Arsenal", "2025-09-14",
              "2025-2026", None)]:                                                        # taşınmamış 1.9.25 kaydı
@@ -269,14 +281,21 @@ def test_gui_dataset_tree_groups_by_season_and_manager(tmp_path, monkeypatch):
         update_index(tmp_path, {"key": key, "league": "Premier League", "team": "Chelsea", "match_date": md,
                                 "presser_date": md, "season": season, "team_manager": tm,
                                 "txt": f"{folder}/x.txt", "json": f"{folder}/x.json"})
+    update_index(tmp_path, {"key": "e", "league": "Diger", "team": None, "presser_date": "2026-01-01",
+                            "txt": "Diger Takimlar/Bilinmeyen/Baslik/x.txt",
+                            "json": "Diger Takimlar/Bilinmeyen/Baslik/x.json"})
     ds = app.dataset()
-    tm = next(x for x in ds["leagues"] if x["league"] == "Premier League")["teams"][0]
-    assert [s["label"] for s in tm["seasons"]] == ["2026-2027 · Xabi Alonso", "2025-2026 · Liam Rosenior",
-                                                   "2025-2026 · Enzo Maresca", "2025-2026"]
-    assert [s["season"] for s in tm["seasons"]] == ["2026-2027", "2025-2026", "2025-2026", "2025-2026"]
-    assert tm["seasons"][1]["manager"] == "Liam Rosenior"
-    assert tm["seasons"][1]["folder"] == str(tmp_path / "Premier League" / "Chelsea" / "2025-2026 Liam Rosenior")
-    assert tm["seasons"][3]["folder"] == str(tmp_path / "Premier League" / "Chelsea" / "2025-2026")
+    pl = next(x for x in ds["leagues"] if x["league"] == "Premier League")
+    assert [s["season"] for s in pl["seasons"]] == ["2026-2027", "2025-2026"]
+    assert pl["seasons"][1]["folder"] == str(tmp_path / "Premier League" / "2025-2026")
+    tm = pl["seasons"][1]["teams"][0]
+    assert tm["team"] == "Chelsea" and tm["count"] == 3
+    assert tm["folder"] == str(tmp_path / "Premier League" / "2025-2026" / "Chelsea")
+    assert [g["manager"] for g in tm["managers"]] == ["Liam Rosenior", "Enzo Maresca"]   # son hoca üstte
+    assert tm["managers"][0]["folder"] == str(tmp_path / "Premier League" / "2025-2026" / "Chelsea" / "Liam Rosenior")
+    assert [m["name"] for m in tm["matches"]] == ["2025-09-14 GW04 Chelsea vs Arsenal"]  # hocasız
+    other = next(x for x in ds["leagues"] if x["league"] == "Diger")
+    assert other["seasons"] == [] and [t["team"] for t in other["teams"]] == ["Bilinmeyen"]
 
 
 def test_season_dir_detection_and_truncated_match_names():

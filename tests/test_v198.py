@@ -5,12 +5,21 @@ sezonu (premierleague.com listesi, 2026-11-06'da doğrulandı)."""
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path, PureWindowsPath
 
 import pytest
 
 from stt.dataset import classify, find_fixture, match_folder_name, phase_hint, pl_teams, presser_time, rel_path
 from stt.match import find_manager, find_teams, looks_like_presser, parse_match
+
+
+@pytest.fixture(autouse=True)
+def _no_history(monkeypatch):
+    """Sahte fikstürle (2026-27) eski sezonun "fikstürü yok" yolu denenir: 1.9.28'den beri uygulamayla gelen
+    2023-24..2025-26 fikstürleri kapatılır (gerçek veriyle testler: test_v1928.py)."""
+    import stt.dataset as d
+    monkeypatch.setattr(d, "_history", {})
 
 # 1 Arsenal, 7 Chelsea, 14 Man City, 9 Everton, 8 Coventry, 20 Tottenham, 13 Liverpool, 4 Brentford, 11 Hull
 FPL = {
@@ -427,14 +436,14 @@ def test_reclassify_moves_wrong_folder_and_fills_gw(tmp_path):
            "presser_date": "2026-11-06", "match_date": "2026-11-06", "gw": None, "phase": None,
            "home": "Arsenal", "away": "Bukayo Saka's"}
     paths = _old_output(tmp_path, "y_saka", "Mikel Arteta on Bukayo Saka's fitness | Press conference", "Arsenal",
-                        _ts("2026-11-06 12:00"), "Premier League/Arsenal/2026-2027 Mikel Arteta/2026-11-06 Arsenal vs Bukayo Saka's",
+                        _ts("2026-11-06 12:00"), "Premier League/2026-2027/Arsenal/Mikel Arteta/2026-11-06 Arsenal vs Bukayo Saka's",
                         "2026-11-06 - Mikel Arteta", old, news=True)
     plan = reclassify(tmp_path, apply=False, data=FPL)
     assert plan["ok"] and plan["moved"] == 1 and plan["gw_found"] == 1
     assert paths["txt"].exists()                                       # deneme turu hiçbir şeyi değiştirmez
     res = reclassify(tmp_path, apply=True, data=FPL)
     assert res["moved"] == 1
-    new = tmp_path / "Premier League" / "Arsenal" / "2026-2027 Mikel Arteta" / "2026-11-08 GW11 Arsenal vs Chelsea"
+    new = tmp_path / "Premier League" / "2026-2027" / "Arsenal" / "Mikel Arteta" / "2026-11-08 GW11 Arsenal vs Chelsea"
     base = "2026-11-06 mac-oncesi - Mikel Arteta"
     assert (new / f"{base}.txt").exists() and (new / f"{base} - haber.md").exists()
     assert json.loads((new / f"{base} - haber.json").read_text("utf-8"))["metin"] == f"{base}.json"
@@ -447,7 +456,7 @@ def test_reclassify_moves_wrong_folder_and_fills_gw(tmp_path):
     assert mac["gw"] == 11 and mac["score"] == "2-1" and mac["fpl_fixture"]["id"] == 101
     rows = [json.loads(x) for x in (tmp_path / "index.jsonl").read_text("utf-8").splitlines()]
     assert len(rows) == 1 and rows[0]["gw"] == 11 and rows[0]["txt"] == \
-        f"Premier League/Arsenal/2026-2027 Mikel Arteta/2026-11-08 GW11 Arsenal vs Chelsea/{base}.txt"
+        f"Premier League/2026-2027/Arsenal/Mikel Arteta/2026-11-08 GW11 Arsenal vs Chelsea/{base}.txt"
     st = State(tmp_path / ".stt").get("y_saka")
     assert st["out_dir"] == str(new) and st["info"]["json"] == str(new / f"{base}.json") and st["status"] == "done"
     again = reclassify(tmp_path, apply=True, data=FPL)
@@ -459,14 +468,14 @@ def test_reclassify_keeps_other_pressers_in_old_folder(tmp_path):
     ds = {"team": "Arsenal", "opponent": "Chelsea", "is_pl": True, "gw": 11, "home": "Arsenal", "away": "Chelsea",
           "presser_date": "2026-11-06", "match_date": "2026-11-08", "phase": "mac-oncesi", "manager": "Mikel Arteta",
           "competition": "Premier League"}
-    folder = "Premier League/Arsenal/2026-2027 Mikel Arteta/2026-11-08 GW11 Arsenal vs Chelsea"
+    folder = "Premier League/2026-2027/Arsenal/Mikel Arteta/2026-11-08 GW11 Arsenal vs Chelsea"
     good = _old_output(tmp_path, "y_pre", "Mikel Arteta's pre-Chelsea press conference", "Arsenal",
                        _ts("2026-11-06 12:00"), folder, "2026-11-06 mac-oncesi - Mikel Arteta", ds)
     # 1.9.7: ertesi gün yüklenen maç sonrası toplantı sonraki maça yazılmıştı
     wrong = {**ds, "gw": 12, "home": "Manchester City", "away": "Arsenal", "opponent": "Manchester City",
              "presser_date": "2026-11-09", "match_date": "2026-11-11", "phase": "mac-oncesi"}
     bad = _old_output(tmp_path, "y_post", "Post-Match Press Conference | Mikel Arteta", "Arsenal",
-                      _ts("2026-11-09 13:00"), "Premier League/Arsenal/2026-2027 Mikel Arteta/2026-11-11 GW12 Manchester City vs Arsenal",
+                      _ts("2026-11-09 13:00"), "Premier League/2026-2027/Arsenal/Mikel Arteta/2026-11-11 GW12 Manchester City vs Arsenal",
                       "2026-11-09 mac-oncesi - Mikel Arteta", wrong)
     res = reclassify(tmp_path, apply=True, data=FPL)
     assert res["moved"] == 1, res
@@ -477,14 +486,14 @@ def test_reclassify_keeps_other_pressers_in_old_folder(tmp_path):
 
 def test_reclassify_name_collision_gets_suffix(tmp_path):
     from stt.reclassify import reclassify
-    folder = tmp_path / "Premier League" / "Arsenal" / "2026-2027 Mikel Arteta" / "2026-11-08 GW11 Arsenal vs Chelsea"
+    folder = tmp_path / "Premier League" / "2026-2027" / "Arsenal" / "Mikel Arteta" / "2026-11-08 GW11 Arsenal vs Chelsea"
     folder.mkdir(parents=True)
     (folder / ".2026-11-06 mac-oncesi - Mikel Arteta.key").write_text("y_other")
     (folder / "2026-11-06 mac-oncesi - Mikel Arteta.txt").write_text("başka video", encoding="utf-8")
     old = {"team": "Arsenal", "opponent": "Bukayo Saka's", "is_pl": True, "presser_date": "2026-11-06",
            "home": "Arsenal", "away": "Bukayo Saka's"}
     _old_output(tmp_path, "y_sakaa", "Mikel Arteta on Bukayo Saka's fitness | Press conference", "Arsenal",
-                _ts("2026-11-06 12:00"), "Premier League/Arsenal/2026-2027 Mikel Arteta/2026-11-06 Arsenal vs Bukayo Saka's",
+                _ts("2026-11-06 12:00"), "Premier League/2026-2027/Arsenal/Mikel Arteta/2026-11-06 Arsenal vs Bukayo Saka's",
                 "2026-11-06 - Mikel Arteta", old)
     reclassify(tmp_path, apply=True, data=FPL)
     assert (folder / "2026-11-06 mac-oncesi - Mikel Arteta.txt").read_text("utf-8") == "başka video"
@@ -515,7 +524,7 @@ def test_reclassify_needs_fpl_and_skips_other_seasons(tmp_path, monkeypatch):
     mac.write_text(json.dumps({"team": "Arsenal", "score": "3-0", "ek_bilgiler": {"not": "elle"}}), encoding="utf-8")
     res = rc.reclassify(tmp_path, apply=True, data=FPL)
     # 1.9.25: eski sezon yeniden sınıflandırılmaz (fikstürü yok), yalnız sezon klasörüne taşınır
-    new = tmp_path / "Premier League" / "Arsenal" / "2025-2026 Mikel Arteta" / "2026-03-02 GW30 Arsenal vs Chelsea"
+    new = tmp_path / "Premier League" / "2025-2026" / "Arsenal" / "Mikel Arteta" / "2026-03-02 GW30 Arsenal vs Chelsea"
     assert res["ok"] and res["moved"] == 1 and res["other_season"] == 0, res
     assert (new / "2026-03-01 mac-oncesi - Mikel Arteta.txt").exists() and not p["txt"].exists()
     doc = json.loads((new / "2026-03-01 mac-oncesi - Mikel Arteta.json").read_text("utf-8"))
@@ -524,7 +533,7 @@ def test_reclassify_needs_fpl_and_skips_other_seasons(tmp_path, monkeypatch):
     assert m["score"] == "3-0" and m["ek_bilgiler"] == {"not": "elle"} and m["season"] == "2025-2026"
     assert not mac.parent.exists()    # elle eklenen bilgi yeni mac.json'a geçti: boş eski klasör silindi
     row = json.loads((tmp_path / "index.jsonl").read_text("utf-8"))
-    assert row["season"] == "2025-2026" and row["txt"].startswith("Premier League/Arsenal/2025-2026 Mikel Arteta/")
+    assert row["season"] == "2025-2026" and row["txt"].startswith("Premier League/2025-2026/Arsenal/Mikel Arteta/")
     again = rc.reclassify(tmp_path, apply=True, data=FPL)
     assert again["other_season"] == 1 and again["moved"] == 0
 
@@ -563,7 +572,7 @@ def test_reclassify_updates_collection_paths(tmp_path):
     old = {"team": "Arsenal", "opponent": "Bukayo Saka's", "is_pl": True, "presser_date": "2026-11-06",
            "home": "Arsenal", "away": "Bukayo Saka's"}
     paths = _old_output(tmp_path, "y_col", "Mikel Arteta on Bukayo Saka's fitness | Press conference", "Arsenal",
-                        _ts("2026-11-06 12:00"), "Premier League/Arsenal/2026-2027 Mikel Arteta/2026-11-06 Arsenal vs Bukayo Saka's",
+                        _ts("2026-11-06 12:00"), "Premier League/2026-2027/Arsenal/Mikel Arteta/2026-11-06 Arsenal vs Bukayo Saka's",
                         "2026-11-06 - Mikel Arteta", old)
     col = tmp_path / "Koleksiyonlar" / "Arsenal - basın toplantıları"
     col.mkdir(parents=True)
@@ -587,7 +596,7 @@ def test_gui_reclassify_dry_run_then_apply(tmp_path, monkeypatch):
     old = {"team": "Arsenal", "opponent": "Bukayo Saka's", "is_pl": True, "presser_date": "2026-11-06",
            "home": "Arsenal", "away": "Bukayo Saka's"}
     paths = _old_output(tmp_path, "y_gui", "Mikel Arteta on Bukayo Saka's fitness | Press conference", "Arsenal",
-                        _ts("2026-11-06 12:00"), "Premier League/Arsenal/2026-2027 Mikel Arteta/2026-11-06 Arsenal vs Bukayo Saka's",
+                        _ts("2026-11-06 12:00"), "Premier League/2026-2027/Arsenal/Mikel Arteta/2026-11-06 Arsenal vs Bukayo Saka's",
                         "2026-11-06 - Mikel Arteta", old)
 
     class Busy:
@@ -602,7 +611,8 @@ def test_gui_reclassify_dry_run_then_apply(tmp_path, monkeypatch):
     r = app.dataset_reclassify(True)
     assert r["ok"] and r["moved"] == 1 and not paths["txt"].exists()
     ds = app.dataset()
-    assert ds["leagues"][0]["teams"][0]["matches"][0]["name"] == "2026-11-08 GW11 Arsenal vs Chelsea"
+    tm = ds["leagues"][0]["seasons"][0]["teams"][0]
+    assert tm["managers"][0]["matches"][0]["name"] == "2026-11-08 GW11 Arsenal vs Chelsea"
 
 
 def test_finalize_writes_new_index_fields_and_posix_paths(tmp_path):
@@ -630,9 +640,9 @@ def test_finalize_writes_new_index_fields_and_posix_paths(tmp_path):
         assert job.status == "done", job.error
     finally:
         pipe.close()
-    assert job.out_dir == out / "Premier League" / "Arsenal" / "2026-2027 Mikel Arteta" / "2026-11-08 GW11 Arsenal vs Chelsea"
+    assert job.out_dir == out / "Premier League" / "2026-2027" / "Arsenal" / "Mikel Arteta" / "2026-11-08 GW11 Arsenal vs Chelsea"
     row = json.loads((out / "index.jsonl").read_text("utf-8").splitlines()[0])
-    assert row["txt"] == "Premier League/Arsenal/2026-2027 Mikel Arteta/2026-11-08 GW11 Arsenal vs Chelsea/2026-11-09 mac-sonrasi - Mikel Arteta.txt"
+    assert row["txt"] == "Premier League/2026-2027/Arsenal/Mikel Arteta/2026-11-08 GW11 Arsenal vs Chelsea/2026-11-09 mac-sonrasi - Mikel Arteta.txt"
     assert (row["gw"], row["fixture_id"], row["score"], row["is_home"], row["opponent_short"], row["speaker_role"]) == \
         (11, 101, "2-1", True, "CHE", "hoca")
     assert row["title"] == title and row["phase"] == "mac-sonrasi"
@@ -815,12 +825,12 @@ def test_reclassify_case_only_rename_keeps_files(tmp_path):
     ds = {"team": "Bayer Leverkusen", "manager": "Erik Ten Hag", "presser_date": "2026-11-06",
           "match_date": "2026-11-06", "home": "Bayer Leverkusen"}
     p = _old_output(tmp_path, "y_hag", "Erik Ten Hag press conference", "Bayer Leverkusen", _ts("2026-11-06 12:00"),
-                    "Diger Takimlar/Bayer Leverkusen/2026-2027 Erik ten Hag/2026-11-06 Bayer Leverkusen basın toplantısı",
+                    "Diger Takimlar/2026-2027/Bayer Leverkusen/Erik ten Hag/2026-11-06 Bayer Leverkusen basın toplantısı",
                     "2026-11-06 - Erik Ten Hag", ds)
     res = reclassify(tmp_path, apply=True, data=FPL)
     assert res["moved"] == 0 and not res["errors"], res
     assert p["txt"].exists() and p["json"].exists()
-    assert not (p["txt"].parent / "2026-11-06 - Erik ten Hag.txt").exists()
+    assert "2026-11-06 - Erik ten Hag.txt" not in os.listdir(p["txt"].parent)   # Windows'ta exists() aynı dosyayı görür
     row = json.loads((tmp_path / "index.jsonl").read_text("utf-8"))
     assert row["json"].endswith("2026-11-06 - Erik Ten Hag.json") and row["manager"] == "Erik ten Hag"
 
@@ -831,13 +841,13 @@ def test_reclassify_old_doc_keeps_cup_from_description(tmp_path):
     ds = {"team": "Arsenal", "opponent": "Slavia Prague", "competition": "Champions League", "is_pl": True,
           "presser_date": "2026-11-06", "match_date": "2026-11-06", "home": "Arsenal", "away": "Slavia Prague"}
     p = _old_output(tmp_path, "y_cl", "Mikel Arteta press conference", "Arsenal", _ts("2026-11-06 12:00"),
-                    "Premier League/Arsenal/2026-2027 Mikel Arteta/2026-11-06 Champions League Arsenal vs Slavia Prague",
+                    "Premier League/2026-2027/Arsenal/Mikel Arteta/2026-11-06 Champions League Arsenal vs Slavia Prague",
                     "2026-11-06 - Mikel Arteta", ds,
                     match={"home": "Arsenal", "away": "Slavia Prague", "team": "Arsenal", "manager": "Mikel Arteta"})
     ds2 = {"team": "Arsenal", "opponent": "Wycombe", "competition": "EFL Cup", "is_pl": True,
            "presser_date": "2026-11-09", "match_date": "2026-11-09", "home": "Arsenal", "away": "Wycombe"}
     p2 = _old_output(tmp_path, "y_cup", "Arsenal vs Wycombe | Mikel Arteta press conference", "Arsenal",
-                     _ts("2026-11-09 13:00"), "Premier League/Arsenal/2026-2027 Mikel Arteta/2026-11-09 EFL Cup Arsenal vs Wycombe",
+                     _ts("2026-11-09 13:00"), "Premier League/2026-2027/Arsenal/Mikel Arteta/2026-11-09 EFL Cup Arsenal vs Wycombe",
                      "2026-11-09 - Mikel Arteta", ds2,
                      match={"home": "Arsenal", "away": "Wycombe", "team": "Arsenal", "manager": "Mikel Arteta"})
     res = reclassify(tmp_path, apply=True, data=FPL)
@@ -850,7 +860,7 @@ def test_reclassify_survives_broken_source_info_and_keeps_extra_data(tmp_path):
     old = {"team": "Arsenal", "opponent": "Bukayo Saka's", "is_pl": True, "presser_date": "2026-11-06",
            "home": "Arsenal", "away": "Bukayo Saka's"}
     p = _old_output(tmp_path, "y_ek", "Mikel Arteta on Bukayo Saka's fitness | Press conference", "Arsenal",
-                    _ts("2026-11-06 12:00"), "Premier League/Arsenal/2026-2027 Mikel Arteta/2026-11-06 Arsenal vs Bukayo Saka's",
+                    _ts("2026-11-06 12:00"), "Premier League/2026-2027/Arsenal/Mikel Arteta/2026-11-06 Arsenal vs Bukayo Saka's",
                     "2026-11-06 - Mikel Arteta", old)
     mac = p["txt"].parent / "mac.json"
     mac.write_text(json.dumps({"team": "Arsenal", "ek_bilgiler": {"kadro": ["Saka"]}}), encoding="utf-8")
@@ -871,7 +881,7 @@ def test_reclassify_collections_heal_on_rerun(tmp_path, monkeypatch):
     old = {"team": "Arsenal", "opponent": "Bukayo Saka's", "is_pl": True, "presser_date": "2026-11-06",
            "home": "Arsenal", "away": "Bukayo Saka's"}
     paths = _old_output(tmp_path, "y_heal", "Mikel Arteta on Bukayo Saka's fitness | Press conference", "Arsenal",
-                        _ts("2026-11-06 12:00"), "Premier League/Arsenal/2026-2027 Mikel Arteta/2026-11-06 Arsenal vs Bukayo Saka's",
+                        _ts("2026-11-06 12:00"), "Premier League/2026-2027/Arsenal/Mikel Arteta/2026-11-06 Arsenal vs Bukayo Saka's",
                         "2026-11-06 - Mikel Arteta", old)
     col = tmp_path / "Koleksiyonlar" / "k"
     col.mkdir(parents=True)
@@ -981,7 +991,7 @@ def test_reclassify_second_run_keeps_neutral_channel_result(tmp_path):
     r3 = reclassify(tmp_path, apply=True, data=FPL)
     assert r1["moved"] == 1 and r2["moved"] == 0 and r3["moved"] == 0, (r1, r2)
     row = json.loads((tmp_path / "index.jsonl").read_text("utf-8"))
-    assert row["gw"] == 11 and row["txt"].startswith("Premier League/Arsenal/2026-2027 Mikel Arteta/2026-11-08 GW11 Arsenal vs Chelsea/")
+    assert row["gw"] == 11 and row["txt"].startswith("Premier League/2026-2027/Arsenal/Mikel Arteta/2026-11-08 GW11 Arsenal vs Chelsea/")
     assert not p["txt"].exists()
 
 
@@ -1007,7 +1017,7 @@ def test_reclassify_locked_old_file_is_retried_next_run(tmp_path, monkeypatch):
     old = {"team": "Arsenal", "opponent": "Bukayo Saka's", "is_pl": True, "presser_date": "2026-11-06",
            "home": "Arsenal", "away": "Bukayo Saka's"}
     p = _old_output(tmp_path, "y_lock", "Mikel Arteta on Bukayo Saka's fitness | Press conference", "Arsenal",
-                    _ts("2026-11-06 12:00"), "Premier League/Arsenal/2026-2027 Mikel Arteta/2026-11-06 Arsenal vs Bukayo Saka's",
+                    _ts("2026-11-06 12:00"), "Premier League/2026-2027/Arsenal/Mikel Arteta/2026-11-06 Arsenal vs Bukayo Saka's",
                     "2026-11-06 - Mikel Arteta", old)
     real_unlink = Path.unlink
 
@@ -1029,12 +1039,12 @@ def test_reclassify_keeps_hand_edited_txt(tmp_path):
     old = {"team": "Arsenal", "opponent": "Bukayo Saka's", "is_pl": True, "presser_date": "2026-11-06",
            "home": "Arsenal", "away": "Bukayo Saka's"}
     p = _old_output(tmp_path, "y_edit", "Mikel Arteta on Bukayo Saka's fitness | Press conference", "Arsenal",
-                    _ts("2026-11-06 12:00"), "Premier League/Arsenal/2026-2027 Mikel Arteta/2026-11-06 Arsenal vs Bukayo Saka's",
+                    _ts("2026-11-06 12:00"), "Premier League/2026-2027/Arsenal/Mikel Arteta/2026-11-06 Arsenal vs Bukayo Saka's",
                     "2026-11-06 - Mikel Arteta", old)
     edited = p["txt"].read_text("utf-8").replace("he trained today", "he trained TODAY (elle)")
     p["txt"].write_bytes(edited.replace("\n", "\r\n").encode("utf-8"))      # Not Defteri: CRLF
     res = reclassify(tmp_path, apply=True, data=FPL)
-    new = tmp_path / "Premier League/Arsenal/2026-2027 Mikel Arteta/2026-11-08 GW11 Arsenal vs Chelsea/2026-11-06 mac-oncesi - Mikel Arteta.txt"
+    new = tmp_path / "Premier League/2026-2027/Arsenal/Mikel Arteta/2026-11-08 GW11 Arsenal vs Chelsea/2026-11-06 mac-oncesi - Mikel Arteta.txt"
     assert res["moved"] == 1 and "TODAY (elle)" in new.read_text("utf-8")
 
 
@@ -1044,11 +1054,11 @@ def test_reclassify_regenerates_unedited_txt_with_windows_newlines(tmp_path):
     old = {"team": "Arsenal", "opponent": "Bukayo Saka's", "is_pl": True, "presser_date": "2026-11-06",
            "home": "Arsenal", "away": "Bukayo Saka's"}
     p = _old_output(tmp_path, "y_crlf", "Mikel Arteta on Bukayo Saka's fitness | Press conference", "Arsenal",
-                    _ts("2026-11-06 12:00"), "Premier League/Arsenal/2026-2027 Mikel Arteta/2026-11-06 Arsenal vs Bukayo Saka's",
+                    _ts("2026-11-06 12:00"), "Premier League/2026-2027/Arsenal/Mikel Arteta/2026-11-06 Arsenal vs Bukayo Saka's",
                     "2026-11-06 - Mikel Arteta", old)
     p["txt"].write_bytes(p["txt"].read_text("utf-8").replace("\n", "\r\n").encode("utf-8"))
     reclassify(tmp_path, apply=True, data=FPL)
-    new = tmp_path / "Premier League/Arsenal/2026-2027 Mikel Arteta/2026-11-08 GW11 Arsenal vs Chelsea/2026-11-06 mac-oncesi - Mikel Arteta.txt"
+    new = tmp_path / "Premier League/2026-2027/Arsenal/Mikel Arteta/2026-11-08 GW11 Arsenal vs Chelsea/2026-11-06 mac-oncesi - Mikel Arteta.txt"
     assert "GW11" in new.read_text("utf-8")
 
 
@@ -1062,7 +1072,7 @@ def test_gui_reader_follows_moved_file_and_start_waits(tmp_path, monkeypatch):
     old = {"team": "Arsenal", "opponent": "Bukayo Saka's", "is_pl": True, "presser_date": "2026-11-06",
            "home": "Arsenal", "away": "Bukayo Saka's"}
     p = _old_output(tmp_path, "y_rd", "Mikel Arteta on Bukayo Saka's fitness | Press conference", "Arsenal",
-                    _ts("2026-11-06 12:00"), "Premier League/Arsenal/2026-2027 Mikel Arteta/2026-11-06 Arsenal vs Bukayo Saka's",
+                    _ts("2026-11-06 12:00"), "Premier League/2026-2027/Arsenal/Mikel Arteta/2026-11-06 Arsenal vs Bukayo Saka's",
                     "2026-11-06 - Mikel Arteta", old)
     assert app.dataset_reclassify(True)["moved"] == 1
     assert "He is fine" in app.read_text(str(p["txt"]))          # açık okuyucu eski yolu tutuyor
@@ -1077,8 +1087,8 @@ def test_gui_reader_follows_moved_file_and_start_waits(tmp_path, monkeypatch):
 _SAKA_OLD = {"team": "Arsenal", "opponent": "Bukayo Saka's", "is_pl": True, "presser_date": "2026-11-06",
              "home": "Arsenal", "away": "Bukayo Saka's"}
 _SAKA_TITLE = "Mikel Arteta on Bukayo Saka's fitness | Press conference"
-_SAKA_FOLDER = "Premier League/Arsenal/2026-2027 Mikel Arteta/2026-11-06 Arsenal vs Bukayo Saka's"
-_SAKA_NEW = "Premier League/Arsenal/2026-2027 Mikel Arteta/2026-11-08 GW11 Arsenal vs Chelsea/2026-11-06 mac-oncesi - Mikel Arteta"
+_SAKA_FOLDER = "Premier League/2026-2027/Arsenal/Mikel Arteta/2026-11-06 Arsenal vs Bukayo Saka's"
+_SAKA_NEW = "Premier League/2026-2027/Arsenal/Mikel Arteta/2026-11-08 GW11 Arsenal vs Chelsea/2026-11-06 mac-oncesi - Mikel Arteta"
 
 
 def _lock(monkeypatch, path, op="unlink"):
@@ -1455,17 +1465,17 @@ def test_reclassify_season_move_keeps_hand_added_match_info(tmp_path):
                                               encoding="utf-8")
     plan = reclassify(tmp_path, apply=False, data=FPL)
     assert plan["moved"] == 1 and plan["changes"][0]["to"] == \
-        "Premier League/Arsenal/2026-2027 Mikel Arteta/2026-11-08 GW11 Arsenal vs Chelsea"
+        "Premier League/2026-2027/Arsenal/Mikel Arteta/2026-11-08 GW11 Arsenal vs Chelsea"
     res = reclassify(tmp_path, apply=True, data=FPL)
-    new = tmp_path / "Premier League" / "Arsenal" / "2026-2027 Mikel Arteta" / "2026-11-08 GW11 Arsenal vs Chelsea"
+    new = tmp_path / "Premier League" / "2026-2027" / "Arsenal" / "Mikel Arteta" / "2026-11-08 GW11 Arsenal vs Chelsea"
     assert res["moved"] == 1 and (new / "2026-11-06 mac-oncesi - Mikel Arteta.txt").exists()
     m = json.loads((new / "mac.json").read_text("utf-8"))
     assert m["ek_bilgiler"] == {"kadro": [1, 2]} and m["gw"] == 11 and m["season"] == "2026-2027"
-    assert not p["txt"].parent.exists() and (tmp_path / "Premier League" / "Arsenal").is_dir()
+    assert not p["txt"].parent.exists() and not (tmp_path / "Premier League" / "Arsenal").exists()
 
 
 def test_gui_dataset_tree_has_seasons(tmp_path, monkeypatch):
-    """1.9.25: arayüz ağacı takım › sezon › maç; eski (sezonsuz) satırlarda sezon tarihten hesaplanır."""
+    """Arayüz ağacı (1.9.28: lig › sezon › takım); eski (sezonsuz) satırlarda sezon tarihten hesaplanır."""
     import stt.gui as g
     from stt.dataset import update_index
     monkeypatch.chdir(tmp_path)
@@ -1482,13 +1492,13 @@ def test_gui_dataset_tree_has_seasons(tmp_path, monkeypatch):
                                 "txt": f"{folder}/x.txt", "json": f"{folder}/x.json"})
     ds = app.dataset()
     pl = next(x for x in ds["leagues"] if x["league"] == "Premier League")
-    tm = pl["teams"][0]
-    assert tm["folder"] == str(tmp_path / "Premier League" / "Arsenal") and len(tm["matches"]) == 3
-    assert [s["season"] for s in tm["seasons"]] == ["2026-2027", "2025-2026"]
-    assert [len(s["matches"]) for s in tm["seasons"]] == [1, 2]
-    assert tm["seasons"][0]["folder"] == str(tmp_path / "Premier League" / "Arsenal" / "2026-2027")
+    assert [s["season"] for s in pl["seasons"]] == ["2026-2027", "2025-2026"]
+    assert [s["count"] for s in pl["seasons"]] == [1, 2]
+    assert [t["team"] for t in pl["seasons"][1]["teams"]] == ["Arsenal"]
+    assert pl["seasons"][0]["folder"] == ""                       # yeni düzende klasör henüz yok: düğme gizli
+    assert pl["teams"] == []
     pod = next(x for x in ds["leagues"] if x["league"] == "Podcast ve Film")
-    assert pod["teams"][0]["seasons"] == []
+    assert pod["seasons"] == [] and pod["teams"][0]["team"] == "Kayıtlar" and len(pod["teams"][0]["matches"]) == 1
 
 
 def test_reclassify_other_season_renamed_folder_not_merged(tmp_path):
@@ -1514,7 +1524,7 @@ def test_reclassify_season_move_merges_extras_into_existing_mac(tmp_path):
                     "2026-11-06 mac-oncesi - Mikel Arteta", ds)
     (p["txt"].parent / "mac.json").write_text(json.dumps({"team": "Arsenal", "ek_bilgiler": {"kadro": [1]}}),
                                               encoding="utf-8")
-    new = tmp_path / "Premier League" / "Arsenal" / "2026-2027 Mikel Arteta" / "2026-11-08 GW11 Arsenal vs Chelsea"
+    new = tmp_path / "Premier League" / "2026-2027" / "Arsenal" / "Mikel Arteta" / "2026-11-08 GW11 Arsenal vs Chelsea"
     new.mkdir(parents=True)
     (new / "mac.json").write_text(json.dumps({"team": "Arsenal", "gw": 11, "ek_bilgiler": {}}), encoding="utf-8")
     res = reclassify(tmp_path, apply=True, data=FPL)
